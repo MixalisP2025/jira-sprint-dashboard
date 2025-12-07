@@ -1,0 +1,5 @@
+{
+  "_comment": "This file defines allowed assignees per project for suggestion validation.",
+  "_comment2": "Format: { 'ProjectName': ['Assignee1', 'Assignee2', ...] }",
+  "_comment3": "Leave empty {} to allow all assignees, or define specific mappings below."
+}

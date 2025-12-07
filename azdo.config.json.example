@@ -1,0 +1,21 @@
+{
+  "_comment": "SETUP INSTRUCTIONS: Copy this file to azdo.config.json (same directory) and fill in your values",
+  "_comment2": "IMPORTANT: azdo.config.json is in .gitignore to prevent committing your PAT",
+  "_comment3": "Place this file in the PROJECT ROOT (same directory as package.json)",
+  
+  "organizationUrl": "https://dev.azure.com/yourOrgName",
+  "personalAccessToken": "your-personal-access-token-here",
+  "project": "YourProjectName",
+  "team": "YourTeamName",
+  "apiVersion": "6.0",
+  
+  "_instructions": {
+    "step1": "Replace 'yourOrgName' with your Azure DevOps organization name",
+    "step2": "Replace 'your-personal-access-token-here' with your PAT (create at: https://dev.azure.com/yourOrg/_usersSettings/tokens)",
+    "step3": "Save this file as azdo.config.json (remove .example extension)",
+    "step4": "Run: npm run start:proxy",
+    "step5": "Verify: Invoke-RestMethod -Uri 'http://localhost:4000/api/azdo-config' -Method Get",
+    "step6": "If your queries use @CurrentIteration, set the 'project' field above to your Azure DevOps project name",
+    "step7": "Optionally set 'team' to the team name to force which team context to use when resolving iterations"
+  }
+}
