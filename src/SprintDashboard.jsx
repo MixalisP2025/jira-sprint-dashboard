@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import allowedAssignees from './data/allowedAssignees.json';
 import {
   BarChart,
@@ -64,6 +64,14 @@ const SprintDashboard = () => {
   const AZDO_ORG_URL = import.meta.env.VITE_AZDO_ORG_URL || null;
   const AZDO_PAT = import.meta.env.VITE_AZDO_PAT || null;
   const [azdoGroupBy, setAzdoGroupBy] = useState('AreaPath');
+  const [riskLevelFilter, setRiskLevelFilter] = useState('all');
+  const [riskProjectFilter, setRiskProjectFilter] = useState('all');
+  const [riskSortBy, setRiskSortBy] = useState('level');
+  const [riskSprintFilter, setRiskSprintFilter] = useState('all');
+  const [riskAssigneeFilter, setRiskAssigneeFilter] = useState('all');
+  const [workloadShowOnly, setWorkloadShowOnly] = useState('all'); // all, overloaded, near-limit, underutilized
+  const [workloadSprintFilter, setWorkloadSprintFilter] = useState('all');
+  const [workloadAssigneeFilter, setWorkloadAssigneeFilter] = useState('all');
 
   const parseAssigneeProjectMapping = (text) => {
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -595,7 +603,7 @@ const quickAddMapping = (assignee, project) => {
         byAssignee[assignee].timeLogged += parseFloat(hoursMatch[1]);
       }
 
-      const estimate = item['Γ“ Original Estimate'] || '';
+      const estimate = item['Ó Original Estimate'] || '';
       const estimateMatch = estimate.match(/(\d+)/);
       if (estimateMatch) {
         byAssignee[assignee].estimatedTime +=
@@ -726,6 +734,595 @@ const quickAddMapping = (assignee, project) => {
 
     return bySprint;
   }, [data]);
+
+  // Milestone Tracking - compute progress status for each sprint
+  const milestoneTracking = useMemo(() => {
+    const milestones = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Get unique sprints with their data
+    const sprintMap = {};
+    data.forEach((item) => {
+      const sprint = item['Sprint'] || item['G'] || '';
+      if (!sprint || sprint === 'No Sprint') return;
+      
+      const project = item['Project'] || item['B'] || 'Unknown';
+      const key = `${project}|||${sprint}`;
+      
+      if (!sprintMap[key]) {
+        sprintMap[key] = {
+          project,
+          sprint,
+          totalSP: 0,
+          completedSP: 0,
+          items: 0,
+          doneItems: 0,
+        };
+      }
+      
+      sprintMap[key].items++;
+      const status = item['Status'];
+      if (status === 'Done') sprintMap[key].doneItems++;
+      
+      const sp = parseFloat(item['Story Points']) || 0;
+      if (sp > 0) {
+        sprintMap[key].totalSP += sp;
+        if (status === 'Done') {
+          sprintMap[key].completedSP += sp;
+        }
+      }
+    });
+
+    // Process each sprint to calculate status
+    Object.values(sprintMap).forEach((m) => {
+      const dates = sprintDates[m.sprint];
+      let targetEnd = null;
+      let startDate = null;
+      let daysRemaining = null;
+      let totalDays = null;
+      let daysElapsed = null;
+      let timeProgress = null;
+
+      if (dates) {
+        const [endMonth, endDay, endYear] = dates.end.split('/');
+        targetEnd = new Date(parseInt(endYear), parseInt(endMonth) - 1, parseInt(endDay));
+        
+        const [startMonth, startDay, startYear] = dates.start.split('/');
+        startDate = new Date(parseInt(startYear), parseInt(startMonth) - 1, parseInt(startDay));
+        
+        totalDays = Math.ceil((targetEnd - startDate) / (1000 * 60 * 60 * 24));
+        daysElapsed = Math.ceil((today - startDate) / (1000 * 60 * 60 * 24));
+        daysRemaining = Math.ceil((targetEnd - today) / (1000 * 60 * 60 * 24));
+        timeProgress = totalDays > 0 ? Math.min(100, Math.max(0, (daysElapsed / totalDays) * 100)) : 0;
+      }
+
+      const percentComplete = m.totalSP > 0 
+        ? Math.round((m.completedSP / m.totalSP) * 100) 
+        : (m.items > 0 ? Math.round((m.doneItems / m.items) * 100) : 0);
+
+      // Determine status
+      let status = 'Unknown';
+      let statusColor = 'gray';
+      
+      if (targetEnd) {
+        const isPastDue = today > targetEnd;
+        
+        if (percentComplete >= 100) {
+          status = 'Complete';
+          statusColor = 'emerald';
+        } else if (isPastDue) {
+          status = 'Delayed';
+          statusColor = 'red';
+        } else if (timeProgress !== null) {
+          // Compare work progress to time progress
+          const progressDiff = percentComplete - timeProgress;
+          
+          if (progressDiff >= -10) {
+            status = 'On Track';
+            statusColor = 'green';
+          } else if (progressDiff >= -25) {
+            status = 'At Risk';
+            statusColor = 'amber';
+          } else {
+            status = 'Behind';
+            statusColor = 'red';
+          }
+        }
+      } else {
+        // No dates available
+        if (percentComplete >= 100) {
+          status = 'Complete';
+          statusColor = 'emerald';
+        } else if (percentComplete >= 75) {
+          status = 'On Track';
+          statusColor = 'green';
+        } else if (percentComplete >= 50) {
+          status = 'At Risk';
+          statusColor = 'amber';
+        } else {
+          status = 'Behind';
+          statusColor = 'red';
+        }
+      }
+
+      milestones.push({
+        project: m.project,
+        sprint: m.sprint,
+        targetEnd: dates ? dates.end : 'N/A',
+        targetEndDate: targetEnd,
+        totalSP: m.totalSP,
+        completedSP: m.completedSP,
+        percentComplete,
+        timeProgress: timeProgress !== null ? Math.round(timeProgress) : null,
+        daysRemaining,
+        status,
+        statusColor,
+        items: m.items,
+        doneItems: m.doneItems,
+      });
+    });
+
+    // Sort by status priority then by target end date
+    const statusPriority = { 'Delayed': 0, 'Behind': 1, 'At Risk': 2, 'On Track': 3, 'Complete': 4, 'Unknown': 5 };
+    milestones.sort((a, b) => {
+      const pa = statusPriority[a.status] ?? 99;
+      const pb = statusPriority[b.status] ?? 99;
+      if (pa !== pb) return pa - pb;
+      if (a.targetEndDate && b.targetEndDate) return a.targetEndDate - b.targetEndDate;
+      return a.sprint.localeCompare(b.sprint);
+    });
+
+    return milestones;
+  }, [data, sprintDates]);
+
+  // Risk Register - scan issues for risks
+  const riskRegister = useMemo(() => {
+    const risks = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Get assignee utilization from stats
+    const assigneeUtilization = {};
+    Object.entries(stats).forEach(([assignee, s]) => {
+      assigneeUtilization[assignee] = s.sprintCapacity > 0 
+        ? (s.totalStoryPoints / s.sprintCapacity) * 100 
+        : 0;
+    });
+
+    data.forEach((item) => {
+      const issueKey = item['Issue key'] || item['Key'] || '';
+      const project = item['Project'] || item['B'] || 'Unknown';
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      const status = item['Status'] || '';
+      const sp = parseFloat(item['Story Points']) || 0;
+      const sprint = item['Sprint'] || item['G'] || '';
+
+      // Helper function to parse DD/MM/YY or DD/MM/YYYY date format
+      const parseDDMMYY = (dateStr) => {
+        if (!dateStr) return null;
+        const match = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+        if (match) {
+          const day = parseInt(match[1]);
+          const month = parseInt(match[2]) - 1;
+          let year = parseInt(match[3]);
+          if (year < 100) year += 2000;
+          return new Date(year, month, day);
+        }
+        // Try standard parsing as fallback
+        const parsed = new Date(dateStr);
+        return isNaN(parsed) ? null : parsed;
+      };
+
+      // Get Due Date or Target End from the item (NOT from sprint)
+      const dueDate = item['Due Date'] || item['Due date'] || item['DueDate'] || '';
+      const targetEnd = item['Target End'] || item['Target end'] || item['TargetEnd'] || item['Target End Date'] || '';
+      
+      let targetEndDate = parseDDMMYY(dueDate) || parseDDMMYY(targetEnd);
+      
+      // Only fallback to sprint end date if no Due Date or Target End
+      if (!targetEndDate) {
+        const dates = sprintDates[sprint];
+        if (dates) {
+          const [endMonth, endDay, endYear] = dates.end.split('/');
+          targetEndDate = new Date(parseInt(endYear), parseInt(endMonth) - 1, parseInt(endDay));
+        }
+      }
+      
+      
+      // Parse Updated date if available (format varies)
+      let updatedDate = null;
+      const updated = item['Updated'] || item['Last Updated'] || '';
+      if (updated) {
+        const parsed = new Date(updated);
+        if (!isNaN(parsed)) updatedDate = parsed;
+      }
+
+      // Parse Created date if available (handle DD/MM/YY format)
+      let createdDate = null;
+      const created = item['Created'] || item['Created Date'] || '';
+      if (created) {
+        // Try to parse DD/MM/YY or DD/MM/YYYY format first
+        const ddmmyyMatch = created.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+        if (ddmmyyMatch) {
+          const day = parseInt(ddmmyyMatch[1]);
+          const month = parseInt(ddmmyyMatch[2]) - 1;
+          let year = parseInt(ddmmyyMatch[3]);
+          if (year < 100) year += 2000; // Convert YY to 20YY
+          createdDate = new Date(year, month, day);
+        } else {
+          // Fallback to standard parsing
+          const parsed = new Date(created);
+          if (!isNaN(parsed)) createdDate = parsed;
+        }
+      }
+
+      // Calculate days
+      let daysLate = null;
+      let daysInStatus = null;
+
+      // Only calculate daysLate if item was created before sprint end
+      // (i.e., it was actually supposed to be completed in that sprint)
+      if (targetEndDate) {
+        const potentialDaysLate = Math.ceil((today - targetEndDate) / (1000 * 60 * 60 * 24));
+        
+        // Skip overdue calculation if:
+        // 1. Item was created after sprint ended (added retroactively)
+        // 2. No created date available AND sprint ended > 30 days ago (likely retroactive)
+        if (createdDate && createdDate > targetEndDate) {
+          daysLate = null; // Item added after sprint ended
+        } else if (!createdDate && potentialDaysLate > 30) {
+          daysLate = null; // No created date + old sprint = likely retroactive, skip
+        } else {
+          daysLate = potentialDaysLate;
+        }
+      }
+
+      if (updatedDate) {
+        daysInStatus = Math.ceil((today - updatedDate) / (1000 * 60 * 60 * 24));
+      }
+      const utilization = assigneeUtilization[assignee] || 0;
+
+      // HIGH RISK: Overdue and not done
+      if (targetEndDate && daysLate > 0 && status !== 'Done') {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'High',
+          reason: `Overdue by ${daysLate} day${daysLate !== 1 ? 's' : ''} - Status: ${status}`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+        return; // Don't double-count
+      }
+
+      // HIGH RISK: Assignee utilization > 200%
+      if (utilization > 200 && status !== 'Done') {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'High',
+          reason: `Assignee at ${Math.round(utilization)}% utilization (overloaded)`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+        return;
+      }
+
+      // MEDIUM RISK: In Progress but stale (no update > 5 days)
+      if (status === 'In Progress' && daysInStatus !== null && daysInStatus > 5) {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'Medium',
+          reason: `In Progress for ${daysInStatus} days without update`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+        return;
+      }
+
+      // MEDIUM RISK: No story points and due within 5 days
+      if (sp === 0 && targetEndDate && daysLate !== null && daysLate >= -5 && daysLate < 0 && status !== 'Done') {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'Medium',
+          reason: `No Story Points assigned - due in ${Math.abs(daysLate)} day${Math.abs(daysLate) !== 1 ? 's' : ''}`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+        return;
+      }
+
+      // LOW RISK: Due within 3 days and not In Progress or Done
+      if (targetEndDate && daysLate !== null && daysLate >= -3 && daysLate < 0 && status !== 'In Progress' && status !== 'Done') {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'Low',
+          reason: `Due in ${Math.abs(daysLate)} day${Math.abs(daysLate) !== 1 ? 's' : ''} but not started`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+      }
+    });
+
+    // Sort by risk level priority
+    const levelPriority = { 'High': 0, 'Medium': 1, 'Low': 2 };
+    risks.sort((a, b) => {
+      const pa = levelPriority[a.riskLevel] ?? 99;
+      const pb = levelPriority[b.riskLevel] ?? 99;
+      if (pa !== pb) return pa - pb;
+      return (b.daysLate || 0) - (a.daysLate || 0);
+    });
+
+    return risks;
+  }, [data, stats, sprintDates]);
+
+  // Filtered risk register based on user selections
+  const filteredRiskRegister = useMemo(() => {
+    return riskRegister.filter((r) => {
+      if (riskLevelFilter !== 'all' && r.riskLevel !== riskLevelFilter) return false;
+      if (riskProjectFilter !== 'all' && r.project !== riskProjectFilter) return false;
+      if (riskSprintFilter !== 'all' && r.sprint !== riskSprintFilter) return false;
+      if (riskAssigneeFilter !== 'all' && r.assignee !== riskAssigneeFilter) return false;
+      return true;
+    }).sort((a, b) => {
+      if (riskSortBy === 'level') {
+        const levelPriority = { 'High': 0, 'Medium': 1, 'Low': 2 };
+        return (levelPriority[a.riskLevel] ?? 99) - (levelPriority[b.riskLevel] ?? 99);
+      } else if (riskSortBy === 'project') {
+        return a.project.localeCompare(b.project);
+      } else if (riskSortBy === 'assignee') {
+        return a.assignee.localeCompare(b.assignee);
+      } else if (riskSortBy === 'daysLate') {
+        return (b.daysLate || 0) - (a.daysLate || 0);
+      }
+      return 0;
+    });
+  }, [riskRegister, riskLevelFilter, riskProjectFilter, riskSprintFilter, riskAssigneeFilter, riskSortBy]);
+
+  // Get unique projects for risk filter dropdown
+  const riskProjects = useMemo(() => {
+    const projects = new Set(riskRegister.map((r) => r.project));
+    return ['all', ...Array.from(projects).sort()];
+  }, [riskRegister]);
+
+  // Get unique sprints for risk filter dropdown
+  const riskSprints = useMemo(() => {
+    const sprints = new Set(riskRegister.map((r) => r.sprint).filter(Boolean));
+    return ['all', ...Array.from(sprints).sort()];
+  }, [riskRegister]);
+
+  // Get unique assignees for risk filter dropdown
+  const riskAssignees = useMemo(() => {
+    const assignees = new Set(riskRegister.map((r) => r.assignee).filter(Boolean));
+    return ['all', ...Array.from(assignees).sort()];
+  }, [riskRegister]);
+
+  // ============================================
+  // WORKLOAD & CAPACITY DASHBOARD DATA
+  // ============================================
+  
+  const workloadCapacityData = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Collect all unique sprints and assignees for filters
+    const allSprints = new Set();
+    const allAssignees = new Set();
+    data.forEach((item) => {
+      const sprint = item['Sprint'] || item['G'] || '';
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      if (sprint) allSprints.add(sprint);
+      if (assignee) allAssignees.add(assignee);
+    });
+
+    // Filter data based on sprint and assignee selections
+    const filteredData = data.filter((item) => {
+      const sprint = item['Sprint'] || item['G'] || '';
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      
+      if (workloadSprintFilter !== 'all' && sprint !== workloadSprintFilter) return false;
+      if (workloadAssigneeFilter !== 'all' && assignee !== workloadAssigneeFilter) return false;
+      return true;
+    });
+
+    // Build per-assignee workload data
+    const assigneeWorkload = {};
+    const teamWorkload = {};
+
+    filteredData.forEach((item) => {
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      const project = item['Project'] || item['B'] || 'Unknown';
+      const status = item['Status'] || '';
+      const sp = parseFloat(item['Story Points']) || 0;
+      const issueType = item['Issue Type'] || '';
+      const priority = item['Priority'] || 'Medium';
+      
+      // Initialize assignee data
+      if (!assigneeWorkload[assignee]) {
+        assigneeWorkload[assignee] = {
+          assignee,
+          totalSP: 0,
+          completedSP: 0,
+          inProgressSP: 0,
+          toDoSP: 0,
+          awaitingTestingSP: 0,
+          awaitingVersioningSP: 0,
+          capacity: assigneeCaps[assignee] || 14,
+          totalItems: 0,
+          completedItems: 0,
+          inProgressItems: 0,
+          toDoItems: 0,
+          blockedItems: 0,
+          highPriorityItems: 0,
+          projects: new Set(),
+          items: [],
+        };
+      }
+      
+      // Initialize team/project data
+      if (!teamWorkload[project]) {
+        teamWorkload[project] = {
+          project,
+          totalSP: 0,
+          completedSP: 0,
+          inProgressSP: 0,
+          toDoSP: 0,
+          capacity: 0,
+          assignees: new Set(),
+          totalItems: 0,
+        };
+      }
+      
+      // Aggregate assignee data
+      assigneeWorkload[assignee].totalItems++;
+      assigneeWorkload[assignee].projects.add(project);
+      assigneeWorkload[assignee].items.push(item);
+      
+      if (sp > 0) {
+        assigneeWorkload[assignee].totalSP += sp;
+        teamWorkload[project].totalSP += sp;
+        
+        if (status === 'Done') {
+          assigneeWorkload[assignee].completedSP += sp;
+          assigneeWorkload[assignee].completedItems++;
+          teamWorkload[project].completedSP += sp;
+        } else if (status === 'In Progress') {
+          assigneeWorkload[assignee].inProgressSP += sp;
+          assigneeWorkload[assignee].inProgressItems++;
+          teamWorkload[project].inProgressSP += sp;
+        } else if (status === 'To Do') {
+          assigneeWorkload[assignee].toDoSP += sp;
+          assigneeWorkload[assignee].toDoItems++;
+          teamWorkload[project].toDoSP += sp;
+        } else if (status === 'Awaiting Testing') {
+          assigneeWorkload[assignee].awaitingTestingSP += sp;
+        } else if (status === 'Awaiting Versioning') {
+          assigneeWorkload[assignee].awaitingVersioningSP += sp;
+        }
+      }
+      
+      // Track blocked and high priority
+      if (status === 'Blocked' || status === 'On Hold') {
+        assigneeWorkload[assignee].blockedItems++;
+      }
+      if (priority === 'Highest' || priority === 'High' || priority === 'Critical') {
+        assigneeWorkload[assignee].highPriorityItems++;
+      }
+      
+      // Track team data
+      teamWorkload[project].totalItems++;
+      teamWorkload[project].assignees.add(assignee);
+    });
+    
+    // Calculate utilization and status for each assignee
+    const assigneeList = Object.values(assigneeWorkload).map((a) => {
+      const activeSP = a.totalSP - a.completedSP; // Work remaining
+      const utilization = a.capacity > 0 ? (activeSP / a.capacity) * 100 : 0;
+      
+      let utilizationStatus = 'healthy';
+      let utilizationColor = 'green';
+      if (utilization > 100) {
+        utilizationStatus = 'overloaded';
+        utilizationColor = 'red';
+      } else if (utilization >= 80) {
+        utilizationStatus = 'near-limit';
+        utilizationColor = 'amber';
+      } else if (utilization < 60) {
+        utilizationStatus = 'underutilized';
+        utilizationColor = 'blue';
+      }
+      
+      return {
+        ...a,
+        activeSP,
+        utilization: Math.round(utilization),
+        utilizationStatus,
+        utilizationColor,
+        projectCount: a.projects.size,
+        projects: Array.from(a.projects),
+      };
+    }).sort((a, b) => b.utilization - a.utilization);
+    
+    // Calculate team totals
+    const teamList = Object.values(teamWorkload).map((t) => {
+      // Sum capacity of all assignees in this project
+      const teamCapacity = Array.from(t.assignees).reduce((sum, assignee) => {
+        return sum + (assigneeCaps[assignee] || 14);
+      }, 0);
+      
+      const activeSP = t.totalSP - t.completedSP;
+      const utilization = teamCapacity > 0 ? (activeSP / teamCapacity) * 100 : 0;
+      
+      let utilizationStatus = 'healthy';
+      if (utilization > 100) utilizationStatus = 'overloaded';
+      else if (utilization >= 80) utilizationStatus = 'near-limit';
+      else if (utilization < 60) utilizationStatus = 'underutilized';
+      
+      return {
+        ...t,
+        capacity: teamCapacity,
+        activeSP,
+        utilization: Math.round(utilization),
+        utilizationStatus,
+        assigneeCount: t.assignees.size,
+        assignees: Array.from(t.assignees),
+      };
+    }).sort((a, b) => b.utilization - a.utilization);
+    
+    // Summary stats
+    const totalCapacity = assigneeList.reduce((sum, a) => sum + a.capacity, 0);
+    const totalActiveSP = assigneeList.reduce((sum, a) => sum + a.activeSP, 0);
+    const overallUtilization = totalCapacity > 0 ? Math.round((totalActiveSP / totalCapacity) * 100) : 0;
+    
+    const overloadedCount = assigneeList.filter((a) => a.utilizationStatus === 'overloaded').length;
+    const nearLimitCount = assigneeList.filter((a) => a.utilizationStatus === 'near-limit').length;
+    const healthyCount = assigneeList.filter((a) => a.utilizationStatus === 'healthy').length;
+    const underutilizedCount = assigneeList.filter((a) => a.utilizationStatus === 'underutilized').length;
+    
+    return {
+      assignees: assigneeList,
+      teams: teamList,
+      allSprints: Array.from(allSprints).sort(),
+      allAssignees: Array.from(allAssignees).sort(),
+      summary: {
+      teams: teamList,
+        totalCapacity,
+        totalActiveSP,
+        overallUtilization,
+        overloadedCount,
+        nearLimitCount,
+        healthyCount,
+        underutilizedCount,
+        totalAssignees: assigneeList.length,
+        totalTeams: teamList.length,
+      },
+    };
+  }, [data, assigneeCaps, workloadSprintFilter, workloadAssigneeFilter]);
+
 
   const workloadChartData = useMemo(() => {
     return Object.entries(stats)
@@ -1184,7 +1781,7 @@ const quickAddMapping = (assignee, project) => {
       aria-label="Scroll to top"
       title="Scroll to top"
     >
-      β†‘
+      ↑
     </button>
   );
 
@@ -1391,12 +1988,12 @@ const quickAddMapping = (assignee, project) => {
                     <div className="text-slate-300">
                       <span className="font-medium">Start:</span>{' '}
                       {sprintDates[selectedSprint].start}
-                      <span className="mx-2">β†’</span>
+                      <span className="mx-2">→</span>
                       <span className="font-medium">End:</span>{' '}
                       {sprintDates[selectedSprint].end}
                     </div>
                     <div className="text-[11px] text-slate-400 mt-1">
-                      π“… 2-week sprint (10 working days)
+                      📅 2-week sprint (10 working days)
                     </div>
                   </div>
                 </div>
@@ -1598,7 +2195,7 @@ const quickAddMapping = (assignee, project) => {
                                         ) : (
                                           <span className="text-slate-200">{key}</span>
                                         )}
-                                        {/* per-row Open button removed β€” issue key itself links to Jira */}
+                                        {/* per-row Open button removed — issue key itself links to Jira */}
                                       </div>
                                     </td>
                                     <td className="py-2 text-slate-300">{project}</td>
@@ -1962,7 +2559,7 @@ const quickAddMapping = (assignee, project) => {
                     <div className="text-xs">
                       {suggestionRejections.map((r, idx) => (
                         <div key={idx} className="mb-2">
-                          <div className="font-semibold">{r.id} β€” {r.reason}</div>
+                          <div className="font-semibold">{r.id} — {r.reason}</div>
                           {r.allowed && Array.isArray(r.allowed) && r.allowed.length > 0 && (
                             <div className="text-[11px] text-amber-800">Allowed: {renderListPreview(r.allowed)}</div>
                           )}
@@ -2081,7 +2678,7 @@ const quickAddMapping = (assignee, project) => {
                                   <div className="flex items-center gap-2">
                                     <span>{info.project}</span>
                                                 {isBuiltinProject(info.project) && (
-                                                  <span title="Authoritative built-in mapping β€” uploaded mappings are ignored for this project" className="text-[11px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded">Built-in</span>
+                                                  <span title="Authoritative built-in mapping — uploaded mappings are ignored for this project" className="text-[11px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded">Built-in</span>
                                                 )}
                                   </div>
                                 </td>
@@ -2122,7 +2719,7 @@ const quickAddMapping = (assignee, project) => {
                 <ul className="list-disc pl-5 space-y-1">
                   {jiraPreview.map((p, i) => (
                     <li key={i}>
-                      Issue <strong>{p.issueKey}</strong>: {p.from} β†’ <strong>{p.to}</strong> ({p.sp} SP)
+                      Issue <strong>{p.issueKey}</strong>: {p.from} → <strong>{p.to}</strong> ({p.sp} SP)
                     </li>
                   ))}
                 </ul>
@@ -2147,7 +2744,7 @@ const quickAddMapping = (assignee, project) => {
             {/* What-if simulator */}
             <div className="mt-4 bg-slate-900/60 p-3 rounded-md text-sm text-slate-100">
               <div className="flex items-center justify-between">
-                <div className="font-medium">Whatβ€‘If: scale capacities</div>
+                <div className="font-medium">What‑If: scale capacities</div>
                 <div className="text-xs text-slate-300">Multiplier</div>
               </div>
               <div className="mt-2 flex items-center gap-3">
@@ -2185,7 +2782,7 @@ const quickAddMapping = (assignee, project) => {
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
             <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded">
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-2xl">π”΄</span>
+                <span className="text-2xl">🔴</span>
                 <h3 className="text-sm font-bold text-red-900">
                   Over Allocated
                 </h3>
@@ -2199,19 +2796,19 @@ const quickAddMapping = (assignee, project) => {
 
             <div className="bg-green-50 border-l-4 border-green-500 p-4 rounded">
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-2xl">πΆ</span>
+                <span className="text-2xl">🟢</span>
                 <h3 className="text-sm font-bold text-green-900">On Track</h3>
               </div>
               <p className="text-sm text-green-800">
                 70-100% capacity (9.8-14 SP)
                 <br />
-                <strong>Tolerance:</strong> Β±4 hours
+                <strong>Tolerance:</strong> ±4 hours
               </p>
             </div>
 
             <div className="bg-orange-50 border-l-4 border-orange-500 p-4 rounded">
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-2xl">π΅</span>
+                <span className="text-2xl">🟡</span>
                 <h3 className="text-sm font-bold text-orange-900">
                   Under Allocated
                 </h3>
@@ -2622,12 +3219,12 @@ const quickAddMapping = (assignee, project) => {
                       <div className="font-medium text-slate-900 flex items-center gap-2">
                         <span>{p.project}</span>
                         {isBuiltinProject(p.project) && (
-                          <span title="Authoritative built-in mapping β€” uploaded mappings are ignored for this project" className="text-[11px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded">Built-in</span>
+                          <span title="Authoritative built-in mapping — uploaded mappings are ignored for this project" className="text-[11px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded">Built-in</span>
                         )}
                       </div>
                     </div>
                     <div className="text-xs text-slate-600">
-                      {p.doneItems}/{p.totalItems} items Β· {p.completedSP.toFixed(1)}/{p.totalSP.toFixed(1)} SP
+                      {p.doneItems}/{p.totalItems} items · {p.completedSP.toFixed(1)}/{p.totalSP.toFixed(1)} SP
                     </div>
                   </div>
                   <div className="w-full bg-slate-200 rounded h-3 overflow-hidden">
@@ -2646,6 +3243,532 @@ const quickAddMapping = (assignee, project) => {
               ))}
             </div>
           )}
+        </div>
+
+        {/* Milestone Tracking & Forecasting */}
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-slate-900">
+              <span className="bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">
+                Milestone Tracking & Forecasting
+              </span>
+            </h2>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-full bg-emerald-500"></div>
+                <span className="text-xs text-slate-600">Complete</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                <span className="text-xs text-slate-600">On Track</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+                <span className="text-xs text-slate-600">At Risk</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-full bg-red-500"></div>
+                <span className="text-xs text-slate-600">Delayed/Behind</span>
+              </div>
+            </div>
+          </div>
+          
+          {milestoneTracking.length === 0 ? (
+            <div className="text-sm text-slate-600">No milestone data available</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200">
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Project</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Sprint/Milestone</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Target End</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Days Left</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Total SP</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Done SP</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Progress</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {milestoneTracking.map((m, idx) => {
+                    const statusColors = {
+                      'Complete': 'bg-emerald-100 text-emerald-800 border-emerald-300',
+                      'On Track': 'bg-green-100 text-green-800 border-green-300',
+                      'At Risk': 'bg-amber-100 text-amber-800 border-amber-300',
+                      'Behind': 'bg-red-100 text-red-800 border-red-300',
+                      'Delayed': 'bg-red-100 text-red-800 border-red-300',
+                      'Unknown': 'bg-gray-100 text-gray-800 border-gray-300',
+                    };
+                    const progressBarColor = {
+                      'Complete': 'bg-emerald-500',
+                      'On Track': 'bg-green-500',
+                      'At Risk': 'bg-amber-500',
+                      'Behind': 'bg-red-500',
+                      'Delayed': 'bg-red-500',
+                      'Unknown': 'bg-gray-400',
+                    };
+                    return (
+                      <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50">
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: getProjectColor(m.project) }} />
+                            <span className="font-medium text-slate-800">{m.project}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-slate-700 max-w-[200px] truncate" title={m.sprint}>
+                          {m.sprint.length > 35 ? m.sprint.substring(0, 35) + '...' : m.sprint}
+                        </td>
+                        <td className="py-3 px-3 text-center text-slate-600 font-mono text-xs">{m.targetEnd}</td>
+                        <td className="py-3 px-3 text-center">
+                          {m.daysRemaining !== null ? (
+                            <span className={`font-medium ${m.daysRemaining < 0 ? 'text-red-600' : m.daysRemaining <= 3 ? 'text-amber-600' : 'text-slate-700'}`}>
+                              {m.daysRemaining < 0 ? `${Math.abs(m.daysRemaining)}d overdue` : `${m.daysRemaining}d`}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-center font-medium text-slate-700">{m.totalSP || '-'}</td>
+                        <td className="py-3 px-3 text-center font-medium text-emerald-600">{m.completedSP || '-'}</td>
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-2.5 bg-slate-200 rounded-full overflow-hidden min-w-[80px]">
+                              <div 
+                                className={`h-full ${progressBarColor[m.status]} transition-all duration-300`}
+                                style={{ width: `${m.percentComplete}%` }}
+                              />
+                            </div>
+                            <span className="text-xs font-semibold text-slate-700 w-10 text-right">{m.percentComplete}%</span>
+                          </div>
+                          {m.timeProgress !== null && (
+                            <div className="text-[10px] text-slate-500 mt-0.5">
+                              Time: {m.timeProgress}% elapsed
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${statusColors[m.status]}`}>
+                            {m.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+
+        {/* ============================================ */}
+        {/* WORKLOAD & CAPACITY DASHBOARD */}
+        {/* ============================================ */}
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-xl font-bold text-slate-900">
+              <span className="bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                Workload & Capacity Dashboard
+              </span>
+            </h2>
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-sm text-slate-600">Sprint:</span>
+              <select
+                value={workloadSprintFilter}
+                onChange={(e) => setWorkloadSprintFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="all">All Sprints</option>
+                {workloadCapacityData.allSprints && workloadCapacityData.allSprints.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              <span className="text-sm text-slate-600">Assignee:</span>
+              <select
+                value={workloadAssigneeFilter}
+                onChange={(e) => setWorkloadAssigneeFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="all">All Assignees</option>
+                {workloadCapacityData.allAssignees && workloadCapacityData.allAssignees.map((a) => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
+              <span className="text-sm text-slate-600">Show:</span>
+              <select
+                value={workloadShowOnly}
+                onChange={(e) => setWorkloadShowOnly(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="all">All Resources</option>
+                <option value="overloaded">Overloaded Only (&gt;100%)</option>
+                <option value="near-limit">Near Limit (80-100%)</option>
+                <option value="underutilized">Underutilized (&lt;60%)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Summary Cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
+            <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl p-4 border border-indigo-100">
+              <div className="text-2xl font-bold text-indigo-700">{workloadCapacityData.summary.overallUtilization}%</div>
+              <div className="text-xs text-indigo-600">Overall Utilization</div>
+            </div>
+            <div className="bg-gradient-to-br from-slate-50 to-gray-50 rounded-xl p-4 border border-slate-200">
+              <div className="text-2xl font-bold text-slate-700">{workloadCapacityData.summary.totalActiveSP}</div>
+              <div className="text-xs text-slate-600">Active SP</div>
+            </div>
+            <div className="bg-gradient-to-br from-slate-50 to-gray-50 rounded-xl p-4 border border-slate-200">
+              <div className="text-2xl font-bold text-slate-700">{workloadCapacityData.summary.totalCapacity}</div>
+              <div className="text-xs text-slate-600">Total Capacity</div>
+            </div>
+            <div className="bg-gradient-to-br from-red-50 to-orange-50 rounded-xl p-4 border border-red-100">
+              <div className="text-2xl font-bold text-red-600">{workloadCapacityData.summary.overloadedCount}</div>
+              <div className="text-xs text-red-600">Overloaded</div>
+            </div>
+            <div className="bg-gradient-to-br from-amber-50 to-yellow-50 rounded-xl p-4 border border-amber-100">
+              <div className="text-2xl font-bold text-amber-600">{workloadCapacityData.summary.nearLimitCount}</div>
+              <div className="text-xs text-amber-600">Near Limit</div>
+            </div>
+            <div className="bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-4 border border-blue-100">
+              <div className="text-2xl font-bold text-blue-600">{workloadCapacityData.summary.underutilizedCount}</div>
+              <div className="text-xs text-blue-600">Underutilized</div>
+            </div>
+          </div>
+
+          {/* Workload by Assignee - Bar Chart Style */}
+          <div className="mb-6">
+            <h3 className="text-sm font-semibold text-slate-700 mb-3">Workload by Assignee (Assigned SP vs Capacity)</h3>
+            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+              {workloadCapacityData.assignees
+                .filter((a) => {
+                  if (workloadShowOnly === 'all') return true;
+                  return a.utilizationStatus === workloadShowOnly;
+                })
+                .map((a) => {
+                  const barWidth = Math.min(100, a.utilization);
+                  const overflowWidth = a.utilization > 100 ? Math.min(50, a.utilization - 100) : 0;
+                  const barColor = a.utilizationColor === 'red' ? 'bg-red-500' : 
+                                   a.utilizationColor === 'amber' ? 'bg-amber-500' : 
+                                   a.utilizationColor === 'blue' ? 'bg-blue-400' : 'bg-green-500';
+                  return (
+                    <div key={a.assignee} className="flex items-center gap-3 py-1">
+                      <div className="w-32 text-sm text-slate-700 truncate font-medium" title={a.assignee}>
+                        {a.assignee}
+                      </div>
+                      <div className="flex-1 relative">
+                        <div className="h-6 bg-slate-100 rounded-full overflow-hidden relative">
+                          <div 
+                            className={`h-full ${barColor} transition-all duration-300 rounded-full`}
+                            style={{ width: `${barWidth}%` }}
+                          />
+                          {overflowWidth > 0 && (
+                            <div 
+                              className="absolute top-0 h-full bg-red-700 opacity-70"
+                              style={{ left: '100%', width: `${overflowWidth}%`, marginLeft: '-2px' }}
+                            />
+                          )}
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="text-xs font-semibold text-slate-700 drop-shadow-sm">
+                              {a.activeSP} / {a.capacity} SP ({a.utilization}%)
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="w-20 text-right">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                          a.utilizationStatus === 'overloaded' ? 'bg-red-100 text-red-700' :
+                          a.utilizationStatus === 'near-limit' ? 'bg-amber-100 text-amber-700' :
+                          a.utilizationStatus === 'underutilized' ? 'bg-blue-100 text-blue-700' :
+                          'bg-green-100 text-green-700'
+                        }`}>
+                          {a.utilizationStatus === 'overloaded' ? 'Overloaded' :
+                           a.utilizationStatus === 'near-limit' ? 'Near Limit' :
+                           a.utilizationStatus === 'underutilized' ? 'Available' : 'Healthy'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+
+          {/* Utilization Summary Table */}
+          <div className="mb-6">
+            <h3 className="text-sm font-semibold text-slate-700 mb-3">Utilization Details</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left py-2 px-3 font-semibold text-slate-700">Assignee</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Active SP</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Capacity</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Utilization</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">In Progress</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">To Do</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Done</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">High Priority</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Projects</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {workloadCapacityData.assignees
+                    .filter((a) => {
+                      if (workloadShowOnly === 'all') return true;
+                      return a.utilizationStatus === workloadShowOnly;
+                    })
+                    .map((a, idx) => (
+                      <tr key={a.assignee} className={`border-b border-slate-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} ${
+                        a.utilizationStatus === 'overloaded' ? 'bg-red-50/50' : ''
+                      }`}>
+                        <td className="py-2 px-3 font-medium text-slate-800">{a.assignee}</td>
+                        <td className="py-2 px-3 text-center font-semibold text-slate-700">{a.activeSP}</td>
+                        <td className="py-2 px-3 text-center text-slate-600">{a.capacity}</td>
+                        <td className="py-2 px-3 text-center">
+                          <span className={`font-bold ${
+                            a.utilization > 100 ? 'text-red-600' :
+                            a.utilization >= 80 ? 'text-amber-600' :
+                            a.utilization < 60 ? 'text-blue-600' : 'text-green-600'
+                          }`}>
+                            {a.utilization}%
+                          </span>
+                        </td>
+                        <td className="py-2 px-3 text-center text-blue-600">{a.inProgressItems}</td>
+                        <td className="py-2 px-3 text-center text-slate-600">{a.toDoItems}</td>
+                        <td className="py-2 px-3 text-center text-green-600">{a.completedItems}</td>
+                        <td className="py-2 px-3 text-center">
+                          {a.highPriorityItems > 0 ? (
+                            <span className="text-red-600 font-semibold">{a.highPriorityItems}</span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-center text-slate-600">{a.projectCount}</td>
+                        <td className="py-2 px-3 text-center">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                            a.utilizationStatus === 'overloaded' ? 'bg-red-100 text-red-700 border border-red-200' :
+                            a.utilizationStatus === 'near-limit' ? 'bg-amber-100 text-amber-700 border border-amber-200' :
+                            a.utilizationStatus === 'underutilized' ? 'bg-blue-100 text-blue-700 border border-blue-200' :
+                            'bg-green-100 text-green-700 border border-green-200'
+                          }`}>
+                            {a.utilizationStatus === 'overloaded' ? ' Overloaded' :
+                             a.utilizationStatus === 'near-limit' ? ' Near Limit' :
+                             a.utilizationStatus === 'underutilized' ? ' Available' : ' Healthy'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Workload by Team/Project */}
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700 mb-3">Workload by Project/Team</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {workloadCapacityData.teams.slice(0, 9).map((t) => {
+                const barWidth = Math.min(100, t.utilization);
+                return (
+                  <div key={t.project} className={`rounded-xl p-4 border ${
+                    t.utilizationStatus === 'overloaded' ? 'bg-red-50 border-red-200' :
+                    t.utilizationStatus === 'near-limit' ? 'bg-amber-50 border-amber-200' :
+                    t.utilizationStatus === 'underutilized' ? 'bg-blue-50 border-blue-200' :
+                    'bg-green-50 border-green-200'
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-semibold text-slate-800 truncate" title={t.project}>{t.project}</span>
+                      <span className={`text-sm font-bold ${
+                        t.utilization > 100 ? 'text-red-600' :
+                        t.utilization >= 80 ? 'text-amber-600' :
+                        t.utilization < 60 ? 'text-blue-600' : 'text-green-600'
+                      }`}>
+                        {t.utilization}%
+                      </span>
+                    </div>
+                    <div className="h-3 bg-slate-200 rounded-full overflow-hidden mb-2">
+                      <div 
+                        className={`h-full rounded-full ${
+                          t.utilization > 100 ? 'bg-red-500' :
+                          t.utilization >= 80 ? 'bg-amber-500' :
+                          t.utilization < 60 ? 'bg-blue-400' : 'bg-green-500'
+                        }`}
+                        style={{ width: `${barWidth}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-xs text-slate-600">
+                      <span>{t.activeSP} / {t.capacity} SP</span>
+                      <span>{t.assigneeCount} assignees</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Legend */}
+          <div className="flex items-center gap-6 mt-6 pt-4 border-t border-slate-200">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <span className="text-xs text-slate-600">Overloaded (&gt;100%)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+              <span className="text-xs text-slate-600">Near Limit (80-100%)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-green-500"></div>
+              <span className="text-xs text-slate-600">Healthy (60-80%)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-blue-400"></div>
+              <span className="text-xs text-slate-600">Underutilized (&lt;60%)</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Risk Register */}
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-slate-900">
+              <span className="bg-gradient-to-r from-red-600 to-orange-500 bg-clip-text text-transparent">
+                Risk Register
+              </span>
+              {riskRegister.length > 0 && (
+                <span className="ml-2 text-sm font-normal text-slate-500">
+                  ({riskRegister.filter(r => r.riskLevel === 'High').length} High, {riskRegister.filter(r => r.riskLevel === 'Medium').length} Medium, {riskRegister.filter(r => r.riskLevel === 'Low').length} Low)
+                </span>
+              )}
+            </h2>
+            <div className="flex items-center gap-3">
+              <select
+                value={riskLevelFilter}
+                onChange={(e) => setRiskLevelFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                <option value="all">All Levels</option>
+                <option value="High">High Risk</option>
+                <option value="Medium">Medium Risk</option>
+                <option value="Low">Low Risk</option>
+              </select>
+              <select
+                value={riskProjectFilter}
+                onChange={(e) => setRiskProjectFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                {riskProjects.map((p) => (
+                  <option key={p} value={p}>{p === 'all' ? 'All Projects' : p}</option>
+                ))}
+              </select>
+              <select
+                value={riskSprintFilter}
+                onChange={(e) => setRiskSprintFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                {riskSprints.map((s) => (
+                  <option key={s} value={s}>{s === 'all' ? 'All Sprints' : (s.length > 25 ? s.substring(0, 25) + '...' : s)}</option>
+                ))}
+              </select>
+              <select
+                value={riskAssigneeFilter}
+                onChange={(e) => setRiskAssigneeFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                {riskAssignees.map((a) => (
+                  <option key={a} value={a}>{a === 'all' ? 'All Assignees' : a}</option>
+                ))}
+              </select>
+              <select
+                value={riskSortBy}
+                onChange={(e) => setRiskSortBy(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                <option value="level">Sort by Risk Level</option>
+                <option value="project">Sort by Project</option>
+                <option value="assignee">Sort by Assignee</option>
+                <option value="daysLate">Sort by Days Late</option>
+              </select>
+            </div>
+          </div>
+          
+          {filteredRiskRegister.length === 0 ? (
+            <div className="text-sm text-slate-600 py-8 text-center">
+              <div className="text-4xl mb-2">{'\u2705'}</div>
+              <div className="font-medium text-green-600">No risks detected!</div>
+              <div className="text-slate-500 mt-1">All items appear to be on track.</div>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200">
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Issue Key</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Project</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Assignee</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Status</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">SP</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Risk Level</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRiskRegister.map((r, idx) => {
+                    const levelColors = {
+                      'High': 'bg-red-50 border-l-4 border-l-red-500',
+                      'Medium': 'bg-amber-50 border-l-4 border-l-amber-500',
+                      'Low': 'bg-yellow-50 border-l-4 border-l-yellow-400',
+                    };
+                    const badgeColors = {
+                      'High': 'bg-red-100 text-red-800 border-red-300',
+                      'Medium': 'bg-amber-100 text-amber-800 border-amber-300',
+                      'Low': 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                    };
+                    return (
+                      <tr key={idx} className={`border-b border-slate-100 hover:bg-slate-50 ${levelColors[r.riskLevel]}`}>
+                        <td className="py-3 px-3">
+                          <span className="font-mono text-xs font-semibold text-blue-600">{r.issueKey}</span>
+                        </td>
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: getProjectColor(r.project) }} />
+                            <span className="text-slate-700">{r.project}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-slate-700">{r.assignee}</td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700">{r.status}</span>
+                        </td>
+                        <td className="py-3 px-3 text-center font-medium text-slate-600">{r.sp || '-'}</td>
+                        <td className="py-3 px-3 text-center">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${badgeColors[r.riskLevel]}`}>
+                            {r.riskLevel === 'High' ? '\u{1F534}' : r.riskLevel === 'Medium' ? '\u{1F7E0}' : '\u{1F7E1}'} {r.riskLevel}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-slate-600 text-xs">{r.reason}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          
+          <div className="flex items-center gap-4 mt-4 pt-4 border-t border-slate-200">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <span className="text-xs text-slate-600">High - Immediate attention required</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+              <span className="text-xs text-slate-600">Medium - Monitor closely</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
+              <span className="text-xs text-slate-600">Low - Awareness</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
