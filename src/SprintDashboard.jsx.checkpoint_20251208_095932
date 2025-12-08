@@ -69,18 +69,9 @@ const SprintDashboard = () => {
   const [riskSortBy, setRiskSortBy] = useState('level');
   const [riskSprintFilter, setRiskSprintFilter] = useState('all');
   const [riskAssigneeFilter, setRiskAssigneeFilter] = useState('all');
-  const [riskStatusFilter, setRiskStatusFilter] = useState('all');
   const [workloadShowOnly, setWorkloadShowOnly] = useState('all'); // all, overloaded, near-limit, underutilized
   const [workloadSprintFilter, setWorkloadSprintFilter] = useState('all');
   const [workloadAssigneeFilter, setWorkloadAssigneeFilter] = useState('all');
-
-  // Reset handler for Workload & Capacity filters
-  const handleClearWorkloadFilters = () => {
-    // Reset sprint to 'all' (show all sprints), and reset other filters
-    setWorkloadSprintFilter('all');
-    setWorkloadAssigneeFilter('all');
-    setWorkloadShowOnly('all');
-  };
 
   const parseAssigneeProjectMapping = (text) => {
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -543,7 +534,7 @@ const quickAddMapping = (assignee, project) => {
           availableStoryPoints: 0,
           inProgressStoryPoints: 0,
           toDoStoryPoints: 0,
-          sprintCapacity: assigneeCaps[assignee] || 16, // allow per-assignee override
+          sprintCapacity: assigneeCaps[assignee] || 14, // allow per-assignee override
           toleranceHours: 4, // 4 hours tolerance
           capacityUsed: 0,
           capacityRemaining: 0,
@@ -1091,26 +1082,11 @@ const quickAddMapping = (assignee, project) => {
 
   // Filtered risk register based on user selections
   const filteredRiskRegister = useMemo(() => {
-    // Map dropdown values to status substrings for grouped filtering
-    const statusAliases = {
-      'Awaiting Test': ['awaiting testing', 'awaiting versioning'],
-      // Add more aliases as needed
-    };
     return riskRegister.filter((r) => {
       if (riskLevelFilter !== 'all' && r.riskLevel !== riskLevelFilter) return false;
       if (riskProjectFilter !== 'all' && r.project !== riskProjectFilter) return false;
       if (riskSprintFilter !== 'all' && r.sprint !== riskSprintFilter) return false;
       if (riskAssigneeFilter !== 'all' && r.assignee !== riskAssigneeFilter) return false;
-      if (riskStatusFilter !== 'all') {
-        const status = (r.status || '').toLowerCase();
-        const filter = (riskStatusFilter || '').toLowerCase();
-        if (statusAliases[ riskStatusFilter ]) {
-          // Match any alias substring
-          if (!statusAliases[ riskStatusFilter ].some(alias => status.includes(alias))) return false;
-        } else {
-          if (!status.includes(filter)) return false;
-        }
-      }
       return true;
     }).sort((a, b) => {
       if (riskSortBy === 'level') {
@@ -1125,7 +1101,7 @@ const quickAddMapping = (assignee, project) => {
       }
       return 0;
     });
-  }, [riskRegister, riskLevelFilter, riskProjectFilter, riskSprintFilter, riskAssigneeFilter, riskStatusFilter, riskSortBy]);
+  }, [riskRegister, riskLevelFilter, riskProjectFilter, riskSprintFilter, riskAssigneeFilter, riskSortBy]);
 
   // Get unique projects for risk filter dropdown
   const riskProjects = useMemo(() => {
@@ -1135,52 +1111,14 @@ const quickAddMapping = (assignee, project) => {
 
   // Get unique sprints for risk filter dropdown
   const riskSprints = useMemo(() => {
-    const sprints = Array.from(new Set(riskRegister.map((r) => r.sprint).filter(Boolean)));
-    // Sort numerically descending if format is 'Sprint N'
-    sprints.sort((a, b) => {
-      const numA = parseInt(a.match(/\d+/)?.[0] || '0', 10);
-      const numB = parseInt(b.match(/\d+/)?.[0] || '0', 10);
-      return numB - numA;
-    });
-    return ['all', ...sprints];
+    const sprints = new Set(riskRegister.map((r) => r.sprint).filter(Boolean));
+    return ['all', ...Array.from(sprints).sort()];
   }, [riskRegister]);
 
   // Get unique assignees for risk filter dropdown
   const riskAssignees = useMemo(() => {
     const assignees = new Set(riskRegister.map((r) => r.assignee).filter(Boolean));
     return ['all', ...Array.from(assignees).sort()];
-  }, [riskRegister]);
-
-  // Get unique statuses for risk filter dropdown
-  const riskStatusOptions = useMemo(() => {
-    const unique = Array.from(new Set(riskRegister.map((r) => r.status).filter(Boolean)));
-
-    // Define logical groups/aliases for statuses
-    const groups = {
-      'Awaiting Test': ['Awaiting Testing', 'Awaiting Versioning'],
-      // add other groups here if needed
-    };
-
-    const used = new Set();
-    const options = ['all'];
-
-    // Add groups if any of their members exist
-    Object.keys(groups).forEach((label) => {
-      const members = groups[label];
-      const exists = members.some((m) => unique.includes(m));
-      if (exists) {
-        options.push(label);
-        members.forEach((m) => used.add(m));
-      }
-    });
-
-    // Add any remaining unique statuses (not part of a group)
-    unique.sort();
-    unique.forEach((s) => {
-      if (!used.has(s)) options.push(s);
-    });
-
-    return options;
   }, [riskRegister]);
 
   // ============================================
@@ -1233,7 +1171,7 @@ const quickAddMapping = (assignee, project) => {
           toDoSP: 0,
           awaitingTestingSP: 0,
           awaitingVersioningSP: 0,
-          capacity: assigneeCaps[assignee] || 16,
+          capacity: assigneeCaps[assignee] || 14,
           totalItems: 0,
           completedItems: 0,
           inProgressItems: 0,
@@ -1333,7 +1271,7 @@ const quickAddMapping = (assignee, project) => {
     const teamList = Object.values(teamWorkload).map((t) => {
       // Sum capacity of all assignees in this project
       const teamCapacity = Array.from(t.assignees).reduce((sum, assignee) => {
-        return sum + (assigneeCaps[assignee] || 16);
+        return sum + (assigneeCaps[assignee] || 14);
       }, 0);
       
       const activeSP = t.totalSP - t.completedSP;
@@ -1365,22 +1303,10 @@ const quickAddMapping = (assignee, project) => {
     const healthyCount = assigneeList.filter((a) => a.utilizationStatus === 'healthy').length;
     const underutilizedCount = assigneeList.filter((a) => a.utilizationStatus === 'underutilized').length;
     
-    // Sort sprints so numeric sprint names appear newest-first (eg Sprint 13 before Sprint 12)
-    const allSprintsArr = Array.from(allSprints);
-    allSprintsArr.sort((a, b) => {
-      const na = (a && (a.match(/(\d+)/) || [])[1]) || null;
-      const nb = (b && (b.match(/(\d+)/) || [])[1]) || null;
-      if (na && nb) return Number(nb) - Number(na); // numeric desc
-      if (na && !nb) return -1; // put numeric before non-numeric
-      if (!na && nb) return 1;
-      // fallback: reverse lexicographic so recent-like names come first
-      return b.localeCompare(a);
-    });
-
     return {
       assignees: assigneeList,
       teams: teamList,
-      allSprints: allSprintsArr,
+      allSprints: Array.from(allSprints).sort(),
       allAssignees: Array.from(allAssignees).sort(),
       summary: {
       teams: teamList,
@@ -2405,7 +2331,7 @@ const quickAddMapping = (assignee, project) => {
                 <Bar
                   dataKey="Capacity"
                   fill="#d1d5db"
-                  name="Sprint Capacity (16 SP)"
+                  name="Sprint Capacity (14 SP)"
                 />
                 <Bar dataKey="Done" stackId="a" fill="#10b981" />
                 <Bar dataKey="In Progress" stackId="a" fill="#3b82f6" />
@@ -2690,7 +2616,7 @@ const quickAddMapping = (assignee, project) => {
                             // prefer algorithm-provided candidate lists (attached to suggestion), fallback to local recompute
                             const eligibleList = Array.isArray(s.eligibleCandidates) ? s.eligibleCandidates : (() => {
                               const underAssignees = Object.entries(stats).map(([assignee, aData]) => {
-                                const cap = aData.sprintCapacity || 16;
+                                const cap = aData.sprintCapacity || 14;
                                 const used = aData.capacityUsed || 0;
                                 const slack = cap - used;
                                 return { assignee, slack };
@@ -2862,7 +2788,7 @@ const quickAddMapping = (assignee, project) => {
                 </h3>
               </div>
               <p className="text-sm text-red-800">
-                Capacity Used &gt; 16 SP
+                Capacity Used &gt; 14 SP
                 <br />
                 <strong>Action:</strong> Reduce workload or extend sprint
               </p>
@@ -2874,7 +2800,7 @@ const quickAddMapping = (assignee, project) => {
                 <h3 className="text-sm font-bold text-green-900">On Track</h3>
               </div>
               <p className="text-sm text-green-800">
-                70-100% capacity (11.2-16 SP)
+                70-100% capacity (9.8-14 SP)
                 <br />
                 <strong>Tolerance:</strong> ±4 hours
               </p>
@@ -3447,58 +3373,39 @@ const quickAddMapping = (assignee, project) => {
               </span>
             </h2>
             <div className="flex items-center gap-3 flex-wrap">
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-600">Sprint:</span>
-                <select
-                  value={workloadSprintFilter}
-                  onChange={(e) => setWorkloadSprintFilter(e.target.value)}
-                  className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:min-w-[260px]"
-                >
-                  <option value="all">All Sprints</option>
-                  {workloadCapacityData.allSprints && workloadCapacityData.allSprints.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-600">Assignee:</span>
-                <select
-                  value={workloadAssigneeFilter}
-                  onChange={(e) => setWorkloadAssigneeFilter(e.target.value)}
-                  className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:min-w-[220px]"
-                >
-                  <option value="all">All Assignees</option>
-                  {workloadCapacityData.allAssignees && workloadCapacityData.allAssignees.map((a) => (
-                    <option key={a} value={a}>{a}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-600">Show:</span>
-                <select
-                  value={workloadShowOnly}
-                  onChange={(e) => setWorkloadShowOnly(e.target.value)}
-                  className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:min-w-[200px]"
-                >
-                  <option value="all">All Resources</option>
-                  <option value="overloaded">Overloaded Only (&gt;100%)</option>
-                  <option value="near-limit">Near Limit (80-100%)</option>
-                  <option value="underutilized">Underutilized (&lt;60%)</option>
-                </select>
-              </div>
-
-              <div className="flex items-center">
-                <button
-                  type="button"
-                  onClick={handleClearWorkloadFilters}
-                  className="ml-2 px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-700 bg-white hover:bg-slate-50 focus:ring-2 focus:ring-indigo-500"
-                  title="Clear filters"
-                >
-                  Clear
-                </button>
-              </div>
+              <span className="text-sm text-slate-600">Sprint:</span>
+              <select
+                value={workloadSprintFilter}
+                onChange={(e) => setWorkloadSprintFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="all">All Sprints</option>
+                {workloadCapacityData.allSprints && workloadCapacityData.allSprints.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              <span className="text-sm text-slate-600">Assignee:</span>
+              <select
+                value={workloadAssigneeFilter}
+                onChange={(e) => setWorkloadAssigneeFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="all">All Assignees</option>
+                {workloadCapacityData.allAssignees && workloadCapacityData.allAssignees.map((a) => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
+              <span className="text-sm text-slate-600">Show:</span>
+              <select
+                value={workloadShowOnly}
+                onChange={(e) => setWorkloadShowOnly(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="all">All Resources</option>
+                <option value="overloaded">Overloaded Only (&gt;100%)</option>
+                <option value="near-limit">Near Limit (80-100%)</option>
+                <option value="underutilized">Underutilized (&lt;60%)</option>
+              </select>
             </div>
           </div>
 
@@ -3735,100 +3642,54 @@ const quickAddMapping = (assignee, project) => {
                 </span>
               )}
             </h2>
-            <div className="w-full">
-              <div className="grid grid-cols-2 md:grid-cols-7 gap-3 items-end">
-                <div>
-                  <label className="block text-xs text-slate-500 mb-1">Level</label>
-                  <select
-                    value={riskLevelFilter}
-                    onChange={(e) => setRiskLevelFilter(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                  >
-                    <option value="all">All Levels</option>
-                    <option value="High">High Risk</option>
-                    <option value="Medium">Medium Risk</option>
-                    <option value="Low">Low Risk</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-500 mb-1">Project</label>
-                  <select
-                    value={riskProjectFilter}
-                    onChange={(e) => setRiskProjectFilter(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                  >
-                    {riskProjects.map((p) => (
-                      <option key={p} value={p}>{p === 'all' ? 'All Projects' : p}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-500 mb-1">Sprint</label>
-                  <select
-                    value={riskSprintFilter}
-                    onChange={(e) => setRiskSprintFilter(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                  >
-                    {riskSprints.map((s) => (
-                      <option key={s} value={s}>{s === 'all' ? 'All Sprints' : (s.length > 25 ? s.substring(0, 25) + '...' : s)}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-500 mb-1">Assignee</label>
-                  <select
-                    value={riskAssigneeFilter}
-                    onChange={(e) => setRiskAssigneeFilter(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                  >
-                    {riskAssignees.map((a) => (
-                      <option key={a} value={a}>{a === 'all' ? 'All Assignees' : a}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-500 mb-1">Status</label>
-                  <select
-                    value={riskStatusFilter}
-                    onChange={(e) => setRiskStatusFilter(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                  >
-                    {riskStatusOptions.map((s) => (
-                      <option key={s} value={s}>{s === 'all' ? 'All Statuses' : s}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-500 mb-1">Sort By</label>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={riskSortBy}
-                      onChange={(e) => setRiskSortBy(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                    >
-                      <option value="level">Risk Level</option>
-                      <option value="project">Project</option>
-                      <option value="assignee">Assignee</option>
-                      <option value="daysLate">Days Late</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="md:col-span-1 flex md:justify-end">
-                  <button
-                    onClick={() => {
-                      setRiskLevelFilter('all');
-                      setRiskProjectFilter('all');
-                      setRiskSprintFilter('all');
-                      setRiskAssigneeFilter('all');
-                      setRiskStatusFilter('all');
-                      setRiskSortBy('level');
-                    }}
-                    className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-sm"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
+            <div className="flex items-center gap-3">
+              <select
+                value={riskLevelFilter}
+                onChange={(e) => setRiskLevelFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                <option value="all">All Levels</option>
+                <option value="High">High Risk</option>
+                <option value="Medium">Medium Risk</option>
+                <option value="Low">Low Risk</option>
+              </select>
+              <select
+                value={riskProjectFilter}
+                onChange={(e) => setRiskProjectFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                {riskProjects.map((p) => (
+                  <option key={p} value={p}>{p === 'all' ? 'All Projects' : p}</option>
+                ))}
+              </select>
+              <select
+                value={riskSprintFilter}
+                onChange={(e) => setRiskSprintFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                {riskSprints.map((s) => (
+                  <option key={s} value={s}>{s === 'all' ? 'All Sprints' : (s.length > 25 ? s.substring(0, 25) + '...' : s)}</option>
+                ))}
+              </select>
+              <select
+                value={riskAssigneeFilter}
+                onChange={(e) => setRiskAssigneeFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                {riskAssignees.map((a) => (
+                  <option key={a} value={a}>{a === 'all' ? 'All Assignees' : a}</option>
+                ))}
+              </select>
+              <select
+                value={riskSortBy}
+                onChange={(e) => setRiskSortBy(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              >
+                <option value="level">Sort by Risk Level</option>
+                <option value="project">Sort by Project</option>
+                <option value="assignee">Sort by Assignee</option>
+                <option value="daysLate">Sort by Days Late</option>
+              </select>
             </div>
           </div>
           
@@ -3850,7 +3711,6 @@ const quickAddMapping = (assignee, project) => {
                     <th className="text-center py-3 px-3 font-semibold text-slate-700">SP</th>
                     <th className="text-center py-3 px-3 font-semibold text-slate-700">Risk Level</th>
                     <th className="text-left py-3 px-3 font-semibold text-slate-700">Reason</th>
-                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Due Date</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3887,7 +3747,6 @@ const quickAddMapping = (assignee, project) => {
                           </span>
                         </td>
                         <td className="py-3 px-3 text-slate-600 text-xs">{r.reason}</td>
-                        <td className="py-3 px-3 text-slate-600 text-xs">{r.dueDate || '-'}</td>
                       </tr>
                     );
                   })}

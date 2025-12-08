@@ -27,6 +27,63 @@ import {
 } from 'lucide-react';
 import { computeSuggestions, computeWhatIfProjection, computeSuggestionsDetailed, computeSprintProjectProgress } from './utils/allocation';
 
+// Milestone Tracking filters
+const SprintDashboard = () => {
+  const [milestoneProjectFilter, setMilestoneProjectFilter] = useState('all');
+  const [milestoneSprintFilter, setMilestoneSprintFilter] = useState('all');
+
+  // Unique projects and sprints for dropdowns
+  const milestoneProjects = useMemo(() => {
+    const projects = new Set(milestoneTracking.map(m => m.project));
+    return Array.from(projects).sort();
+  }, [milestoneTracking]);
+
+  const milestoneSprints = useMemo(() => {
+    const sprints = new Set(milestoneTracking.map(m => m.sprint));
+    return Array.from(sprints).sort((a, b) => {
+      const numA = parseInt(a.match(/\d+/)?.[0] || '0', 10);
+      const numB = parseInt(b.match(/\d+/)?.[0] || '0', 10);
+      return numB - numA;
+    });
+  }, [milestoneTracking]);
+
+  // Filtered milestone tracking
+  const filteredMilestoneTracking = useMemo(() => {
+    return milestoneTracking.filter(m => {
+      if (milestoneProjectFilter !== 'all' && m.project !== milestoneProjectFilter) return false;
+      if (milestoneSprintFilter !== 'all' && m.sprint !== milestoneSprintFilter) return false;
+      return true;
+    });
+  }, [milestoneTracking, milestoneProjectFilter, milestoneSprintFilter]);
+import React, { useState, useMemo, useEffect } from 'react';
+import allowedAssignees from './data/allowedAssignees.json';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  LineChart,
+  Line,
+} from 'recharts';
+import {
+  Upload,
+  Users,
+  TrendingUp,
+  CheckCircle,
+  Clock,
+  AlertCircle,
+  Calendar,
+  Home,
+} from 'lucide-react';
+import { computeSuggestions, computeWhatIfProjection, computeSuggestionsDetailed, computeSprintProjectProgress } from './utils/allocation';
+
 const SprintDashboard = () => {
   const [data, setData] = useState([]);
   const [selectedSprint, setSelectedSprint] = useState('all');
@@ -69,6 +126,7 @@ const SprintDashboard = () => {
   const [riskSortBy, setRiskSortBy] = useState('level');
   const [riskSprintFilter, setRiskSprintFilter] = useState('all');
   const [riskAssigneeFilter, setRiskAssigneeFilter] = useState('all');
+  const [riskStatusFilter, setRiskStatusFilter] = useState('all');
   const [workloadShowOnly, setWorkloadShowOnly] = useState('all'); // all, overloaded, near-limit, underutilized
   const [workloadSprintFilter, setWorkloadSprintFilter] = useState('all');
   const [workloadAssigneeFilter, setWorkloadAssigneeFilter] = useState('all');
@@ -1111,14 +1169,26 @@ const quickAddMapping = (assignee, project) => {
 
   // Get unique sprints for risk filter dropdown
   const riskSprints = useMemo(() => {
-    const sprints = new Set(riskRegister.map((r) => r.sprint).filter(Boolean));
-    return ['all', ...Array.from(sprints).sort()];
+    const sprints = Array.from(new Set(riskRegister.map((r) => r.sprint).filter(Boolean)));
+    // Sort numerically descending if format is 'Sprint N'
+    sprints.sort((a, b) => {
+      const numA = parseInt(a.match(/\d+/)?.[0] || '0', 10);
+      const numB = parseInt(b.match(/\d+/)?.[0] || '0', 10);
+      return numB - numA;
+    });
+    return ['all', ...sprints];
   }, [riskRegister]);
 
   // Get unique assignees for risk filter dropdown
   const riskAssignees = useMemo(() => {
     const assignees = new Set(riskRegister.map((r) => r.assignee).filter(Boolean));
     return ['all', ...Array.from(assignees).sort()];
+  }, [riskRegister]);
+
+  // Get unique statuses for risk filter dropdown
+  const riskStatuses = useMemo(() => {
+    const statuses = new Set(riskRegister.map((r) => r.status).filter(Boolean));
+    return ['all', ...Array.from(statuses).sort()];
   }, [riskRegister]);
 
   // ============================================
@@ -1306,7 +1376,11 @@ const quickAddMapping = (assignee, project) => {
     return {
       assignees: assigneeList,
       teams: teamList,
-      allSprints: Array.from(allSprints).sort(),
+      allSprints: Array.from(allSprints).sort((a, b) => {
+        const numA = parseInt(a.match(/\d+/)?.[0] || '0', 10);
+        const numB = parseInt(b.match(/\d+/)?.[0] || '0', 10);
+        return numB - numA;
+      }),
       allAssignees: Array.from(allAssignees).sort(),
       summary: {
       teams: teamList,
@@ -3273,7 +3347,37 @@ const quickAddMapping = (assignee, project) => {
             </div>
           </div>
           
-          {milestoneTracking.length === 0 ? (
+          {/* Milestone Tracking Filters */}
+          <div className="flex flex-wrap gap-4 mb-4">
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Project</label>
+              <select
+                value={milestoneProjectFilter}
+                onChange={e => setMilestoneProjectFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+              >
+                <option value="all">All Projects</option>
+                {milestoneProjects.map(p => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Sprint</label>
+              <select
+                value={milestoneSprintFilter}
+                onChange={e => setMilestoneSprintFilter(e.target.value)}
+                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+              >
+                <option value="all">All Sprints</option>
+                {milestoneSprints.map(s => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {filteredMilestoneTracking.length === 0 ? (
             <div className="text-sm text-slate-600">No milestone data available</div>
           ) : (
             <div className="overflow-x-auto">
@@ -3291,7 +3395,7 @@ const quickAddMapping = (assignee, project) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {milestoneTracking.map((m, idx) => {
+                  {filteredMilestoneTracking.map((m, idx) => {
                     const statusColors = {
                       'Complete': 'bg-emerald-100 text-emerald-800 border-emerald-300',
                       'On Track': 'bg-green-100 text-green-800 border-green-300',
@@ -3642,54 +3746,100 @@ const quickAddMapping = (assignee, project) => {
                 </span>
               )}
             </h2>
-            <div className="flex items-center gap-3">
-              <select
-                value={riskLevelFilter}
-                onChange={(e) => setRiskLevelFilter(e.target.value)}
-                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-              >
-                <option value="all">All Levels</option>
-                <option value="High">High Risk</option>
-                <option value="Medium">Medium Risk</option>
-                <option value="Low">Low Risk</option>
-              </select>
-              <select
-                value={riskProjectFilter}
-                onChange={(e) => setRiskProjectFilter(e.target.value)}
-                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-              >
-                {riskProjects.map((p) => (
-                  <option key={p} value={p}>{p === 'all' ? 'All Projects' : p}</option>
-                ))}
-              </select>
-              <select
-                value={riskSprintFilter}
-                onChange={(e) => setRiskSprintFilter(e.target.value)}
-                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-              >
-                {riskSprints.map((s) => (
-                  <option key={s} value={s}>{s === 'all' ? 'All Sprints' : (s.length > 25 ? s.substring(0, 25) + '...' : s)}</option>
-                ))}
-              </select>
-              <select
-                value={riskAssigneeFilter}
-                onChange={(e) => setRiskAssigneeFilter(e.target.value)}
-                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-              >
-                {riskAssignees.map((a) => (
-                  <option key={a} value={a}>{a === 'all' ? 'All Assignees' : a}</option>
-                ))}
-              </select>
-              <select
-                value={riskSortBy}
-                onChange={(e) => setRiskSortBy(e.target.value)}
-                className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
-              >
-                <option value="level">Sort by Risk Level</option>
-                <option value="project">Sort by Project</option>
-                <option value="assignee">Sort by Assignee</option>
-                <option value="daysLate">Sort by Days Late</option>
-              </select>
+            <div className="w-full">
+              <div className="grid grid-cols-2 md:grid-cols-7 gap-3 items-end">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Level</label>
+                  <select
+                    value={riskLevelFilter}
+                    onChange={(e) => setRiskLevelFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    <option value="all">All Levels</option>
+                    <option value="High">High Risk</option>
+                    <option value="Medium">Medium Risk</option>
+                    <option value="Low">Low Risk</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Project</label>
+                  <select
+                    value={riskProjectFilter}
+                    onChange={(e) => setRiskProjectFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    {riskProjects.map((p) => (
+                      <option key={p} value={p}>{p === 'all' ? 'All Projects' : p}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Sprint</label>
+                  <select
+                    value={riskSprintFilter}
+                    onChange={(e) => setRiskSprintFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    {riskSprints.map((s) => (
+                      <option key={s} value={s}>{s === 'all' ? 'All Sprints' : (s.length > 25 ? s.substring(0, 25) + '...' : s)}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Assignee</label>
+                  <select
+                    value={riskAssigneeFilter}
+                    onChange={(e) => setRiskAssigneeFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    {riskAssignees.map((a) => (
+                      <option key={a} value={a}>{a === 'all' ? 'All Assignees' : a}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Status</label>
+                  <select
+                    value={riskStatusFilter}
+                    onChange={(e) => setRiskStatusFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    {riskStatuses.map((s) => (
+                      <option key={s} value={s}>{s === 'all' ? 'All Statuses' : s}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Sort By</label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={riskSortBy}
+                      onChange={(e) => setRiskSortBy(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                    >
+                      <option value="level">Risk Level</option>
+                      <option value="project">Project</option>
+                      <option value="assignee">Assignee</option>
+                      <option value="daysLate">Days Late</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="md:col-span-1 flex md:justify-end">
+                  <button
+                    onClick={() => {
+                      setRiskLevelFilter('all');
+                      setRiskProjectFilter('all');
+                      setRiskSprintFilter('all');
+                      setRiskAssigneeFilter('all');
+                      setRiskStatusFilter('all');
+                      setRiskSortBy('level');
+                    }}
+                    className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-sm"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
           
@@ -3711,6 +3861,7 @@ const quickAddMapping = (assignee, project) => {
                     <th className="text-center py-3 px-3 font-semibold text-slate-700">SP</th>
                     <th className="text-center py-3 px-3 font-semibold text-slate-700">Risk Level</th>
                     <th className="text-left py-3 px-3 font-semibold text-slate-700">Reason</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Due Date</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3747,6 +3898,7 @@ const quickAddMapping = (assignee, project) => {
                           </span>
                         </td>
                         <td className="py-3 px-3 text-slate-600 text-xs">{r.reason}</td>
+                        <td className="py-3 px-3 text-slate-600 text-xs">{r.dueDate || '-'}</td>
                       </tr>
                     );
                   })}
