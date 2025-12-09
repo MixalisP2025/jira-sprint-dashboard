@@ -1164,25 +1164,21 @@ const quickAddMapping = (assignee, project) => {
     // Build a case-insensitive map of existing statuses (lowercase -> original)
     const lowerMap = new Map(unique.map((s) => [s.toLowerCase(), s]));
 
-    const used = new Set();
     const options = ['all'];
 
-    // Add groups if any of their members exist (case-insensitive match)
+    // Add groups if any of their members exist (case-insensitive match).
+    // We will include the group label but also list individual statuses below
     Object.keys(groups).forEach((label) => {
       const members = groups[label];
-      // Find actual existing member names that match any alias (case-insensitive)
       const existingMembers = members.map((m) => lowerMap.get((m || '').toLowerCase())).filter(Boolean);
       if (existingMembers.length > 0) {
         options.push(label);
-        existingMembers.forEach((m) => used.add(m));
       }
     });
 
-    // Add any remaining unique statuses (not part of a group)
+    // Add all unique statuses afterwards (so individual names like 'Awaiting Versioning' remain visible)
     unique.sort((a, b) => a.localeCompare(b));
-    unique.forEach((s) => {
-      if (!used.has(s)) options.push(s);
-    });
+    unique.forEach((s) => options.push(s));
 
     return options;
   }, [riskRegister]);
