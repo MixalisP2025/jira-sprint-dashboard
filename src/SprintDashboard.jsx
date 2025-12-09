@@ -1153,29 +1153,33 @@ const quickAddMapping = (assignee, project) => {
 
   // Get unique statuses for risk filter dropdown
   const riskStatusOptions = useMemo(() => {
-    const unique = Array.from(new Set(riskRegister.map((r) => r.status).filter(Boolean)));
+    const unique = Array.from(new Set(riskRegister.map((r) => (r.status || '').toString().trim()).filter(Boolean)));
 
-    // Define logical groups/aliases for statuses
+    // Define logical groups/aliases for statuses (display label -> member names)
     const groups = {
       'Awaiting Test': ['Awaiting Testing', 'Awaiting Versioning'],
       // add other groups here if needed
     };
 
+    // Build a case-insensitive map of existing statuses (lowercase -> original)
+    const lowerMap = new Map(unique.map((s) => [s.toLowerCase(), s]));
+
     const used = new Set();
     const options = ['all'];
 
-    // Add groups if any of their members exist
+    // Add groups if any of their members exist (case-insensitive match)
     Object.keys(groups).forEach((label) => {
       const members = groups[label];
-      const exists = members.some((m) => unique.includes(m));
-      if (exists) {
+      // Find actual existing member names that match any alias (case-insensitive)
+      const existingMembers = members.map((m) => lowerMap.get((m || '').toLowerCase())).filter(Boolean);
+      if (existingMembers.length > 0) {
         options.push(label);
-        members.forEach((m) => used.add(m));
+        existingMembers.forEach((m) => used.add(m));
       }
     });
 
     // Add any remaining unique statuses (not part of a group)
-    unique.sort();
+    unique.sort((a, b) => a.localeCompare(b));
     unique.forEach((s) => {
       if (!used.has(s)) options.push(s);
     });
