@@ -1102,14 +1102,12 @@ const quickAddMapping = (assignee, project) => {
       if (riskSprintFilter !== 'all' && r.sprint !== riskSprintFilter) return false;
       if (riskAssigneeFilter !== 'all' && r.assignee !== riskAssigneeFilter) return false;
       if (riskStatusFilter !== 'all') {
-        const status = (r.status || '').toLowerCase();
-        const filter = (riskStatusFilter || '').toLowerCase();
-        if (statusAliases[ riskStatusFilter ]) {
-          // Match any alias substring
-          if (!statusAliases[ riskStatusFilter ].some(alias => status.includes(alias))) return false;
-        } else {
-          if (!status.includes(filter)) return false;
-        }
+        // Normalize both stored status and selected filter to allow reliable comparisons
+        const normalizeStatus = (s) => (s || '').toString().toLowerCase().replace(/\s+/g, ' ').trim();
+        const status = normalizeStatus(r.status);
+        const filter = normalizeStatus(riskStatusFilter);
+        // Match exact normalized status (no substring matching) so options map 1:1 to statuses
+        if (status !== filter) return false;
       }
       return true;
     }).sort((a, b) => {
@@ -1153,34 +1151,9 @@ const quickAddMapping = (assignee, project) => {
 
   // Get unique statuses for risk filter dropdown
   const riskStatusOptions = useMemo(() => {
-    const unique = Array.from(new Set(riskRegister.map((r) => (r.status || '').toString().trim()).filter(Boolean)));
-
-    // Define logical groups/aliases for statuses (display label -> member names)
-    const groups = {
-      'Awaiting Test': ['Awaiting Testing', 'Awaiting Versioning'],
-      // add other groups here if needed
-    };
-
-    // Build a case-insensitive map of existing statuses (lowercase -> original)
-    const lowerMap = new Map(unique.map((s) => [s.toLowerCase(), s]));
-
-    const options = ['all'];
-
-    // Add groups if any of their members exist (case-insensitive match).
-    // We will include the group label but also list individual statuses below
-    Object.keys(groups).forEach((label) => {
-      const members = groups[label];
-      const existingMembers = members.map((m) => lowerMap.get((m || '').toLowerCase())).filter(Boolean);
-      if (existingMembers.length > 0) {
-        options.push(label);
-      }
-    });
-
-    // Add all unique statuses afterwards (so individual names like 'Awaiting Versioning' remain visible)
-    unique.sort((a, b) => a.localeCompare(b));
-    unique.forEach((s) => options.push(s));
-
-    return options;
+    // Fixed set of statuses required by the product owner.
+    // Always present these in this order (plus 'all') so the dropdown matches expectations.
+    return ['all', 'Done', 'To Do', 'In Progress', 'Awaiting Versioning', 'Awaiting Testing'];
   }, [riskRegister]);
 
   // ============================================
