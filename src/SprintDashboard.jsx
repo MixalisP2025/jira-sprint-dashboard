@@ -2,10 +2,33 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   Upload, Users, TrendingUp, CheckCircle, Clock, AlertCircle,
   Calendar, Home, LayoutDashboard, Shield, Briefcase, Database,
-  Target, BarChart3
+  Target, BarChart3, Edit3, X, Save, Filter, PieChart
 } from 'lucide-react';
 import KPICard from './components/KPICard';
 import FilterPanel from './components/FilterPanel';
+
+// Tooltip Component
+const Tooltip = ({ children, content }) => {
+  const [show, setShow] = useState(false);
+  
+  return (
+    <div className="relative inline-block">
+      <div 
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+        className="cursor-help"
+      >
+        {children}
+      </div>
+      {show && (
+        <div className="absolute z-50 w-72 p-3 bg-slate-900 text-white text-xs rounded-lg shadow-xl -top-2 left-full ml-2">
+          <div className="whitespace-pre-line">{content}</div>
+          <div className="absolute right-full top-3 border-8 border-transparent border-r-slate-900"></div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const SprintDashboard = () => {
   // ============== STATE ==============
@@ -13,11 +36,17 @@ const SprintDashboard = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const [selectedSprint, setSelectedSprint] = useState('all');
   const [selectedAssignee, setSelectedAssignee] = useState('all');
+  const [selectedProject, setSelectedProject] = useState('all');
   const [sprintDates, setSprintDates] = useState({});
   const [assigneeCaps, setAssigneeCaps] = useState({});
   const [sprintDaysConfig, setSprintDaysConfig] = useState({});
   const [programEndDate, setProgramEndDate] = useState('');
-  const [projectTargets, setProjectTargets] = useState({}); // NEW: Per-project target end dates
+  const [projectTargets, setProjectTargets] = useState({});
+  
+  // NEW: Bulk capacity edit state
+  const [showBulkCapacityEdit, setShowBulkCapacityEdit] = useState(false);
+  const [selectedAssignees, setSelectedAssignees] = useState(new Set());
+  const [bulkCapacityValue, setBulkCapacityValue] = useState('');
 
   // ============== PERSIST SETTINGS ==============
   useEffect(() => {
@@ -121,7 +150,12 @@ const SprintDashboard = () => {
     // Extract sprint dates
     const dates = {};
     parsedData.forEach(item => {
-      const sprint = item['Sprint'] || item['G'] || '';
+      const sprint = item['Sprint'] || 
+                     item['G'] || 
+                     item['Custom field (Sprint)'] || 
+                     item['Sprints'] ||
+                     item['Sprint Name'] ||
+                     '';
       if (sprint && !dates[sprint]) {
         const dateMatch = sprint.match(/(\d{2}-\d{2}-\d{2})\s+to\s+(\d{2}-\d{2}-\d{2})/);
         if (dateMatch) {
@@ -139,15 +173,93 @@ const SprintDashboard = () => {
     return parsedData;
   };
 
+  // FIXED: Enhanced Greek encoding detection with UTF-16 support
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
     try {
-      const text = await file.text();
-      setData(parseJiraText(text));
+      const buffer = await file.arrayBuffer();
+      let text;
+      let successfulEncoding = null;
+
+      // Check for BOM and UTF-16
+      const bytes = new Uint8Array(buffer);
+      
+      // UTF-16 LE BOM
+      if (bytes[0] === 0xFF && bytes[1] === 0xFE) {
+        const decoder = new TextDecoder('utf-16le');
+        text = decoder.decode(buffer);
+        successfulEncoding = 'UTF-16LE';
+        console.log('✅ Detected UTF-16LE with BOM');
+      }
+      // UTF-16 BE BOM
+      else if (bytes[0] === 0xFE && bytes[1] === 0xFF) {
+        const decoder = new TextDecoder('utf-16be');
+        text = decoder.decode(buffer);
+        successfulEncoding = 'UTF-16BE';
+        console.log('✅ Detected UTF-16BE with BOM');
+      }
+      // UTF-8 BOM
+      else if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+        const decoder = new TextDecoder('utf-8');
+        text = decoder.decode(buffer);
+        successfulEncoding = 'UTF-8 with BOM';
+        console.log('✅ Detected UTF-8 with BOM');
+      }
+      
+      // If no BOM detected, try encodings
+      if (!text) {
+        const encodings = [
+          { name: 'utf-16le', label: 'UTF-16LE (no BOM)' },
+          { name: 'utf-16be', label: 'UTF-16BE (no BOM)' },
+          { name: 'windows-1253', label: 'Windows-1253 (Greek)' },
+          { name: 'utf-8', label: 'UTF-8' },
+          { name: 'iso-8859-7', label: 'ISO-8859-7 (Greek)' },
+          { name: 'windows-1252', label: 'Windows-1252' }
+        ];
+
+        for (const encoding of encodings) {
+          try {
+            const decoder = new TextDecoder(encoding.name, { fatal: false });
+            const decoded = decoder.decode(buffer);
+            
+            const sample = decoded.substring(0, 500);
+            const hasValidContent = /[a-zA-Z0-9]/.test(sample);
+            const replacementCount = (sample.match(/�/g) || []).length;
+            
+            if (hasValidContent && replacementCount < 10) {
+              text = decoded;
+              successfulEncoding = encoding.label;
+              console.log(`✅ Successfully decoded using ${encoding.label}`);
+              break;
+            }
+          } catch (err) {
+            continue;
+          }
+        }
+      }
+
+      if (!text) {
+        console.log('Using Windows-1252 fallback');
+        const decoder = new TextDecoder('windows-1252', { fatal: false });
+        text = decoder.decode(buffer);
+        successfulEncoding = 'Windows-1252 (Fallback)';
+      }
+
+      const parsedData = parseJiraText(text);
+      
+      if (parsedData.length === 0) {
+        throw new Error('No data parsed. Check file format.');
+      }
+      
+      setData(parsedData);
+      console.log(`✅ Loaded ${parsedData.length} items with ${successfulEncoding}`);
+      alert(`Loaded ${parsedData.length} items\n${successfulEncoding}`);
+      
     } catch (err) {
-      console.error(err);
-      alert('Failed to parse Jira export.');
+      console.error('Error:', err);
+      alert(`Failed: ${err.message}`);
     }
   };
 
@@ -155,19 +267,79 @@ const SprintDashboard = () => {
     setData([]);
     setSelectedSprint('all');
     setSelectedAssignee('all');
+    setSelectedProject('all');
     setActiveTab('overview');
   };
 
   const handleProjectClick = (projectName) => {
-    alert(`Project clicked: ${projectName}\n(This can be extended to filter the dashboard)`);
+    setSelectedProject(projectName);
+    setActiveTab('overview');
+  };
+
+  // NEW: Bulk capacity edit handlers
+  const handleSelectAllAssignees = (assigneeList) => {
+    if (selectedAssignees.size === assigneeList.length) {
+      setSelectedAssignees(new Set());
+    } else {
+      setSelectedAssignees(new Set(assigneeList));
+    }
+  };
+
+  const handleToggleAssignee = (assignee) => {
+    const newSelected = new Set(selectedAssignees);
+    if (newSelected.has(assignee)) {
+      newSelected.delete(assignee);
+    } else {
+      newSelected.add(assignee);
+    }
+    setSelectedAssignees(newSelected);
+  };
+
+  const handleBulkCapacityUpdate = () => {
+    if (selectedAssignees.size === 0) {
+      alert('Please select at least one assignee');
+      return;
+    }
+    
+    const capacity = parseInt(bulkCapacityValue);
+    if (isNaN(capacity) || capacity < 0) {
+      alert('Please enter a valid capacity value (0 or greater)');
+      return;
+    }
+
+    const updatedCaps = { ...assigneeCaps };
+    selectedAssignees.forEach(assignee => {
+      updatedCaps[assignee] = capacity;
+    });
+
+    setAssigneeCaps(updatedCaps);
+    setSelectedAssignees(new Set());
+    setBulkCapacityValue('');
+    setShowBulkCapacityEdit(false);
+    alert(`Successfully updated sprint capacity for ${selectedAssignees.size} assignee(s) to ${capacity}`);
   };
 
   // ============== COMPUTED DATA ==============
   const sprints = useMemo(() => {
     const set = new Set();
     data.forEach(item => {
-      const sprint = item['Sprint'] || item['G'] || '';
-      if (sprint) set.add(sprint);
+      const sprint = item['Sprint'] || 
+                     item['G'] || 
+                     item['Custom field (Sprint)'] || 
+                     item['Sprints'] ||
+                     item['Sprint Name'] ||
+                     '';
+      if (sprint) {
+        // Handle multi-sprint issues (comma-separated)
+        if (sprint.includes(',')) {
+          sprint.split(',').forEach(s => {
+            const trimmed = s.trim();
+            if (trimmed) set.add(trimmed);
+          });
+        } else {
+          set.add(sprint);
+        }
+      }
     });
     const arr = Array.from(set);
     arr.sort((a, b) => {
@@ -188,85 +360,164 @@ const SprintDashboard = () => {
     return ['all', ...Array.from(set).sort()];
   }, [data]);
 
+  // Projects extractor
+  const projects = useMemo(() => {
+    const set = new Set();
+    data.forEach(item => {
+      const project = item['Project'] || item['B'] || '';
+      if (project) set.add(project);
+    });
+    return ['all', ...Array.from(set).sort()];
+  }, [data]);
+
   const filteredData = useMemo(() => {
     return data.filter(item => {
-      const sprint = item['Sprint'] || item['G'] || '';
+      const sprint = item['Sprint'] || 
+                     item['G'] || 
+                     item['Custom field (Sprint)'] || 
+                     item['Sprints'] ||
+                     item['Sprint Name'] ||
+                     '';
+      
       const assignee = item['Assignee'] || item['D'] || '';
-      return (selectedSprint === 'all' || sprint === selectedSprint) &&
-             (selectedAssignee === 'all' || assignee === selectedAssignee);
+      const project = item['Project'] || item['B'] || '';
+      
+      let sprintMatch = selectedSprint === 'all';
+      if (!sprintMatch && sprint) {
+        if (sprint.includes(',')) {
+          sprintMatch = sprint.split(',').some(s => s.trim() === selectedSprint);
+        } else {
+          sprintMatch = sprint === selectedSprint;
+        }
+      }
+      
+      const assigneeMatch = selectedAssignee === 'all' || assignee === selectedAssignee;
+      const projectMatch = selectedProject === 'all' || project === selectedProject;
+      
+      return sprintMatch && assigneeMatch && projectMatch;
     });
-  }, [data, selectedSprint, selectedAssignee]);
+  }, [data, selectedSprint, selectedAssignee, selectedProject]);
 
+  // UPDATED: CRITICAL FIX - New capacity model with Active Workload only
   const stats = useMemo(() => {
     const byAssignee = {};
+    
     filteredData.forEach(item => {
       const assignee = item['Assignee'] || item['D'] || 'Unassigned';
       if (!byAssignee[assignee]) {
         byAssignee[assignee] = {
-          epics: 0, stories: 0, bugs: 0, tasks: 0, subtasks: 0,
-          totalStoryPoints: 0, completedStoryPoints: 0, remainingStoryPoints: 0,
-          awaitingTestingStoryPoints: 0, awaitingVersioningStoryPoints: 0,
-          availableStoryPoints: 0, inProgressStoryPoints: 0, toDoStoryPoints: 0,
+          // Capacity relevant metrics
           sprintCapacity: assigneeCaps[assignee] || 16,
-          capacityUsed: 0, capacityRemaining: 0, capacityUtilization: 0,
-          allocationStatus: 'On Track',
-          doneCount: 0, inProgressCount: 0, todoCount: 0,
-          awaitingTestingCount: 0, awaitingVersioningCount: 0,
+          activeWorkload: 0,  // NEW: Only To Do + In Progress
+          remainingCapacity: 0,
+          
+          // Status based on remaining capacity (no percentages)
+          capacityStatus: 'Has Capacity',
+          pmGuidance: '',
+          
+          // Completed/awaiting work (transparency only)
+          completedWorkload: 0,  // Done
+          awaitingWorkload: 0,   // Awaiting Testing + Awaiting Versioning
+          
+          // Totals for transparency
+          totalStoryPoints: 0,
+          totalCompletedSP: 0,
+          
+          // Counts
+          activeItems: 0,
+          completedItems: 0,
+          awaitingItems: 0,
+          
+          // Issue type counts
+          stories: 0,
+          bugs: 0,
+          tasks: 0,
+          subtasks: 0,
+          
+          // Time tracking
+          timeBasedActiveSP: 0,
+          timeBasedCompletedSP: 0,
+          
           items: [],
         };
       }
 
       const type = item['Issue Type'];
-      if (type === 'Initiative') byAssignee[assignee].initiatives++;
-      else if (type === 'Epic') byAssignee[assignee].epics++;
-      else if (type === 'Story') byAssignee[assignee].stories++;
+      if (type === 'Story') byAssignee[assignee].stories++;
       else if (type === 'Bug') byAssignee[assignee].bugs++;
       else if (type === 'Task') byAssignee[assignee].tasks++;
       else if (type === 'Sub-task') byAssignee[assignee].subtasks++;
 
-      const status = item['Status'];
-      if (status === 'Done') byAssignee[assignee].doneCount++;
-      else if (status === 'In Progress') byAssignee[assignee].inProgressCount++;
-      else if (status === 'To Do') byAssignee[assignee].todoCount++;
-      else if (status === 'Awaiting Testing') byAssignee[assignee].awaitingTestingCount++;
-      else if (status === 'Awaiting Versioning') byAssignee[assignee].awaitingVersioningCount++;
+      const status = item['Status'] || '';
+      
+      // Get Story Points
+      const sp = parseFloat(item['Story Points']) || 
+                 parseFloat(item['Story points']) ||
+                 parseFloat(item['Custom field (Story Points)']) ||
+                 parseFloat(item['Story Point Estimate']) ||
+                 parseFloat(item['Σ Story Points']) ||
+                 parseFloat(item['Story Point']) ||
+                 0;
+      
+      // Time tracking (for transparency)
+      const timeEstimateSeconds = parseFloat(item['Original Estimate']) || 0;
+      const SECONDS_PER_SP = 4 * 3600; // 4 hours per SP
+      const timeSP = timeEstimateSeconds > 0 ? timeEstimateSeconds / SECONDS_PER_SP : 0;
 
-      const sp = parseFloat(item['Story Points']) || 0;
+      // CRITICAL FIX: Only ACTIVE work consumes capacity
+      if (status === 'To Do' || status === 'In Progress') {
+        // This work is ACTIVE and consumes capacity
+        byAssignee[assignee].activeWorkload += sp;
+        byAssignee[assignee].activeItems++;
+        
+        if (timeSP > 0 && (type === 'Sub-task' || type === 'Task')) {
+          byAssignee[assignee].timeBasedActiveSP += timeSP;
+        }
+      } 
+      // COMPLETED/DOWNSTREAM work is EXCLUDED from capacity
+      else if (status === 'Done') {
+        byAssignee[assignee].completedWorkload += sp;
+        byAssignee[assignee].completedItems++;
+        byAssignee[assignee].totalCompletedSP += sp;
+        
+        if (timeSP > 0 && (type === 'Sub-task' || type === 'Task')) {
+          byAssignee[assignee].timeBasedCompletedSP += timeSP;
+        }
+      }
+      else if (status === 'Awaiting Testing' || status === 'Awaiting Versioning') {
+        byAssignee[assignee].awaitingWorkload += sp;
+        byAssignee[assignee].awaitingItems++;
+      }
+
+      // Track total for transparency
       if (sp > 0) {
         byAssignee[assignee].totalStoryPoints += sp;
-        if (status === 'Done') byAssignee[assignee].completedStoryPoints += sp;
-        else if (status === 'Awaiting Testing') {
-          byAssignee[assignee].awaitingTestingStoryPoints += sp;
-          byAssignee[assignee].remainingStoryPoints += sp;
-        } else if (status === 'Awaiting Versioning') {
-          byAssignee[assignee].awaitingVersioningStoryPoints += sp;
-          byAssignee[assignee].remainingStoryPoints += sp;
-        } else if (status === 'In Progress') {
-          byAssignee[assignee].inProgressStoryPoints += sp;
-          byAssignee[assignee].remainingStoryPoints += sp;
-          byAssignee[assignee].availableStoryPoints += sp;
-        } else if (status === 'To Do') {
-          byAssignee[assignee].toDoStoryPoints += sp;
-          byAssignee[assignee].remainingStoryPoints += sp;
-          byAssignee[assignee].availableStoryPoints += sp;
-        } else {
-          byAssignee[assignee].remainingStoryPoints += sp;
-          byAssignee[assignee].availableStoryPoints += sp;
-        }
       }
 
       byAssignee[assignee].items.push(item);
     });
 
+    // Calculate capacity metrics and status
     Object.keys(byAssignee).forEach(assignee => {
       const d = byAssignee[assignee];
-      d.capacityUsed = d.inProgressStoryPoints + d.toDoStoryPoints;
-      d.capacityRemaining = d.sprintCapacity - d.capacityUsed;
-      d.capacityUtilization = d.sprintCapacity > 0 ? (d.capacityUsed / d.sprintCapacity) * 100 : 0;
-
-      if (d.capacityUsed > d.sprintCapacity) d.allocationStatus = 'Over Allocated';
-      else if (d.capacityUsed < d.sprintCapacity * 0.7) d.allocationStatus = 'Under Allocated';
-      else d.allocationStatus = 'On Track';
+      
+      // NEW: Add time-based work to active workload if it's active
+      d.activeWorkload += d.timeBasedActiveSP;
+      
+      // CRITICAL: Remaining capacity calculation
+      d.remainingCapacity = d.sprintCapacity - d.activeWorkload;
+      
+      // NEW: Simplified status logic based only on remaining capacity
+      if (d.remainingCapacity > 0) {
+        d.capacityStatus = 'Has Capacity';
+        d.pmGuidance = `✅ Has capacity — ${d.remainingCapacity.toFixed(1)} SP available`;
+      } else if (d.remainingCapacity === 0) {
+        d.capacityStatus = 'Fully Allocated';
+        d.pmGuidance = '🟡 Fully allocated — no buffer';
+      } else {
+        d.capacityStatus = 'Overloaded';
+        d.pmGuidance = `❌ Overloaded — reduce scope by ${Math.abs(d.remainingCapacity).toFixed(1)} SP`;
+      }
     });
 
     return byAssignee;
@@ -305,14 +556,50 @@ const SprintDashboard = () => {
     };
   }, [selectedSprint, sprintDates, sprintDaysConfig]);
 
+  // Sprint Health Summary - UPDATED with new model
+  const sprintHealthSummary = useMemo(() => {
+    if (selectedSprint === 'all') return null;
+    
+    const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.sprintCapacity, 0);
+    const activeWorkload = Object.values(stats).reduce((sum, s) => sum + s.activeWorkload, 0);
+    const remainingCapacity = totalCapacity - activeWorkload;
+    
+    let healthStatus = '';
+    let healthMessage = '';
+    let healthColor = '';
+    
+    if (remainingCapacity > 0) {
+      healthStatus = 'Has Capacity';
+      healthMessage = `Sprint has ${remainingCapacity.toFixed(1)} SP available capacity. Active workload is ${activeWorkload.toFixed(1)} SP.`;
+      healthColor = 'text-green-700 bg-green-50 border-green-300';
+    } else if (remainingCapacity === 0) {
+      healthStatus = 'Fully Allocated';
+      healthMessage = 'Sprint is fully allocated with no buffer for additional work.';
+      healthColor = 'text-amber-700 bg-amber-50 border-amber-300';
+    } else {
+      healthStatus = 'Overloaded';
+      healthMessage = `Sprint is overloaded by ${Math.abs(remainingCapacity).toFixed(1)} SP. Scope reduction required.`;
+      healthColor = 'text-red-700 bg-red-50 border-red-300';
+    }
+    
+    return {
+      status: healthStatus,
+      message: healthMessage,
+      color: healthColor,
+      totalCapacity: totalCapacity.toFixed(1),
+      activeWorkload: activeWorkload.toFixed(1),
+      remainingCapacity: remainingCapacity.toFixed(1)
+    };
+  }, [selectedSprint, stats]);
+
   const riskRegister = useMemo(() => {
     const risks = [];
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const assigneeUtilization = {};
+    const assigneeStatus = {};
     Object.entries(stats).forEach(([assignee, s]) => {
-      assigneeUtilization[assignee] = s.sprintCapacity > 0 ? (s.totalStoryPoints / s.sprintCapacity) * 100 : 0;
+      assigneeStatus[assignee] = s.capacityStatus;
     });
 
     data.forEach(item => {
@@ -351,12 +638,12 @@ const SprintDashboard = () => {
         daysLate = Math.ceil((today - targetEndDate) / (1000 * 60 * 60 * 24));
       }
 
-      const utilization = assigneeUtilization[assignee] || 0;
+      const statusVal = assigneeStatus[assignee] || 'Has Capacity';
 
       if (targetEndDate && daysLate > 0 && status !== 'Done') {
         risks.push({ issueKey, project, assignee, riskLevel: 'High', reason: `Overdue by ${daysLate} day${daysLate !== 1 ? 's' : ''}`, daysLate, status, sp, sprint });
-      } else if (utilization > 200 && status !== 'Done') {
-        risks.push({ issueKey, project, assignee, riskLevel: 'High', reason: `Assignee at ${Math.round(utilization)}% utilization`, daysLate, status, sp, sprint });
+      } else if (statusVal === 'Overloaded' && (status === 'To Do' || status === 'In Progress')) {
+        risks.push({ issueKey, project, assignee, riskLevel: 'High', reason: `Assignee overloaded (${stats[assignee]?.activeWorkload?.toFixed(1) || 0} SP active work)`, daysLate, status, sp, sprint });
       } else if (sp === 0 && targetEndDate && daysLate >= -5 && daysLate < 0 && status !== 'Done') {
         risks.push({ issueKey, project, assignee, riskLevel: 'Medium', reason: `No Story Points - due in ${Math.abs(daysLate)} day${Math.abs(daysLate) !== 1 ? 's' : ''}`, daysLate, status, sp, sprint });
       }
@@ -494,18 +781,21 @@ const SprintDashboard = () => {
         startDate: minStart ? minStart.toISOString().split('T')[0] : null,
         endDate: maxEnd ? maxEnd.toISOString().split('T')[0] : null,
         percentComplete: Math.round(percentComplete),
-        targetEndDate: projectTargets[p.project] || (maxEnd ? maxEnd.toISOString().split('T')[0] : null) // Use custom or fallback
+        targetEndDate: projectTargets[p.project] || (maxEnd ? maxEnd.toISOString().split('T')[0] : null)
       };
-    }).filter(p => p.startDate && p.endDate).sort((a, b) => new Date(a.endDate) - new Date(b.endDate)); // Sort by end date
+    }).filter(p => p.startDate && p.endDate).sort((a, b) => new Date(a.endDate) - new Date(b.endDate));
   }, [data, sprintDates, projectTargets]);
 
+  // UPDATED: Metrics based on new capacity model
   const totalSP = Object.values(stats).reduce((sum, s) => sum + s.totalStoryPoints, 0);
-  const completedSP = Object.values(stats).reduce((sum, s) => sum + s.completedStoryPoints, 0);
-  const awaitingTestingSP = Object.values(stats).reduce((sum, s) => sum + s.awaitingTestingStoryPoints, 0);
-  const availableSP = Object.values(stats).reduce((sum, s) => sum + s.availableStoryPoints, 0);
+  const completedSP = Object.values(stats).reduce((sum, s) => sum + s.totalCompletedSP, 0);
+  const activeWorkload = Object.values(stats).reduce((sum, s) => sum + s.activeWorkload, 0);
+  const awaitingWorkload = Object.values(stats).reduce((sum, s) => sum + s.awaitingWorkload, 0);
   const completionRate = totalSP > 0 ? Math.round((completedSP / totalSP) * 100) : 0;
   const highRisks = riskRegister.filter(r => r.riskLevel === 'High').length;
-  const overloadedCount = Object.values(stats).filter(s => s.allocationStatus === 'Over Allocated').length;
+  const overloadedCount = Object.values(stats).filter(s => s.capacityStatus === 'Overloaded').length;
+  const fullyAllocatedCount = Object.values(stats).filter(s => s.capacityStatus === 'Fully Allocated').length;
+  const hasCapacityCount = Object.values(stats).filter(s => s.capacityStatus === 'Has Capacity').length;
 
   const getProjectColor = (name) => {
     const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
@@ -517,6 +807,7 @@ const SprintDashboard = () => {
     return colors[Math.abs(hash) % colors.length];
   };
 
+  // UPDATED: Removed Capacity Dashboard tab
   const tabs = {
     overview: { icon: LayoutDashboard, label: 'Overview' },
     risks: { icon: Shield, label: 'Risk Register' },
@@ -549,6 +840,74 @@ const SprintDashboard = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
+      {/* Bulk Capacity Edit Modal */}
+      {showBulkCapacityEdit && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-slate-900 rounded-2xl shadow-2xl max-w-2xl w-full p-8 border border-slate-700">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-3xl font-bold text-white flex items-center gap-3">
+                <Edit3 className="w-8 h-8 text-blue-500" />
+                Bulk Edit Sprint Capacity
+              </h2>
+              <button
+                onClick={() => {
+                  setShowBulkCapacityEdit(false);
+                  setSelectedAssignees(new Set());
+                  setBulkCapacityValue('');
+                }}
+                className="text-slate-400 hover:text-white p-2"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="bg-blue-900/30 border border-blue-700 rounded-xl p-4 mb-6">
+              <p className="text-blue-200 text-sm">
+                ℹ️ Selected <span className="font-bold">{selectedAssignees.size}</span> assignee(s). 
+                Enter a new sprint capacity value and click Update to apply changes.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  New Sprint Capacity Value
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={bulkCapacityValue}
+                  onChange={(e) => setBulkCapacityValue(e.target.value)}
+                  placeholder="e.g., 14, 16, 18"
+                  className="w-full px-4 py-3 bg-slate-800 border border-slate-600 rounded-lg text-white text-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={handleBulkCapacityUpdate}
+                  className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-colors font-semibold flex items-center justify-center gap-2"
+                >
+                  <Save className="w-5 h-5" />
+                  Update {selectedAssignees.size} Assignee(s)
+                </button>
+                <button
+                  onClick={() => {
+                    setShowBulkCapacityEdit(false);
+                    setSelectedAssignees(new Set());
+                    setBulkCapacityValue('');
+                  }}
+                  className="px-6 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition-colors font-semibold"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-sm border-b border-slate-700">
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between mb-4">
@@ -557,10 +916,11 @@ const SprintDashboard = () => {
               <p className="text-sm text-slate-400 mt-1">
                 {selectedSprint !== 'all' ? selectedSprint : 'All Sprints'}
                 {selectedAssignee !== 'all' && ` • ${selectedAssignee}`}
+                {selectedProject !== 'all' && ` • ${selectedProject}`}
               </p>
             </div>
             <div className="flex gap-3">
-              <button onClick={() => { setSelectedSprint('all'); setSelectedAssignee('all'); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-colors font-medium">
+              <button onClick={() => { setSelectedSprint('all'); setSelectedAssignee('all'); setSelectedProject('all'); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-colors font-medium">
                 Reset Filters
               </button>
               <button onClick={handleGoHome} className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition-colors flex items-center gap-2">
@@ -593,6 +953,7 @@ const SprintDashboard = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+        {/* ADDED: Universal Filter Panel for all tabs except timeline */}
         {activeTab !== 'timeline' && (
           <FilterPanel
             sprint={selectedSprint}
@@ -601,8 +962,22 @@ const SprintDashboard = () => {
             onAssigneeChange={setSelectedAssignee}
             sprints={sprints}
             assignees={assignees}
-            onClearAll={() => { setSelectedSprint('all'); setSelectedAssignee('all'); }}
-          />
+            onClearAll={() => { setSelectedSprint('all'); setSelectedAssignee('all'); setSelectedProject('all'); }}
+          >
+            <div className="flex items-center gap-2">
+              <Filter className="w-4 h-4 text-slate-400" />
+              <select
+                value={selectedProject}
+                onChange={(e) => setSelectedProject(e.target.value)}
+                className="px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">All Projects</option>
+                {projects.slice(1).map(p => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+          </FilterPanel>
         )}
 
         {activeTab === 'overview' && (
@@ -611,31 +986,60 @@ const SprintDashboard = () => {
             completionRate={completionRate}
             totalSP={totalSP}
             completedSP={completedSP}
-            awaitingTestingSP={awaitingTestingSP}
-            availableSP={availableSP}
+            activeWorkload={activeWorkload}
+            awaitingWorkload={awaitingWorkload}
             highRisks={highRisks}
             overloadedCount={overloadedCount}
+            fullyAllocatedCount={fullyAllocatedCount}
+            hasCapacityCount={hasCapacityCount}
             sprintTimeline={sprintTimeline}
+            sprintHealthSummary={sprintHealthSummary}
             selectedSprint={selectedSprint}
+            selectedProject={selectedProject}
             sprintDaysConfig={sprintDaysConfig}
             setSprintDaysConfig={setSprintDaysConfig}
+            filteredData={filteredData}
           />
         )}
 
         {activeTab === 'risks' && (
-          <RiskSection riskRegister={riskRegister} selectedSprint={selectedSprint} selectedAssignee={selectedAssignee} />
+          <RiskSection 
+            riskRegister={riskRegister} 
+            selectedSprint={selectedSprint} 
+            selectedAssignee={selectedAssignee}
+            selectedProject={selectedProject}
+          />
         )}
 
         {activeTab === 'capacity' && (
-          <CapacitySection stats={stats} assigneeCaps={assigneeCaps} setAssigneeCaps={setAssigneeCaps} />
+          <CapacitySection 
+            stats={stats} 
+            assigneeCaps={assigneeCaps} 
+            setAssigneeCaps={setAssigneeCaps}
+            selectedAssignees={selectedAssignees}
+            handleSelectAllAssignees={handleSelectAllAssignees}
+            handleToggleAssignee={handleToggleAssignee}
+            setShowBulkCapacityEdit={setShowBulkCapacityEdit}
+          />
         )}
 
         {activeTab === 'sprints' && (
-          <SprintsSection milestoneTracking={milestoneTracking} getProjectColor={getProjectColor} selectedSprint={selectedSprint} />
+          <SprintsSection 
+            milestoneTracking={milestoneTracking} 
+            getProjectColor={getProjectColor} 
+            selectedSprint={selectedSprint}
+            selectedProject={selectedProject}
+          />
         )}
 
         {activeTab === 'projects' && (
-          <ProjectsSection projectProgressData={projectProgressData} getProjectColor={getProjectColor} />
+          <ProjectsSection 
+            projectProgressData={projectProgressData} 
+            getProjectColor={getProjectColor}
+            onProjectClick={handleProjectClick}
+            selectedSprint={selectedSprint}
+            selectedAssignee={selectedAssignee}
+          />
         )}
 
         {activeTab === 'timeline' && (
@@ -647,11 +1051,26 @@ const SprintDashboard = () => {
             onProjectClick={handleProjectClick}
             projectTargets={projectTargets}
             setProjectTargets={setProjectTargets}
+            selectedSprint={selectedSprint}
+            setSelectedSprint={setSelectedSprint}
+            selectedAssignee={selectedAssignee}
+            setSelectedAssignee={setSelectedAssignee}
+            selectedProject={selectedProject}
+            setSelectedProject={setSelectedProject}
+            sprints={sprints}
+            assignees={assignees}
+            projects={projects}
           />
         )}
 
         {activeTab === 'data' && (
-          <DataSection stats={stats} filteredData={filteredData} />
+          <DataSection 
+            stats={stats} 
+            filteredData={filteredData}
+            selectedSprint={selectedSprint}
+            selectedAssignee={selectedAssignee}
+            selectedProject={selectedProject}
+          />
         )}
       </div>
 
@@ -666,9 +1085,212 @@ const SprintDashboard = () => {
 };
 
 // ============== SECTION COMPONENTS ==============
-const OverviewSection = ({ stats, completionRate, totalSP, completedSP, awaitingTestingSP, availableSP, highRisks, overloadedCount, sprintTimeline, selectedSprint, sprintDaysConfig, setSprintDaysConfig }) => {
+const OverviewSection = ({ 
+  stats, 
+  completionRate, 
+  totalSP, 
+  completedSP, 
+  activeWorkload, 
+  awaitingWorkload, 
+  highRisks, 
+  overloadedCount,
+  fullyAllocatedCount,
+  hasCapacityCount,
+  sprintTimeline, 
+  sprintHealthSummary,
+  selectedSprint,
+  selectedProject,
+  sprintDaysConfig, 
+  setSprintDaysConfig,
+  filteredData
+}) => {
   const [showSprintConfig, setShowSprintConfig] = useState(false);
   const [tempDays, setTempDays] = useState('');
+
+  // Project Work Breakdown Component - UPDATED with new model
+  const ProjectWorkBreakdown = ({ filteredData, selectedProject, stats }) => {
+    const projectTickets = useMemo(() => {
+      return filteredData.map(item => {
+        const sp = parseFloat(item['Story Points']) || 0;
+        const type = item['Issue Type'];
+        const status = item['Status'];
+        
+        let capacityCategory = 'Excluded';
+        let contributesToCapacity = 'No';
+        
+        // CRITICAL: Only To Do and In Progress consume capacity
+        if (status === 'To Do' || status === 'In Progress') {
+          capacityCategory = 'Active Work';
+          contributesToCapacity = 'Yes';
+        } else if (status === 'Done' || status === 'Awaiting Testing' || status === 'Awaiting Versioning') {
+          capacityCategory = 'Completed/Awaiting';
+          contributesToCapacity = 'No';
+        }
+        
+        return {
+          key: item['Issue key'] || item['Key'] || '',
+          summary: item['Summary'] || '',
+          type: type || '',
+          status: status || '',
+          assignee: item['Assignee'] || item['D'] || 'Unassigned',
+          sp: sp,
+          capacityCategory,
+          contributesToCapacity,
+          sortPriority: contributesToCapacity === 'Yes' ? 0 : 1
+        };
+      }).sort((a, b) => {
+        if (a.sortPriority !== b.sortPriority) return a.sortPriority - b.sortPriority;
+        return b.sp - a.sp;
+      });
+    }, [filteredData]);
+
+    const projectMetrics = useMemo(() => {
+      const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.sprintCapacity, 0);
+      const projectActiveWork = projectTickets
+        .filter(t => t.contributesToCapacity === 'Yes')
+        .reduce((sum, t) => sum + t.sp, 0);
+      
+      const capacityPercent = totalCapacity > 0 ? (projectActiveWork / totalCapacity) * 100 : 0;
+      const remainingBuffer = totalCapacity - projectActiveWork;
+      
+      let status = 'Safe';
+      let statusColor = 'text-green-700 bg-green-50 border-green-300';
+      let message = `This project uses ${projectActiveWork.toFixed(1)} SP of active capacity (${capacityPercent.toFixed(1)}%). Adding scope is safe.`;
+      
+      if (remainingBuffer < 0) {
+        status = 'Breaking Capacity';
+        statusColor = 'text-red-700 bg-red-50 border-red-300';
+        message = `This project alone exceeds sprint capacity by ${Math.abs(remainingBuffer).toFixed(1)} SP — sprint is overloaded.`;
+      } else if (capacityPercent > 70) {
+        status = 'Risky';
+        statusColor = 'text-amber-700 bg-amber-50 border-amber-300';
+        message = `This project uses ${capacityPercent.toFixed(1)}% of sprint capacity — adding scope will reduce buffer significantly.`;
+      }
+      
+      return {
+        totalCapacity,
+        projectActiveWork,
+        capacityPercent,
+        remainingBuffer,
+        status,
+        statusColor,
+        message
+      };
+    }, [projectTickets, stats]);
+
+    return (
+      <div className="space-y-4">
+        <div className={`border-l-4 p-6 rounded-xl ${projectMetrics.statusColor}`}>
+          <div className="flex items-start gap-3">
+            <Target className="w-6 h-6 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-lg font-bold mb-2">Project Capacity Impact: {selectedProject}</h3>
+              <p className="text-base font-medium mb-4">{projectMetrics.message}</p>
+              
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <div className="font-semibold">Active Work</div>
+                  <div className="text-2xl font-bold">{projectMetrics.projectActiveWork.toFixed(1)} SP</div>
+                </div>
+                <div>
+                  <div className="font-semibold">% of Sprint</div>
+                  <div className="text-2xl font-bold">{projectMetrics.capacityPercent.toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div className="font-semibold">Remaining Buffer</div>
+                  <div className="text-2xl font-bold">{projectMetrics.remainingBuffer.toFixed(1)} SP</div>
+                </div>
+                <div>
+                  <div className="font-semibold">Status</div>
+                  <div className="text-2xl font-bold">{projectMetrics.status}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl p-6">
+          <h2 className="text-xl font-bold text-slate-900 mb-4">
+            Project Work Breakdown: {selectedProject}
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Ticket Key</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Summary</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Issue Type</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Status</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Assignee</th>
+                  <th className="px-4 py-3 text-center font-semibold text-slate-700">Story Points</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Capacity Category</th>
+                  <th className="px-4 py-3 text-center font-semibold text-slate-700">Capacity?</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {projectTickets.map((ticket, idx) => (
+                  <tr key={idx} className={`hover:bg-slate-50 ${ticket.contributesToCapacity === 'Yes' ? 'bg-blue-50/30' : ''}`}>
+                    <td className="px-4 py-3 font-mono text-xs text-blue-600 font-semibold">{ticket.key}</td>
+                    <td className="px-4 py-3 text-slate-700 max-w-xs truncate">{ticket.summary}</td>
+                    <td className="px-4 py-3">
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        ticket.type === 'Story' ? 'bg-green-100 text-green-800' :
+                        ticket.type === 'Bug' ? 'bg-red-100 text-red-800' :
+                        ticket.type === 'Task' || ticket.type === 'Sub-task' ? 'bg-blue-100 text-blue-800' :
+                        'bg-gray-100 text-gray-700'
+                      }`}>
+                        {ticket.type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        ticket.status === 'Done' ? 'bg-green-100 text-green-800' :
+                        ticket.status === 'In Progress' ? 'bg-blue-100 text-blue-800' :
+                        ticket.status === 'Awaiting Testing' ? 'bg-amber-100 text-amber-800' :
+                        ticket.status === 'Awaiting Versioning' ? 'bg-purple-100 text-purple-800' :
+                        'bg-gray-100 text-gray-700'
+                      }`}>
+                        {ticket.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-700">{ticket.assignee}</td>
+                    <td className="px-4 py-3 text-center font-semibold text-slate-900">
+                      {ticket.sp > 0 ? ticket.sp.toFixed(1) : '-'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        ticket.capacityCategory === 'Active Work' ? 'bg-red-100 text-red-800' : 
+                        'bg-gray-100 text-gray-600'
+                      }`}>
+                        {ticket.capacityCategory}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${
+                        ticket.contributesToCapacity === 'Yes' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        {ticket.contributesToCapacity}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          
+          <div className="mt-4 p-4 bg-slate-50 rounded-lg text-sm text-slate-700">
+            <strong>Capacity Rules (PM-First Model):</strong>
+            <ul className="mt-2 space-y-1 ml-4">
+              <li>• <strong>Active Work (To Do, In Progress):</strong> Consumes sprint capacity. PM can see real-time workload.</li>
+              <li>• <strong>Completed/Awaiting (Done, Awaiting Testing, Awaiting Versioning):</strong> Excluded from capacity. Work is delivered, assignee is free.</li>
+              <li>• <strong>Capacity = Yes:</strong> Active work that requires assignee effort right now.</li>
+              <li>• <strong>Capacity = No:</strong> Work that is already delivered or waiting for others.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -680,8 +1302,35 @@ const OverviewSection = ({ stats, completionRate, totalSP, completedSP, awaiting
               <h3 className="font-semibold text-amber-900 mb-1">⚠️ Action Required</h3>
               <ul className="text-sm text-amber-800 space-y-1">
                 {highRisks > 0 && <li>• {highRisks} high-priority risk{highRisks > 1 ? 's' : ''} need attention</li>}
-                {overloadedCount > 0 && <li>• {overloadedCount} team member{overloadedCount > 1 ? 's are' : ' is'} overloaded</li>}
+                {overloadedCount > 0 && <li>• {overloadedCount} team member{overloadedCount > 1 ? 's are' : ' is'} overloaded (needs scope reduction)</li>}
               </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sprintHealthSummary && (
+        <div className={`border-l-4 p-6 rounded-xl ${sprintHealthSummary.color}`}>
+          <div className="flex items-start gap-3 mb-4">
+            <AlertCircle className="w-6 h-6 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-lg font-bold mb-2">Sprint Health Assessment</h3>
+              <p className="text-base font-medium mb-4">{sprintHealthSummary.message}</p>
+              
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                <div>
+                  <div className="font-semibold">Total Capacity</div>
+                  <div className="text-2xl font-bold">{sprintHealthSummary.totalCapacity} SP</div>
+                </div>
+                <div>
+                  <div className="font-semibold">Active Workload</div>
+                  <div className="text-2xl font-bold">{sprintHealthSummary.activeWorkload} SP</div>
+                </div>
+                <div>
+                  <div className="font-semibold">Remaining Capacity</div>
+                  <div className="text-2xl font-bold">{sprintHealthSummary.remainingCapacity} SP</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -734,67 +1383,127 @@ const OverviewSection = ({ stats, completionRate, totalSP, completedSP, awaiting
         )}
 
         <KPICard icon={Users} value={Object.keys(stats).length} label="Team Members" status="neutral" />
-        <KPICard icon={Clock} value={awaitingTestingSP.toFixed(1)} label="Awaiting Testing SP" status="warning" />
-        <KPICard icon={TrendingUp} value={availableSP.toFixed(1)} label="Available SP" status="neutral" />
+        <KPICard icon={Clock} value={awaitingWorkload.toFixed(1)} label="Awaiting SP" status="neutral" subtitle="(excluded)" />
+        <KPICard icon={TrendingUp} value={activeWorkload.toFixed(1)} label="Active Workload" status="warning" />
       </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-green-50 border-l-4 border-green-500 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-3xl">✅</span>
+            <span className="text-4xl font-bold text-green-700">{hasCapacityCount}</span>
+          </div>
+          <div className="text-sm font-semibold text-green-800">Has Capacity</div>
+          <div className="text-xs text-green-600 mt-1">Can take more work</div>
+        </div>
+        
+        <div className="bg-amber-50 border-l-4 border-amber-500 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-3xl">🟡</span>
+            <span className="text-4xl font-bold text-amber-700">{fullyAllocatedCount}</span>
+          </div>
+          <div className="text-sm font-semibold text-amber-800">Fully Allocated</div>
+          <div className="text-xs text-amber-600 mt-1">No buffer</div>
+        </div>
+        
+        <div className="bg-red-50 border-l-4 border-red-500 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-3xl">❌</span>
+            <span className="text-4xl font-bold text-red-700">{overloadedCount}</span>
+          </div>
+          <div className="text-sm font-semibold text-red-800">Overloaded</div>
+          <div className="text-xs text-red-600 mt-1">Needs scope reduction</div>
+        </div>
+      </div>
+
+      {/* Project Work Breakdown */}
+      {selectedProject !== 'all' && (
+        <ProjectWorkBreakdown 
+          filteredData={filteredData}
+          selectedProject={selectedProject}
+          stats={stats}
+        />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl p-6">
-          <h2 className="text-xl font-bold text-slate-900 mb-4">Team Workload (Story Points)</h2>
+          <h2 className="text-xl font-bold text-slate-900 mb-4">Team Workload Distribution</h2>
           <div className="space-y-3">
             {Object.entries(stats).slice(0, 10).map(([name, data]) => {
-              const maxSP = Math.max(...Object.values(stats).map(s => s.totalStoryPoints));
-              const totalWidth = (data.totalStoryPoints / maxSP) * 100;
-              const completedWidth = (data.completedStoryPoints / maxSP) * 100;
+              const maxSP = Math.max(...Object.values(stats).map(s => s.sprintCapacity));
+              const capacityWidth = (data.sprintCapacity / maxSP) * 100;
+              const activeWidth = (data.activeWorkload / maxSP) * 100;
               return (
                 <div key={name}>
                   <div className="flex items-center justify-between text-sm mb-1">
                     <span className="font-medium text-slate-700">{name.length > 20 ? name.substring(0, 20) + '...' : name}</span>
-                    <span className="text-slate-600">{data.totalStoryPoints.toFixed(1)} SP</span>
+                    <span className="text-slate-600">{data.activeWorkload.toFixed(1)} / {data.sprintCapacity} SP</span>
                   </div>
                   <div className="relative h-8 bg-slate-100 rounded">
-                    <div className="absolute h-8 bg-blue-500 rounded" style={{ width: `${totalWidth}%` }}></div>
-                    <div className="absolute h-8 bg-green-500 rounded" style={{ width: `${completedWidth}%` }}></div>
+                    <div className="absolute h-8 bg-blue-200 rounded" style={{ width: `${capacityWidth}%` }}></div>
+                    <div className={`absolute h-8 rounded ${
+                      data.capacityStatus === 'Overloaded' ? 'bg-red-500' :
+                      data.capacityStatus === 'Fully Allocated' ? 'bg-amber-500' :
+                      'bg-green-500'
+                    }`} style={{ width: `${activeWidth}%` }}></div>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    {data.pmGuidance}
                   </div>
                 </div>
               );
             })}
           </div>
           <div className="flex gap-4 mt-4 text-sm">
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-blue-500 rounded"></div><span className="text-slate-600">Total</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-500 rounded"></div><span className="text-slate-600">Completed</span></div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-blue-200 rounded"></div><span className="text-slate-600">Capacity</span></div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-500 rounded"></div><span className="text-slate-600">Has Capacity</span></div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-amber-500 rounded"></div><span className="text-slate-600">Fully Allocated</span></div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-red-500 rounded"></div><span className="text-slate-600">Overloaded</span></div>
           </div>
         </div>
 
         <div className="bg-white rounded-xl p-6">
-          <h2 className="text-xl font-bold text-slate-900 mb-4">Capacity vs Actual Work</h2>
+          <h2 className="text-xl font-bold text-slate-900 mb-4">Capacity vs Active Work</h2>
           <div className="space-y-3">
             {Object.entries(stats).slice(0, 10).map(([name, data]) => {
-              const capacity = data.sprintCapacity;
-              const donePercent = capacity > 0 ? (data.completedStoryPoints / capacity) * 100 : 0;
-              const inProgressPercent = capacity > 0 ? (data.inProgressStoryPoints / capacity) * 100 : 0;
-              const toDoPercent = capacity > 0 ? (data.toDoStoryPoints / capacity) * 100 : 0;
+              const remaining = data.remainingCapacity;
               return (
                 <div key={name}>
                   <div className="flex items-center justify-between text-sm mb-1">
                     <span className="font-medium text-slate-700">{name.length > 20 ? name.substring(0, 20) + '...' : name}</span>
-                    <span className="text-slate-600">{data.capacityUsed.toFixed(1)} / {capacity} SP</span>
+                    <span className={`font-bold ${
+                      remaining > 0 ? 'text-green-600' :
+                      remaining === 0 ? 'text-amber-600' :
+                      'text-red-600'
+                    }`}>
+                      {remaining > 0 ? '+' : ''}{remaining.toFixed(1)} SP
+                    </span>
                   </div>
                   <div className="relative h-8 bg-slate-200 rounded overflow-hidden">
                     <div className="absolute inset-0 flex">
-                      {donePercent > 0 && <div className="h-8 bg-green-500" style={{ width: `${donePercent}%` }}></div>}
-                      {inProgressPercent > 0 && <div className="h-8 bg-blue-500" style={{ width: `${inProgressPercent}%` }}></div>}
-                      {toDoPercent > 0 && <div className="h-8 bg-amber-500" style={{ width: `${toDoPercent}%` }}></div>}
+                      <div className={`h-8 ${
+                        data.capacityStatus === 'Overloaded' ? 'bg-red-500' :
+                        data.capacityStatus === 'Fully Allocated' ? 'bg-amber-500' :
+                        'bg-green-500'
+                      }`} style={{ width: `${Math.min((data.activeWorkload / data.sprintCapacity) * 100, 100)}%` }}></div>
+                      {remaining > 0 && (
+                        <div className="h-8 bg-green-200" style={{ width: `${(remaining / data.sprintCapacity) * 100}%` }}></div>
+                      )}
                     </div>
+                  </div>
+                  <div className="flex justify-between text-xs text-slate-500 mt-1">
+                    <span>Active: {data.activeWorkload.toFixed(1)} SP</span>
+                    <span>Capacity: {data.sprintCapacity} SP</span>
                   </div>
                 </div>
               );
             })}
           </div>
           <div className="flex gap-4 mt-4 text-sm">
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-500 rounded"></div><span className="text-slate-600">Done</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-blue-500 rounded"></div><span className="text-slate-600">In Progress</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-amber-500 rounded"></div><span className="text-slate-600">To Do</span></div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-200 rounded"></div><span className="text-slate-600">Available Capacity</span></div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-500 rounded"></div><span className="text-slate-600">Has Capacity</span></div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-amber-500 rounded"></div><span className="text-slate-600">Fully Allocated</span></div>
+            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-red-500 rounded"></div><span className="text-slate-600">Overloaded</span></div>
           </div>
         </div>
       </div>
@@ -802,14 +1511,15 @@ const OverviewSection = ({ stats, completionRate, totalSP, completedSP, awaiting
   );
 };
 
-const RiskSection = ({ riskRegister, selectedSprint, selectedAssignee }) => {
+const RiskSection = ({ riskRegister, selectedSprint, selectedAssignee, selectedProject }) => {
   const filteredRisks = useMemo(() => {
     return riskRegister.filter(risk => {
       const sprintMatch = selectedSprint === 'all' || risk.sprint === selectedSprint;
       const assigneeMatch = selectedAssignee === 'all' || risk.assignee === selectedAssignee;
-      return sprintMatch && assigneeMatch;
+      const projectMatch = selectedProject === 'all' || risk.project === selectedProject;
+      return sprintMatch && assigneeMatch && projectMatch;
     });
-  }, [riskRegister, selectedSprint, selectedAssignee]);
+  }, [riskRegister, selectedSprint, selectedAssignee, selectedProject]);
 
   const highRisks = filteredRisks.filter(r => r.riskLevel === 'High');
   const mediumRisks = filteredRisks.filter(r => r.riskLevel === 'Medium');
@@ -883,75 +1593,291 @@ const RiskSection = ({ riskRegister, selectedSprint, selectedAssignee }) => {
   );
 };
 
-const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps }) => {
+// UPDATED: CRITICAL CHANGES - PM-First Capacity Section
+const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssignees, handleSelectAllAssignees, handleToggleAssignee, setShowBulkCapacityEdit }) => {
+  const assigneeList = Object.keys(stats);
+  
   return (
-    <div className="bg-white rounded-xl p-6">
-      <h2 className="text-xl font-bold text-slate-900 mb-4">Sprint Capacity Planning</h2>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-slate-50">
-              <th className="px-4 py-3 text-left font-semibold text-slate-700">Assignee</th>
-              <th className="px-4 py-3 text-center font-semibold text-slate-700">Sprint Capacity</th>
-              <th className="px-4 py-3 text-center font-semibold text-slate-700">In Progress</th>
-              <th className="px-4 py-3 text-center font-semibold text-slate-700">To Do</th>
-              <th className="px-4 py-3 text-center font-semibold text-slate-700">Used</th>
-              <th className="px-4 py-3 text-center font-semibold text-slate-700">Remaining</th>
-              <th className="px-4 py-3 text-center font-semibold text-slate-700">Utilization</th>
-              <th className="px-4 py-3 text-center font-semibold text-slate-700">Status</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {Object.entries(stats).map(([assignee, data]) => (
-              <tr key={assignee} className="hover:bg-gray-50">
-                <td className="px-4 py-3 font-bold text-gray-900">{assignee}</td>
-                <td className="px-4 py-3 text-center">
-                  <input
-                    type="number"
-                    min={0}
-                    value={assigneeCaps[assignee] ?? data.sprintCapacity}
-                    onChange={(e) => setAssigneeCaps(prev => ({ ...prev, [assignee]: Number(e.target.value) || 0 }))}
-                    className="w-20 px-2 py-1 rounded text-center border border-slate-300 text-slate-900 bg-white"
-                  />
-                </td>
-                <td className="px-4 py-3 text-center font-semibold text-blue-600">{data.inProgressStoryPoints.toFixed(1)}</td>
-                <td className="px-4 py-3 text-center font-semibold text-gray-600">{data.toDoStoryPoints.toFixed(1)}</td>
-                <td className="px-4 py-3 text-center font-bold text-gray-900">{data.capacityUsed.toFixed(1)}</td>
-                <td className="px-4 py-3 text-center">
-                  <span className={`font-bold ${data.capacityRemaining < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                    {data.capacityRemaining.toFixed(1)}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <div className="w-full bg-gray-200 rounded-full h-4">
-                      <div
-                        className={`h-4 rounded-full ${data.allocationStatus === 'Over Allocated' ? 'bg-red-600' : data.allocationStatus === 'On Track' ? 'bg-green-600' : 'bg-orange-500'}`}
-                        style={{ width: `${Math.min(data.capacityUtilization, 100)}%` }}
-                      />
-                    </div>
-                    <span className="text-base font-bold">{data.capacityUtilization.toFixed(0)}%</span>
+    <div className="space-y-6">
+      {/* PM-First Model Explanation */}
+      <div className="bg-gradient-to-r from-green-50 to-blue-50 border-l-4 border-green-500 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
+          <Users className="w-5 h-5 text-green-600" />
+          PM-First Capacity Model
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div className="bg-white rounded-lg p-4 border border-green-200">
+            <div className="font-semibold text-green-700 mb-2">🎯 Active Workload</div>
+            <p className="text-slate-600">Only <strong>To Do + In Progress</strong> work consumes capacity.</p>
+            <p className="text-xs text-slate-500 mt-1">Completed/Downstream work is excluded.</p>
+          </div>
+          <div className="bg-white rounded-lg p-4 border border-blue-200">
+            <div className="font-semibold text-blue-700 mb-2">✅ Simple Status</div>
+            <p className="text-slate-600"><strong>Has Capacity → Fully Allocated → Overloaded</strong></p>
+            <p className="text-xs text-slate-500 mt-1">No percentages, just clear decisions.</p>
+          </div>
+        </div>
+        <div className="mt-4 text-sm text-slate-700 bg-white/50 rounded p-3">
+          <strong>For PMs:</strong> 
+          <span className="text-green-700 ml-2">✅ Has Capacity (can add work)</span> · 
+          <span className="text-amber-600 ml-2">🟡 Fully Allocated (no buffer)</span> · 
+          <span className="text-red-600 ml-2">❌ Overloaded (reduce scope)</span>
+        </div>
+      </div>
+
+      {/* UPDATED: Sprint Work Scope Breakdown with new model */}
+      <div className="bg-white rounded-xl p-6 border-l-4 border-green-500">
+        <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
+          <CheckCircle className="w-5 h-5 text-green-600" />
+          Sprint Work Scope (PM-First View)
+        </h3>
+        
+        {(() => {
+          const totalPlannedSP = Object.values(stats).reduce((sum, s) => sum + s.totalStoryPoints, 0);
+          const completedSP = Object.values(stats).reduce((sum, s) => sum + s.totalCompletedSP, 0);
+          const activeWorkload = Object.values(stats).reduce((sum, s) => sum + s.activeWorkload, 0);
+          const awaitingWorkload = Object.values(stats).reduce((sum, s) => sum + s.awaitingWorkload, 0);
+          const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.sprintCapacity, 0);
+          
+          return (
+            <div className="space-y-4">
+              {/* Active Workload Section */}
+              <div>
+                <h4 className="text-sm font-semibold text-slate-700 mb-2">🎯 Active Workload (Consumes Capacity)</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="bg-red-50 rounded-lg p-4 border-2 border-red-300">
+                    <Tooltip content="Active Workload\n\nStory Points from items in To Do or In Progress status.\nThis is the only work that consumes assignee capacity right now.">
+                      <div className="text-sm font-medium text-red-700 mb-1 flex items-center gap-1">
+                        Active Workload
+                        <span className="text-red-400">ⓘ</span>
+                      </div>
+                    </Tooltip>
+                    <div className="text-3xl font-bold text-red-900">{activeWorkload.toFixed(1)} SP</div>
+                    <div className="text-xs text-red-600 mt-1">Consumes capacity</div>
                   </div>
-                </td>
-                <td className="px-4 py-3 text-center">
-                  <span className={`px-3 py-1 rounded-full text-sm font-bold border-2 ${data.allocationStatus === 'Over Allocated' ? 'bg-red-100 text-red-800 border-red-300' : data.allocationStatus === 'On Track' ? 'bg-green-100 text-green-800 border-green-300' : 'bg-orange-100 text-orange-800 border-orange-300'}`}>
-                    {data.allocationStatus}
-                  </span>
-                </td>
+                  
+                  <div className="bg-green-50 rounded-lg p-4 border-2 border-green-200">
+                    <Tooltip content="Remaining Capacity\n\nSprint Capacity minus Active Workload.\nThis is what's actually available for new work.">
+                      <div className="text-sm font-medium text-green-700 mb-1 flex items-center gap-1">
+                        Remaining Capacity
+                        <span className="text-green-400">ⓘ</span>
+                      </div>
+                    </Tooltip>
+                    <div className="text-3xl font-bold text-green-900">{(totalCapacity - activeWorkload).toFixed(1)} SP</div>
+                    <div className="text-xs text-green-600 mt-1">Available for new work</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Completed/Awaiting Section (Transparency only) */}
+              {(completedSP > 0 || awaitingWorkload > 0) && (
+                <div>
+                  <Tooltip content="Completed/Awaiting Work\n\nWork that is already delivered or waiting for others.\nThis is shown for transparency but does NOT consume assignee capacity.">
+                    <h4 className="text-sm font-semibold text-slate-700 mb-2 inline-flex items-center gap-1">
+                      📋 Completed/Awaiting (Excluded from Capacity)
+                      <span className="text-slate-400">ⓘ</span>
+                    </h4>
+                  </Tooltip>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
+                      <Tooltip content="Completed Work\n\nStory Points from items marked as Done.\nWork is delivered, assignee is free.">
+                        <div className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+                          Completed (Done)
+                          <span className="text-gray-400">ⓘ</span>
+                        </div>
+                      </Tooltip>
+                      <div className="text-3xl font-bold text-gray-900">{completedSP.toFixed(1)} SP</div>
+                      <div className="text-xs text-gray-600 mt-1">Delivered, excluded</div>
+                    </div>
+                    
+                    <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
+                      <Tooltip content="Awaiting Downstream\n\nWork waiting for testing or versioning.\nAssignee's job is done, excluded from capacity.">
+                        <div className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+                          Awaiting Downstream
+                          <span className="text-gray-400">ⓘ</span>
+                        </div>
+                      </Tooltip>
+                      <div className="text-3xl font-bold text-gray-900">{awaitingWorkload.toFixed(1)} SP</div>
+                      <div className="text-xs text-gray-600 mt-1">Waiting for others, excluded</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Clear PM Rule */}
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                  <div className="text-sm text-amber-800">
+                    <strong>PM Decision Rule:</strong> Only look at <strong>Active Workload ({activeWorkload.toFixed(1)} SP)</strong> versus <strong>Sprint Capacity ({totalCapacity} SP)</strong>. 
+                    Completed/Awaiting work ({completedSP.toFixed(1)} SP) is already delivered and doesn't affect capacity.
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* UPDATED: Capacity Planning Table - PM-First Design */}
+      <div className="bg-white rounded-xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold text-slate-900">Sprint Capacity Planning</h2>
+          <button
+            onClick={() => setShowBulkCapacityEdit(true)}
+            disabled={selectedAssignees.size === 0}
+            className={`px-4 py-2 rounded-lg font-semibold flex items-center gap-2 ${
+              selectedAssignees.size > 0 
+                ? 'bg-blue-600 text-white hover:bg-blue-500' 
+                : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+            }`}
+          >
+            <Edit3 className="w-4 h-4" />
+            Bulk Edit Capacity ({selectedAssignees.size})
+          </button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50">
+                <th className="px-4 py-3 text-center">
+                  <input
+                    type="checkbox"
+                    checked={selectedAssignees.size === assigneeList.length && assigneeList.length > 0}
+                    onChange={() => handleSelectAllAssignees(assigneeList)}
+                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                  />
+                </th>
+                <th className="px-4 py-3 text-left font-semibold text-slate-700">Assignee</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-700">Sprint Capacity</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-700 bg-red-50">Active Workload (SP)</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-700 bg-green-50">Remaining Capacity</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-700">Capacity Status</th>
+                <th className="px-4 py-3 text-left font-semibold text-slate-700">PM Guidance</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {Object.entries(stats).map(([assignee, data]) => (
+                <tr key={assignee} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedAssignees.has(assignee)}
+                      onChange={() => handleToggleAssignee(assignee)}
+                      className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    />
+                  </td>
+                  <td className="px-4 py-3 font-bold text-gray-900">{assignee}</td>
+                  <td className="px-4 py-3 text-center">
+                    <input
+                      type="number"
+                      min={0}
+                      value={assigneeCaps[assignee] ?? data.sprintCapacity}
+                      onChange={(e) => setAssigneeCaps(prev => ({ ...prev, [assignee]: Number(e.target.value) || 0 }))}
+                      className="w-20 px-2 py-1 rounded text-center border border-slate-300 text-slate-900 bg-white"
+                    />
+                  </td>
+                  <td className="px-4 py-3 text-center bg-red-50">
+                    <div className="font-semibold text-red-700 text-lg">
+                      {data.activeWorkload.toFixed(1)}
+                    </div>
+                    <div className="text-xs text-red-600">
+                      ({data.activeItems} active items)
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-center bg-green-50">
+                    <div className={`text-2xl font-bold ${
+                      data.remainingCapacity > 0 ? 'text-green-600' :
+                      data.remainingCapacity === 0 ? 'text-amber-600' :
+                      'text-red-600'
+                    }`}>
+                      {data.remainingCapacity > 0 ? '+' : ''}{data.remainingCapacity.toFixed(1)}
+                    </div>
+                    <div className="text-xs text-green-600">
+                      {data.remainingCapacity > 0 ? 'Available' : data.remainingCapacity === 0 ? 'No buffer' : 'Overloaded'}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <span className={`px-3 py-1.5 rounded-full text-sm font-bold ${
+                      data.capacityStatus === 'Has Capacity' ? 'bg-green-100 text-green-800 border-2 border-green-300' :
+                      data.capacityStatus === 'Fully Allocated' ? 'bg-amber-100 text-amber-800 border-2 border-amber-300' :
+                      'bg-red-100 text-red-800 border-2 border-red-300'
+                    }`}>
+                      {data.capacityStatus}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-left">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">
+                        {data.capacityStatus === 'Has Capacity' ? '✅' :
+                         data.capacityStatus === 'Fully Allocated' ? '🟡' :
+                         '❌'}
+                      </span>
+                      <span className="text-sm font-medium text-slate-700">
+                        {data.pmGuidance}
+                      </span>
+                    </div>
+                    {/* Show completed/awaiting for transparency */}
+                    {(data.completedWorkload > 0 || data.awaitingWorkload > 0) && (
+                      <div className="text-xs text-slate-500 mt-1">
+                        Completed/Awaiting: {(data.completedWorkload + data.awaitingWorkload).toFixed(1)} SP (excluded)
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* PM Decision Legend */}
+        <div className="mt-6 p-4 bg-slate-50 rounded-lg border border-slate-200">
+          <h4 className="text-sm font-semibold text-slate-700 mb-2">How to read this table (PM Perspective):</h4>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-green-500"></div>
+              <div>
+                <div className="font-semibold">✅ Has Capacity</div>
+                <div className="text-slate-600">Remaining Capacity &gt; 0. Safe to add work.</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+              <div>
+                <div className="font-semibold">🟡 Fully Allocated</div>
+                <div className="text-slate-600">Remaining Capacity = 0. No buffer, avoid adding work.</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <div>
+                <div className="font-semibold">❌ Overloaded</div>
+                <div className="text-slate-600">Remaining Capacity &lt; 0. Reduce scope immediately.</div>
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 text-xs text-slate-500">
+            <strong>Note:</strong> "Completed/Awaiting" SP is shown for transparency but excluded from capacity calculations.
+            Only "Active Workload" (To Do + In Progress) consumes capacity.
+          </div>
+        </div>
       </div>
     </div>
   );
 };
 
-const SprintsSection = ({ milestoneTracking, getProjectColor, selectedSprint }) => {
+const SprintsSection = ({ milestoneTracking, getProjectColor, selectedSprint, selectedProject }) => {
   const filteredMilestones = useMemo(() => {
-    if (selectedSprint === 'all') return milestoneTracking;
-    return milestoneTracking.filter(m => m.sprint === selectedSprint);
-  }, [milestoneTracking, selectedSprint]);
+    let data = milestoneTracking;
+    if (selectedSprint !== 'all') {
+      data = data.filter(m => m.sprint === selectedSprint);
+    }
+    if (selectedProject !== 'all') {
+      data = data.filter(m => m.project === selectedProject);
+    }
+    return data;
+  }, [milestoneTracking, selectedSprint, selectedProject]);
 
   return (
     <div className="bg-white rounded-xl p-6">
@@ -1012,21 +1938,31 @@ const SprintsSection = ({ milestoneTracking, getProjectColor, selectedSprint }) 
   );
 };
 
-const ProjectsSection = ({ projectProgressData, getProjectColor }) => {
+const ProjectsSection = ({ projectProgressData, getProjectColor, onProjectClick, selectedSprint, selectedAssignee }) => {
+  const filteredProjects = useMemo(() => {
+    return projectProgressData.filter(project => {
+      // Filter by sprint/assignee if needed
+      return true; // For now, show all projects
+    });
+  }, [projectProgressData, selectedSprint, selectedAssignee]);
+
   return (
     <div className="bg-white rounded-xl p-6">
       <h2 className="text-xl font-bold text-slate-900 mb-4">Project Progress</h2>
-      {projectProgressData.length === 0 ? (
+      {filteredProjects.length === 0 ? (
         <p className="text-slate-600">No project data available</p>
       ) : (
         <div className="space-y-4">
-          {projectProgressData.map((p) => (
+          {filteredProjects.map((p) => (
             <div key={p.project}>
               <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => onProjectClick(p.project)}
+                  className="flex items-center gap-2 hover:opacity-75 transition"
+                >
                   <span className="w-3 h-3 rounded-full" style={{ backgroundColor: getProjectColor(p.project) }} />
                   <span className="font-medium text-slate-900">{p.project}</span>
-                </div>
+                </button>
                 <div className="text-xs text-slate-600">
                   {p.doneItems}/{p.totalItems} items · {p.completedSP.toFixed(1)}/{p.totalSP.toFixed(1)} SP
                 </div>
@@ -1045,9 +1981,11 @@ const ProjectsSection = ({ projectProgressData, getProjectColor }) => {
   );
 };
 
-const DataSection = ({ stats, filteredData }) => {
+// Enhanced DataSection with bulk edit and hide done functionality
+const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, selectedProject }) => {
   const [showNoStoryPoints, setShowNoStoryPoints] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [hideDone, setHideDone] = useState(false);
 
   const displayData = useMemo(() => {
     let result = filteredData;
@@ -1057,8 +1995,11 @@ const DataSection = ({ stats, filteredData }) => {
     if (statusFilter !== 'all') {
       result = result.filter(item => item['Status'] === statusFilter);
     }
+    if (hideDone) {
+      result = result.filter(item => item['Status'] !== 'Done');
+    }
     return result;
-  }, [filteredData, showNoStoryPoints, statusFilter]);
+  }, [filteredData, showNoStoryPoints, statusFilter, hideDone]);
 
   const statusCounts = useMemo(() => {
     const counts = { 'Done': 0, 'In Progress': 0, 'To Do': 0, 'Awaiting Testing': 0, 'Awaiting Versioning': 0, 'Other': 0 };
@@ -1110,15 +2051,16 @@ const DataSection = ({ stats, filteredData }) => {
         </button>
       </div>
 
-      {(statusFilter !== 'all' || showNoStoryPoints) && (
+      {(statusFilter !== 'all' || showNoStoryPoints || hideDone) && (
         <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-lg">
           <div className="flex items-center justify-between">
             <div className="text-sm text-blue-800">
               <span className="font-semibold">Active Filters:</span>
               {statusFilter !== 'all' && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">{statusFilter}</span>}
               {showNoStoryPoints && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">No Story Points</span>}
+              {hideDone && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">Hide Done</span>}
             </div>
-            <button onClick={() => { setStatusFilter('all'); setShowNoStoryPoints(false); }} className="text-sm text-blue-600 hover:text-blue-800 font-semibold underline">
+            <button onClick={() => { setStatusFilter('all'); setShowNoStoryPoints(false); setHideDone(false); }} className="text-sm text-blue-600 hover:text-blue-800 font-semibold underline">
               Clear All
             </button>
           </div>
@@ -1132,24 +2074,32 @@ const DataSection = ({ stats, filteredData }) => {
             <thead>
               <tr className="bg-slate-50">
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Assignee</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-700">Epics</th>
                 <th className="px-4 py-3 text-center font-semibold text-slate-700">Stories</th>
                 <th className="px-4 py-3 text-center font-semibold text-slate-700">Bugs</th>
                 <th className="px-4 py-3 text-center font-semibold text-slate-700">Tasks/Sub-tasks</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-700">Total SP</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-700">Done SP</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-700">Active SP</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-700">Completed SP</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-700">Capacity Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {Object.entries(stats).map(([assignee, data]) => (
                 <tr key={assignee} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900">{assignee}</td>
-                  <td className="px-4 py-3 text-center text-gray-700">{data.epics}</td>
                   <td className="px-4 py-3 text-center text-gray-700">{data.stories}</td>
                   <td className="px-4 py-3 text-center text-gray-700">{data.bugs}</td>
                   <td className="px-4 py-3 text-center text-gray-700">{data.tasks + data.subtasks}</td>
-                  <td className="px-4 py-3 text-center font-semibold text-gray-900">{data.totalStoryPoints.toFixed(1)}</td>
-                  <td className="px-4 py-3 text-center text-green-600 font-semibold">{data.completedStoryPoints.toFixed(1)}</td>
+                  <td className="px-4 py-3 text-center font-semibold text-red-600">{data.activeWorkload.toFixed(1)}</td>
+                  <td className="px-4 py-3 text-center text-green-600 font-semibold">{data.totalCompletedSP.toFixed(1)}</td>
+                  <td className="px-4 py-3 text-center">
+                    <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                      data.capacityStatus === 'Has Capacity' ? 'bg-green-100 text-green-800' :
+                      data.capacityStatus === 'Fully Allocated' ? 'bg-amber-100 text-amber-800' :
+                      'bg-red-100 text-red-800'
+                    }`}>
+                      {data.capacityStatus}
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1162,17 +2112,32 @@ const DataSection = ({ stats, filteredData }) => {
           <h2 className="text-xl font-bold text-slate-900">
             Raw Data ({displayData.length} items)
           </h2>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showNoStoryPoints}
-              onChange={(e) => setShowNoStoryPoints(e.target.checked)}
-              className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-            />
-            <span className="text-sm font-medium text-slate-700">
-              Show only tickets without Story Points
-            </span>
-          </label>
+          <div className="flex items-center gap-6">
+            {/* Hide Done checkbox */}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={hideDone}
+                onChange={(e) => setHideDone(e.target.checked)}
+                className="w-4 h-4 text-green-600 rounded focus:ring-green-500"
+              />
+              <span className="text-sm font-medium text-slate-700">
+                Hide Done items
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showNoStoryPoints}
+                onChange={(e) => setShowNoStoryPoints(e.target.checked)}
+                className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+              />
+              <span className="text-sm font-medium text-slate-700">
+                Show only tickets without Story Points
+              </span>
+            </label>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -1236,14 +2201,32 @@ const DataSection = ({ stats, filteredData }) => {
     </div>
   );
 };
-//mmmm
-const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getProjectColor, onProjectClick, projectTargets, setProjectTargets }) => {
+
+const TimelineSection = ({ 
+  timelineData, 
+  programEndDate, 
+  setProgramEndDate, 
+  getProjectColor, 
+  onProjectClick, 
+  projectTargets, 
+  setProjectTargets,
+  selectedSprint,
+  setSelectedSprint,
+  selectedAssignee,
+  setSelectedAssignee,
+  selectedProject,
+  setSelectedProject,
+  sprints,
+  assignees,
+  projects
+}) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   const [statusFilter, setStatusFilter] = useState('all');
   const [showInsights, setShowInsights] = useState(true);
   const [showGantt, setShowGantt] = useState(true);
+  const [showFilters, setShowFilters] = useState(false);
 
   const enhancedTimelineData = useMemo(() => {
     return timelineData.map(project => {
@@ -1279,7 +2262,6 @@ const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getP
     return data.sort((a, b) => a.sortOrder - b.sortOrder);
   }, [enhancedTimelineData, statusFilter]);
 
-  // Gantt date range
   const ganttDates = filteredAndSortedData.flatMap(p => [p.startDate, p.effectiveEndDate]);
   if (programEndDate) ganttDates.push(programEndDate);
   const ganttMin = ganttDates.length ? new Date(Math.min(...ganttDates.map(d => new Date(d)))) : today;
@@ -1288,7 +2270,6 @@ const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getP
   ganttMax.setMonth(ganttMax.getMonth() + 2);
   const ganttTotalDays = Math.ceil((ganttMax - ganttMin) / (1000 * 60 * 60 * 24));
 
-  // Corporate month header
   const monthHeader = [];
   let current = new Date(ganttMin);
   while (current <= ganttMax) {
@@ -1301,7 +2282,6 @@ const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getP
     current.setMonth(current.getMonth() + 1);
   }
 
-  // Overlap shading
   const overlapZones = [];
   const dayStep = 7;
   for (let day = 0; day < ganttTotalDays; day += dayStep) {
@@ -1317,7 +2297,6 @@ const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getP
     }
   }
 
-  // Analytics & Insights
   const analytics = useMemo(() => {
     const complete = filteredAndSortedData.filter(p => p.isComplete).length;
     const onTrack = filteredAndSortedData.filter(p => p.status === 'On Track').length;
@@ -1340,13 +2319,19 @@ const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getP
 
   return (
     <div className="space-y-8">
-      {/* Header & Controls */}
       <div className="flex flex-wrap items-center justify-between gap-6">
         <div>
           <h2 className="text-4xl font-bold text-white">Program Timeline</h2>
           <p className="text-xl text-slate-400 mt-2">Project delivery status and scheduling</p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
+          <button 
+            onClick={() => setShowFilters(!showFilters)}
+            className="px-6 py-3 bg-slate-700 text-white rounded-xl hover:bg-slate-600 font-medium flex items-center gap-2"
+          >
+            <Filter className="w-4 h-4" />
+            {showFilters ? 'Hide' : 'Show'} Filters
+          </button>
           <button 
             onClick={() => setStatusFilter('Delayed')} 
             className={`px-6 py-3 rounded-xl font-medium transition ${statusFilter === 'Delayed' ? 'bg-red-600 text-white shadow-lg' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
@@ -1382,7 +2367,69 @@ const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getP
         </div>
       </div>
 
-      {/* KPIs */}
+      {/* ADDED: Filter dropdowns for Timeline section */}
+      {showFilters && (
+        <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700">
+          <h3 className="text-xl font-bold text-white mb-4">Filter Timeline Data</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">Sprint</label>
+              <select
+                value={selectedSprint}
+                onChange={(e) => setSelectedSprint(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-700 border border-slate-600 rounded-lg text-white focus:ring-2 focus:ring-blue-500"
+              >
+                {sprints.map(sprint => (
+                  <option key={sprint} value={sprint}>
+                    {sprint === 'all' ? 'All Sprints' : sprint}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">Assignee</label>
+              <select
+                value={selectedAssignee}
+                onChange={(e) => setSelectedAssignee(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-700 border border-slate-600 rounded-lg text-white focus:ring-2 focus:ring-blue-500"
+              >
+                {assignees.map(assignee => (
+                  <option key={assignee} value={assignee}>
+                    {assignee === 'all' ? 'All Assignees' : assignee}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">Project</label>
+              <select
+                value={selectedProject}
+                onChange={(e) => setSelectedProject(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-700 border border-slate-600 rounded-lg text-white focus:ring-2 focus:ring-blue-500"
+              >
+                {projects.map(project => (
+                  <option key={project} value={project}>
+                    {project === 'all' ? 'All Projects' : project}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="flex justify-end mt-4">
+            <button
+              onClick={() => {
+                setSelectedSprint('all');
+                setSelectedAssignee('all');
+                setSelectedProject('all');
+              }}
+              className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-colors"
+            >
+              Reset Filters
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6">
         <KPICard icon={Briefcase} value={analytics.total} label="Total Projects" status="neutral" />
         <KPICard icon={CheckCircle} value={analytics.complete} label="Complete" status="success" />
@@ -1392,7 +2439,6 @@ const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getP
         <KPICard icon={Target} value={`${analytics.completedSP.toFixed(0)} / ${analytics.totalSP.toFixed(0)} SP`} label="Story Points" status="neutral" />
       </div>
 
-      {/* Smart Insights */}
       {showInsights && insights.length > 0 && (
         <div className="bg-gradient-to-r from-slate-800/80 to-slate-900/80 border border-slate-700 rounded-2xl p-8 shadow-2xl">
           <div className="flex items-center justify-between mb-6">
@@ -1410,12 +2456,10 @@ const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getP
         </div>
       )}
 
-      {/* Gantt View */}
       {showGantt && (
         <div className="bg-slate-900/60 rounded-2xl p-10 shadow-2xl">
           <h3 className="text-3xl font-bold text-white mb-8">Project Overlap & Concurrency</h3>
 
-          {/* Clean Corporate Date Header */}
           <div className="relative h-24 mb-12">
             <div className="absolute inset-x-0 top-0 h-px bg-slate-600" />
             <div className="absolute inset-x-0 bottom-0 h-px bg-slate-600" />
@@ -1427,187 +2471,240 @@ const TimelineSection = ({ timelineData, programEndDate, setProgramEndDate, getP
                 </div>
               ))}
             </div>
-          </div>
-
-          {/* Gantt Content */}
-          <div className="overflow-x-auto">
-            <div style={{ minWidth: '1600px', height: `${filteredAndSortedData.length * 80 + 120}px`, position: 'relative' }}>
-              {/* Overlap Shading */}
+            <div className="absolute inset-x-0 top-full h-12">
               {overlapZones.map((zone, i) => (
-                <div key={i} className="absolute top-0 bottom-0 bg-red-900/15" style={{ left: `${zone.start}%`, width: `${zone.end - zone.start}%` }} />
+                <div
+                  key={i}
+                  className="absolute top-0 h-12 bg-amber-500/20 border border-amber-500/30"
+                  style={{ left: `${zone.start}%`, width: `${zone.end - zone.start}%` }}
+                />
               ))}
-
-              {/* TODAY & TARGET Lines */}
-              <div className="absolute top-0 bottom-0 w-4 bg-yellow-400 z-30 shadow-[0_0_40px_rgba(250,204,21,0.9)]" style={{ left: `${((today - ganttMin) / (1000*60*60*24) / ganttTotalDays) * 100}%` }}>
-                <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-full bg-yellow-400 text-black font-bold px-8 py-4 rounded-b-3xl shadow-2xl text-2xl">
-                  TODAY
-                </div>
+              <div className="relative h-full">
+                {filteredAndSortedData.map((project, i) => {
+                  const startPercent = ((new Date(project.startDate) - ganttMin) / (ganttTotalDays * 24 * 60 * 60 * 1000)) * 100;
+                  const endPercent = ((new Date(project.effectiveEndDate) - ganttMin) / (ganttTotalDays * 24 * 60 * 60 * 1000)) * 100;
+                  return (
+                    <div
+                      key={i}
+                      className="absolute top-0 h-8 rounded-lg shadow-lg transform transition-transform hover:scale-105 cursor-pointer"
+                      style={{
+                        left: `${startPercent}%`,
+                        width: `${endPercent - startPercent}%`,
+                        backgroundColor: getProjectColor(project.project),
+                      }}
+                      onClick={() => onProjectClick(project.project)}
+                    />
+                  );
+                })}
               </div>
-              {programEndDate && (
-                <div className="absolute top-0 bottom-0 w-4 bg-purple-500 z-30 shadow-[0_0_40px_rgba(168,85,247,0.9)]" style={{ left: `${((new Date(programEndDate) - ganttMin) / (1000*60*60*24) / ganttTotalDays) * 100}%` }}>
-                  <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-full bg-purple-600 text-white font-bold px-8 py-4 rounded-b-3xl shadow-2xl text-2xl">
-                    TARGET
-                  </div>
-                </div>
-              )}
-
-              {/* Project Bars */}
-              {filteredAndSortedData.map((project, i) => {
-                const startPercent = ((new Date(project.startDate) - ganttMin) / (1000*60*60*24) / ganttTotalDays) * 100;
-                const widthPercent = ((new Date(project.effectiveEndDate) - new Date(project.startDate)) / (1000*60*60*24) / ganttTotalDays) * 100;
-
-                const barColor = project.isComplete ? 'bg-gradient-to-r from-green-600 to-emerald-500' :
-                                 project.isDelayed ? 'bg-gradient-to-r from-red-700 to-red-600' :
-                                 project.isEarly ? 'bg-gradient-to-r from-emerald-600 to-teal-500' :
-                                 'bg-gradient-to-r from-blue-600 to-indigo-500';
-
-                return (
-                  <div 
-                    key={project.project} 
-                    className={`absolute h-16 rounded-2xl shadow-2xl ${barColor} opacity-90 hover:opacity-100 transition-all cursor-pointer`}
-                    style={{ top: `${i * 80 + 120}px`, left: `${startPercent}%`, width: `${widthPercent}%` }}
-                    onClick={() => onProjectClick(project.project)}
-                  >
-                    <div className="h-full bg-white/25 rounded-2xl" style={{ width: `${project.percentComplete}%` }} />
-                    <div className="absolute inset-0 flex items-center pl-10 text-white font-bold text-2xl truncate">
-                      {project.project} ({project.percentComplete}%)
-                    </div>
-                  </div>
-                );
-              })}
             </div>
           </div>
 
-          {/* Legend */}
-          <div className="mt-12 bg-slate-800/80 backdrop-blur rounded-2xl p-8 max-w-md mx-auto">
-            <h4 className="text-xl font-bold text-white mb-6 text-center">Legend</h4>
-            <div className="grid grid-cols-2 gap-6">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-gradient-to-r from-red-700 to-red-600 rounded-xl" />
-                <span className="text-white font-medium">Delayed</span>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-gradient-to-r from-blue-600 to-indigo-500 rounded-xl" />
-                <span className="text-white font-medium">On Track</span>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-gradient-to-r from-emerald-600 to-teal-500 rounded-xl" />
-                <span className="text-white font-medium">Early</span>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-gradient-to-r from-green-600 to-emerald-500 rounded-xl" />
-                <span className="text-white font-medium">Complete</span>
-              </div>
+          <div className="flex items-center justify-between text-lg text-slate-400 px-4">
+            <div className="flex items-center gap-3">
+              <div className="w-4 h-4 bg-amber-500/20 border border-amber-500/30 rounded"></div>
+              <span>High overlap zone (≥3 projects)</span>
             </div>
-            <div className="mt-6 pt-6 border-t border-slate-700 text-center text-slate-400">
-              Red shaded zones indicate periods with 3+ concurrent projects
+            <div className="text-right">
+              {filteredAndSortedData.length} active projects shown
             </div>
           </div>
         </div>
       )}
 
-      {/* Main Table with Target Date Editors */}
-      <div className="bg-slate-900/50 rounded-2xl overflow-hidden shadow-2xl">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-slate-800/70">
+      <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-2xl p-8 shadow-2xl">
+        <h3 className="text-3xl font-bold text-white mb-8">Project Timeline Details</h3>
+        
+        <div className="overflow-x-auto rounded-xl border border-slate-700">
+          <table className="w-full text-lg">
+            <thead className="bg-slate-800">
               <tr>
-                <th className="px-10 py-6 text-left text-sm font-semibold text-slate-300 uppercase tracking-wider">Project</th>
-                <th className="px-10 py-6 text-left text-sm font-semibold text-slate-300 uppercase tracking-wider">Status</th>
-                <th className="px-10 py-6 text-center text-sm font-semibold text-slate-300 uppercase tracking-wider">Progress</th>
-                <th className="px-10 py-6 text-center text-sm font-semibold text-slate-300 uppercase tracking-wider">Story Points</th>
-                <th className="px-10 py-6 text-left text-sm font-semibold text-slate-300 uppercase tracking-wider">Target End Date</th>
+                <th className="py-6 px-8 text-left font-semibold text-slate-300">Project</th>
+                <th className="py-6 px-8 text-left font-semibold text-slate-300">Progress</th>
+                <th className="py-6 px-8 text-left font-semibold text-slate-300">Start Date</th>
+                <th className="py-6 px-8 text-left font-semibold text-slate-300">Target End</th>
+                <th className="py-6 px-8 text-left font-semibold text-slate-300">Days to Target</th>
+                <th className="py-6 px-8 text-left font-semibold text-slate-300">Status</th>
+                <th className="py-6 px-8 text-left font-semibold text-slate-300">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700">
-              {filteredAndSortedData.map((project, index) => {
-                const statusColor = project.isComplete ? 'text-green-400 bg-green-900/40' :
-                                    project.isDelayed ? 'text-red-400 bg-red-900/40' :
-                                    project.isEarly ? 'text-emerald-400 bg-emerald-900/40' :
-                                    'text-blue-400 bg-blue-900/40';
-
-                const statusIcon = project.isComplete ? '✓' : project.isDelayed ? '⚠️' : project.isEarly ? '↑' : '→';
-
-                return (
-                  <tr key={project.project} className={`hover:bg-slate-800/50 transition-all ${index % 2 === 0 ? 'bg-slate-800/20' : ''}`}>
-                    <td className="px-10 py-8">
-                      <button 
-                        onClick={() => onProjectClick(project.project)}
-                        className="text-2xl font-bold text-white hover:text-blue-300 transition"
-                      >
+              {filteredAndSortedData.map((project, i) => (
+                <tr key={i} className="hover:bg-slate-800/50 transition-colors">
+                  <td className="py-6 px-8">
+                    <button
+                      onClick={() => onProjectClick(project.project)}
+                      className="flex items-center gap-4 hover:opacity-75 transition"
+                    >
+                      <span
+                        className="w-5 h-5 rounded-full"
+                        style={{ backgroundColor: getProjectColor(project.project) }}
+                      />
+                      <span className="text-2xl font-bold text-white">
                         {project.project}
-                      </button>
-                      <div className="text-sm text-slate-400 mt-2">
-                        Started {new Date(project.startDate).toLocaleDateString()}
-                      </div>
-                    </td>
-                    <td className="px-10 py-8">
-                      <div className={`inline-flex items-center gap-4 px-6 py-4 rounded-2xl font-medium ${statusColor}`}>
-                        <span className="text-3xl">{statusIcon}</span>
-                        <div>
-                          <div className="text-xl">{project.status}</div>
-                          {project.isDelayed && <div className="text-sm opacity-90">{Math.abs(project.daysToTarget)} days late</div>}
-                          {project.isEarly && <div className="text-sm opacity-90">{project.daysToTarget} days early</div>}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-10 py-8">
-                      <div className="flex items-center gap-6">
-                        <div className="flex-1 bg-slate-700 rounded-2xl h-14 overflow-hidden">
-                          <div 
-                            className={`h-full rounded-2xl transition-all duration-1000 ${
-                              project.isComplete ? 'bg-gradient-to-r from-green-500 to-emerald-400' :
-                              project.isDelayed ? 'bg-gradient-to-r from-red-600 to-red-500' :
-                              project.isEarly ? 'bg-gradient-to-r from-emerald-500 to-teal-400' :
-                              'bg-gradient-to-r from-blue-500 to-indigo-400'
-                            }`}
-                            style={{ width: `${project.percentComplete}%` }}
-                          />
-                        </div>
-                        <span className="text-3xl font-extrabold text-white w-24 text-right">
-                          {project.percentComplete}%
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-10 py-8 text-center">
-                      <div className="text-2xl font-bold text-slate-200">
-                        {project.completedSP.toFixed(1)} / {project.totalSP.toFixed(1)}
-                      </div>
-                      <div className="text-sm text-slate-500 mt-1">Story Points</div>
-                    </td>
-                    <td className="px-10 py-8">
-                      <div className="flex items-center gap-6">
-                        <input
-                          type="date"
-                          value={projectTargets[project.project] || ''}
-                          onChange={(e) => {
-                            const newTargets = { ...projectTargets };
-                            if (e.target.value) {
-                              newTargets[project.project] = e.target.value;
-                            } else {
-                              delete newTargets[project.project];
-                            }
-                            setProjectTargets(newTargets);
+                      </span>
+                    </button>
+                  </td>
+                  <td className="py-6 px-8">
+                    <div className="flex items-center gap-6">
+                      <div className="w-56 bg-slate-700 rounded-full h-8 overflow-hidden">
+                        <div
+                          className="h-8 rounded-full"
+                          style={{
+                            width: `${project.percentComplete}%`,
+                            backgroundColor: getProjectColor(project.project),
                           }}
-                          className="px-6 py-4 bg-slate-700 border border-slate-600 rounded-2xl text-white text-lg focus:ring-4 focus:ring-blue-500 focus:border-blue-500 transition-all"
                         />
-                        <span className="text-lg text-slate-300">
-                          {new Date(project.effectiveEndDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                        </span>
                       </div>
-                    </td>
-                  </tr>
-                );
-              })}
+                      <span className="text-2xl font-bold text-white">
+                        {project.percentComplete}%
+                      </span>
+                    </div>
+                    <div className="text-lg text-slate-400 mt-2">
+                      {project.completedSP.toFixed(0)} / {project.totalSP.toFixed(0)} SP
+                    </div>
+                  </td>
+                  <td className="py-6 px-8">
+                    <div className="text-2xl font-bold text-white">
+                      {project.startDate ? new Date(project.startDate).toLocaleDateString('en-GB') : '-'}
+                    </div>
+                  </td>
+                  <td className="py-6 px-8">
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="date"
+                        value={projectTargets[project.project] || project.endDate}
+                        onChange={(e) =>
+                          setProjectTargets(prev => ({
+                            ...prev,
+                            [project.project]: e.target.value,
+                          }))
+                        }
+                        className="px-4 py-3 bg-slate-700 border border-slate-600 rounded-lg text-white text-lg focus:ring-4 focus:ring-blue-500"
+                      />
+                    </div>
+                  </td>
+                  <td className="py-6 px-8">
+                    <div
+                      className={`text-3xl font-bold ${
+                        project.isComplete
+                          ? 'text-green-400'
+                          : project.daysToTarget >= 0
+                          ? 'text-green-400'
+                          : 'text-red-400'
+                      }`}
+                    >
+                      {project.isComplete
+                        ? '✓'
+                        : project.daysToTarget >= 0
+                        ? `${project.daysToTarget}d`
+                        : `${Math.abs(project.daysToTarget)}d late`}
+                    </div>
+                  </td>
+                  <td className="py-6 px-8">
+                    <span
+                      className={`px-6 py-3 rounded-full text-xl font-bold ${
+                        project.isComplete
+                          ? 'bg-emerald-900/30 text-emerald-300 border border-emerald-700'
+                          : project.isDelayed
+                          ? 'bg-red-900/30 text-red-300 border border-red-700'
+                          : project.isEarly
+                          ? 'bg-blue-900/30 text-blue-300 border border-blue-700'
+                          : 'bg-green-900/30 text-green-300 border border-green-700'
+                      }`}
+                    >
+                      {project.status}
+                    </span>
+                  </td>
+                  <td className="py-6 px-8">
+                    <button
+                      onClick={() => {
+                        if (projectTargets[project.project]) {
+                          const newTargets = { ...projectTargets };
+                          delete newTargets[project.project];
+                          setProjectTargets(newTargets);
+                        } else {
+                          setProjectTargets(prev => ({
+                            ...prev,
+                            [project.project]: project.endDate,
+                          }));
+                        }
+                      }}
+                      className={`px-6 py-3 rounded-lg font-semibold text-lg ${
+                        projectTargets[project.project]
+                          ? 'bg-red-600/20 text-red-300 hover:bg-red-600/30'
+                          : 'bg-blue-600/20 text-blue-300 hover:bg-blue-600/30'
+                      }`}
+                    >
+                      {projectTargets[project.project] ? 'Reset Target' : 'Set Custom Target'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
+        </div>
+
+        {filteredAndSortedData.length === 0 && (
+          <div className="text-center py-16">
+            <div className="text-8xl mb-8">📊</div>
+            <h4 className="text-3xl font-bold text-slate-300 mb-4">
+              No projects match the selected filter
+            </h4>
+            <p className="text-xl text-slate-400">
+              Try changing the status filter or upload more data
+            </p>
+          </div>
+        )}
+
+        <div className="mt-8 p-6 bg-slate-800/50 rounded-xl">
+          <h4 className="text-2xl font-bold text-white mb-4">How to Use This Timeline</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-4">
+              <div className="flex items-center gap-4">
+                <span className="text-3xl">🎯</span>
+                <div>
+                  <h5 className="text-lg font-semibold text-white">Set Custom Targets</h5>
+                  <p className="text-slate-400">
+                    Click "Set Custom Target" to adjust project end dates for planning
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <span className="text-3xl">⚠️</span>
+                <div>
+                  <h5 className="text-lg font-semibold text-white">Monitor Delays</h5>
+                  <p className="text-slate-400">
+                    Red projects are delayed and need immediate attention
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-4">
+              <div className="flex items-center gap-4">
+                <span className="text-3xl">👀</span>
+                <div>
+                  <h5 className="text-lg font-semibold text-white">Track Overlap</h5>
+                  <p className="text-slate-400">
+                    Amber zones show where 3+ projects overlap (resource contention)
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <span className="text-3xl">📈</span>
+                <div>
+                  <h5 className="text-lg font-semibold text-white">Program Deadline</h5>
+                  <p className="text-slate-400">
+                    Set a program target date to see overall progress against deadline
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
 };
-
-// All other sections (OverviewSection, RiskSection, CapacitySection, SprintsSection, ProjectsSection, DataSection) remain exactly as in your previous full version.
-// Paste them after this TimelineSection and before export default.
 
 export default SprintDashboard;
