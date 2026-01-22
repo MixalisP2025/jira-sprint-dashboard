@@ -1,29 +1,11 @@
 import React from 'react';
 
-/**
- * KPICard - Simple metric display card
- * 
- * Usage:
- * <KPICard
- *   icon={CheckCircle}
- *   value="87%"
- *   label="Sprint Completion"
- *   status="success"
- * />
- */
-
-const KPICard = ({ 
-  icon: Icon, 
-  value, 
-  label, 
-  status = 'neutral', // success, warning, critical, neutral
-  subtitle
-}) => {
-  const colors = {
-    success: 'border-green-500 bg-green-50',
-    warning: 'border-amber-500 bg-amber-50',
-    critical: 'border-red-500 bg-red-50',
-    neutral: 'border-slate-300 bg-slate-50',
+const KPICard = ({ icon: Icon, value, label, status, subtitle }) => {
+  const statusColors = {
+    success: 'bg-green-50 border-l-4 border-green-500',
+    warning: 'bg-amber-50 border-l-4 border-amber-500',
+    critical: 'bg-red-50 border-l-4 border-red-500',
+    neutral: 'bg-slate-50 border-l-4 border-slate-500',
   };
 
   const textColors = {
@@ -34,25 +16,18 @@ const KPICard = ({
   };
 
   return (
-    <div className={`rounded-xl border-2 ${colors[status]} p-4`}>
+    <div className={`rounded-xl p-4 ${statusColors[status] || statusColors.neutral}`}>
       <div className="flex items-start justify-between mb-2">
-        {Icon && (
-          <Icon className={`w-6 h-6 ${textColors[status]} opacity-80`} />
-        )}
+        <Icon className={`w-6 h-6 ${textColors[status] || textColors.neutral} opacity-80`} />
       </div>
-      
-      <div className={`text-3xl font-bold ${textColors[status]} mb-1`}>
+      <div className={`text-3xl font-bold ${textColors[status] || textColors.neutral} mb-1`}>
         {value}
       </div>
-      
       <p className="text-xs font-medium text-slate-600 uppercase tracking-wide">
         {label}
       </p>
-      
       {subtitle && (
-        <p className="text-xs text-slate-500 mt-2">
-          {subtitle}
-        </p>
+        <p className="text-xs text-slate-500 mt-1">{subtitle}</p>
       )}
     </div>
   );

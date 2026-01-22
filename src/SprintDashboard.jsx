@@ -47,7 +47,7 @@ const SprintDashboard = () => {
   const [showBulkCapacityEdit, setShowBulkCapacityEdit] = useState(false);
   const [selectedAssignees, setSelectedAssignees] = useState(new Set());
   const [bulkCapacityValue, setBulkCapacityValue] = useState('');
-
+  
   // ============== PERSIST SETTINGS ==============
   useEffect(() => {
     try {
@@ -226,7 +226,8 @@ const SprintDashboard = () => {
             
             const sample = decoded.substring(0, 500);
             const hasValidContent = /[a-zA-Z0-9]/.test(sample);
-            const replacementCount = (sample.match(/�/g) || []).length;
+            // Fixed: Use Unicode escape instead of literal replacement character
+            const replacementCount = (sample.match(/\uFFFD/g) || []).length;
             
             if (hasValidContent && replacementCount < 10) {
               text = decoded;
@@ -445,8 +446,8 @@ const SprintDashboard = () => {
       const type = item['Issue Type'];
       if (type === 'Story') byAssignee[assignee].stories++;
       else if (type === 'Bug') byAssignee[assignee].bugs++;
-      else if (type === 'Task') byAssignee[assignee].tasks++;
-      else if (type === 'Sub-task') byAssignee[assignee].subtasks++;
+      else if (type === 'Task' || type === 'Sub-task') byAssignee[assignee].tasks++;
+      else if (type === 'Epic') byAssignee[assignee].epics++;
 
       const status = item['Status'] || '';
       
@@ -807,7 +808,7 @@ const SprintDashboard = () => {
     return colors[Math.abs(hash) % colors.length];
   };
 
-  // UPDATED: Removed Capacity Dashboard tab
+  // UPDATED: Restored Capacity Dashboard tab
   const tabs = {
     overview: { icon: LayoutDashboard, label: 'Overview' },
     risks: { icon: Shield, label: 'Risk Register' },
@@ -953,7 +954,6 @@ const SprintDashboard = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6 space-y-6">
-        {/* ADDED: Universal Filter Panel for all tabs except timeline */}
         {activeTab !== 'timeline' && (
           <FilterPanel
             sprint={selectedSprint}
@@ -964,18 +964,20 @@ const SprintDashboard = () => {
             assignees={assignees}
             onClearAll={() => { setSelectedSprint('all'); setSelectedAssignee('all'); setSelectedProject('all'); }}
           >
-            <div className="flex items-center gap-2">
-              <Filter className="w-4 h-4 text-slate-400" />
-              <select
-                value={selectedProject}
-                onChange={(e) => setSelectedProject(e.target.value)}
-                className="px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="all">All Projects</option>
-                {projects.slice(1).map(p => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-slate-400" />
+                <select
+                  value={selectedProject}
+                  onChange={(e) => setSelectedProject(e.target.value)}
+                  className="px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="all">All Projects</option>
+                  {projects.slice(1).map(p => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+              </div>
             </div>
           </FilterPanel>
         )}
@@ -1039,6 +1041,7 @@ const SprintDashboard = () => {
             onProjectClick={handleProjectClick}
             selectedSprint={selectedSprint}
             selectedAssignee={selectedAssignee}
+            filteredData={filteredData}
           />
         )}
 
@@ -1060,6 +1063,7 @@ const SprintDashboard = () => {
             sprints={sprints}
             assignees={assignees}
             projects={projects}
+            filteredData={filteredData}
           />
         )}
 
@@ -1106,191 +1110,22 @@ const OverviewSection = ({
 }) => {
   const [showSprintConfig, setShowSprintConfig] = useState(false);
   const [tempDays, setTempDays] = useState('');
+  // ticket visibility toggles for overview table
+  const [hideDoneTickets, setHideDoneTickets] = useState(false);
+  const [hideTestingTickets, setHideTestingTickets] = useState(false);
+  const [hideVersioningTickets, setHideVersioningTickets] = useState(false);
 
-  // Project Work Breakdown Component - UPDATED with new model
-  const ProjectWorkBreakdown = ({ filteredData, selectedProject, stats }) => {
-    const projectTickets = useMemo(() => {
-      return filteredData.map(item => {
-        const sp = parseFloat(item['Story Points']) || 0;
-        const type = item['Issue Type'];
-        const status = item['Status'];
-        
-        let capacityCategory = 'Excluded';
-        let contributesToCapacity = 'No';
-        
-        // CRITICAL: Only To Do and In Progress consume capacity
-        if (status === 'To Do' || status === 'In Progress') {
-          capacityCategory = 'Active Work';
-          contributesToCapacity = 'Yes';
-        } else if (status === 'Done' || status === 'Awaiting Testing' || status === 'Awaiting Versioning') {
-          capacityCategory = 'Completed/Awaiting';
-          contributesToCapacity = 'No';
-        }
-        
-        return {
-          key: item['Issue key'] || item['Key'] || '',
-          summary: item['Summary'] || '',
-          type: type || '',
-          status: status || '',
-          assignee: item['Assignee'] || item['D'] || 'Unassigned',
-          sp: sp,
-          capacityCategory,
-          contributesToCapacity,
-          sortPriority: contributesToCapacity === 'Yes' ? 0 : 1
-        };
-      }).sort((a, b) => {
-        if (a.sortPriority !== b.sortPriority) return a.sortPriority - b.sortPriority;
-        return b.sp - a.sp;
-      });
-    }, [filteredData]);
-
-    const projectMetrics = useMemo(() => {
-      const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.sprintCapacity, 0);
-      const projectActiveWork = projectTickets
-        .filter(t => t.contributesToCapacity === 'Yes')
-        .reduce((sum, t) => sum + t.sp, 0);
-      
-      const capacityPercent = totalCapacity > 0 ? (projectActiveWork / totalCapacity) * 100 : 0;
-      const remainingBuffer = totalCapacity - projectActiveWork;
-      
-      let status = 'Safe';
-      let statusColor = 'text-green-700 bg-green-50 border-green-300';
-      let message = `This project uses ${projectActiveWork.toFixed(1)} SP of active capacity (${capacityPercent.toFixed(1)}%). Adding scope is safe.`;
-      
-      if (remainingBuffer < 0) {
-        status = 'Breaking Capacity';
-        statusColor = 'text-red-700 bg-red-50 border-red-300';
-        message = `This project alone exceeds sprint capacity by ${Math.abs(remainingBuffer).toFixed(1)} SP — sprint is overloaded.`;
-      } else if (capacityPercent > 70) {
-        status = 'Risky';
-        statusColor = 'text-amber-700 bg-amber-50 border-amber-300';
-        message = `This project uses ${capacityPercent.toFixed(1)}% of sprint capacity — adding scope will reduce buffer significantly.`;
-      }
-      
-      return {
-        totalCapacity,
-        projectActiveWork,
-        capacityPercent,
-        remainingBuffer,
-        status,
-        statusColor,
-        message
-      };
-    }, [projectTickets, stats]);
-
-    return (
-      <div className="space-y-4">
-        <div className={`border-l-4 p-6 rounded-xl ${projectMetrics.statusColor}`}>
-          <div className="flex items-start gap-3">
-            <Target className="w-6 h-6 flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <h3 className="text-lg font-bold mb-2">Project Capacity Impact: {selectedProject}</h3>
-              <p className="text-base font-medium mb-4">{projectMetrics.message}</p>
-              
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <div>
-                  <div className="font-semibold">Active Work</div>
-                  <div className="text-2xl font-bold">{projectMetrics.projectActiveWork.toFixed(1)} SP</div>
-                </div>
-                <div>
-                  <div className="font-semibold">% of Sprint</div>
-                  <div className="text-2xl font-bold">{projectMetrics.capacityPercent.toFixed(1)}%</div>
-                </div>
-                <div>
-                  <div className="font-semibold">Remaining Buffer</div>
-                  <div className="text-2xl font-bold">{projectMetrics.remainingBuffer.toFixed(1)} SP</div>
-                </div>
-                <div>
-                  <div className="font-semibold">Status</div>
-                  <div className="text-2xl font-bold">{projectMetrics.status}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl p-6">
-          <h2 className="text-xl font-bold text-slate-900 mb-4">
-            Project Work Breakdown: {selectedProject}
-          </h2>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Ticket Key</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Summary</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Issue Type</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Status</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Assignee</th>
-                  <th className="px-4 py-3 text-center font-semibold text-slate-700">Story Points</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Capacity Category</th>
-                  <th className="px-4 py-3 text-center font-semibold text-slate-700">Capacity?</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {projectTickets.map((ticket, idx) => (
-                  <tr key={idx} className={`hover:bg-slate-50 ${ticket.contributesToCapacity === 'Yes' ? 'bg-blue-50/30' : ''}`}>
-                    <td className="px-4 py-3 font-mono text-xs text-blue-600 font-semibold">{ticket.key}</td>
-                    <td className="px-4 py-3 text-slate-700 max-w-xs truncate">{ticket.summary}</td>
-                    <td className="px-4 py-3">
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        ticket.type === 'Story' ? 'bg-green-100 text-green-800' :
-                        ticket.type === 'Bug' ? 'bg-red-100 text-red-800' :
-                        ticket.type === 'Task' || ticket.type === 'Sub-task' ? 'bg-blue-100 text-blue-800' :
-                        'bg-gray-100 text-gray-700'
-                      }`}>
-                        {ticket.type}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        ticket.status === 'Done' ? 'bg-green-100 text-green-800' :
-                        ticket.status === 'In Progress' ? 'bg-blue-100 text-blue-800' :
-                        ticket.status === 'Awaiting Testing' ? 'bg-amber-100 text-amber-800' :
-                        ticket.status === 'Awaiting Versioning' ? 'bg-purple-100 text-purple-800' :
-                        'bg-gray-100 text-gray-700'
-                      }`}>
-                        {ticket.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-slate-700">{ticket.assignee}</td>
-                    <td className="px-4 py-3 text-center font-semibold text-slate-900">
-                      {ticket.sp > 0 ? ticket.sp.toFixed(1) : '-'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        ticket.capacityCategory === 'Active Work' ? 'bg-red-100 text-red-800' : 
-                        'bg-gray-100 text-gray-600'
-                      }`}>
-                        {ticket.capacityCategory}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`px-2 py-1 rounded text-xs font-bold ${
-                        ticket.contributesToCapacity === 'Yes' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-600'
-                      }`}>
-                        {ticket.contributesToCapacity}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          
-          <div className="mt-4 p-4 bg-slate-50 rounded-lg text-sm text-slate-700">
-            <strong>Capacity Rules (PM-First Model):</strong>
-            <ul className="mt-2 space-y-1 ml-4">
-              <li>• <strong>Active Work (To Do, In Progress):</strong> Consumes sprint capacity. PM can see real-time workload.</li>
-              <li>• <strong>Completed/Awaiting (Done, Awaiting Testing, Awaiting Versioning):</strong> Excluded from capacity. Work is delivered, assignee is free.</li>
-              <li>• <strong>Capacity = Yes:</strong> Active work that requires assignee effort right now.</li>
-              <li>• <strong>Capacity = No:</strong> Work that is already delivered or waiting for others.</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    );
-  };
+  // derive visible tickets safely from filteredData
+  const visibleTickets = useMemo(() => {
+    const source = filteredData || [];
+    return source.filter(item => {
+      const status = item['Status'];
+      if (hideDoneTickets && status === 'Done') return false;
+      if (hideTestingTickets && status === 'Awaiting Testing') return false;
+      if (hideVersioningTickets && status === 'Awaiting Versioning') return false;
+      return true;
+    });
+  }, [filteredData, hideDoneTickets, hideTestingTickets, hideVersioningTickets]);
 
   return (
     <div className="space-y-6">
@@ -1302,7 +1137,7 @@ const OverviewSection = ({
               <h3 className="font-semibold text-amber-900 mb-1">⚠️ Action Required</h3>
               <ul className="text-sm text-amber-800 space-y-1">
                 {highRisks > 0 && <li>• {highRisks} high-priority risk{highRisks > 1 ? 's' : ''} need attention</li>}
-                {overloadedCount > 0 && <li>• {overloadedCount} team member{overloadedCount > 1 ? 's are' : ' is'} overloaded (needs scope reduction)</li>}
+                {overloadedCount > 0 && <li>• {overloadedCount} team member{overloadedCount > 1 ? 's are' : ' is'} overloaded</li>}
               </ul>
             </div>
           </div>
@@ -1316,7 +1151,6 @@ const OverviewSection = ({
             <div className="flex-1">
               <h3 className="text-lg font-bold mb-2">Sprint Health Assessment</h3>
               <p className="text-base font-medium mb-4">{sprintHealthSummary.message}</p>
-              
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
                 <div>
                   <div className="font-semibold">Total Capacity</div>
@@ -1338,7 +1172,7 @@ const OverviewSection = ({
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         <KPICard icon={CheckCircle} value={`${completionRate}%`} label="Work Completed" status={completionRate >= 70 ? "success" : completionRate >= 50 ? "warning" : "critical"} subtitle={`${completedSP.toFixed(1)} / ${totalSP.toFixed(1)} SP`} />
-
+        
         {sprintTimeline && (
           <div className="bg-slate-50 border-l-4 border-slate-500 rounded-xl p-4 relative">
             <div className="flex items-start justify-between mb-2">
@@ -1350,35 +1184,7 @@ const OverviewSection = ({
             <p className="text-xs text-slate-500">
               Day {sprintTimeline.elapsedDays} of {sprintTimeline.totalDays}
               {sprintTimeline.daysRemaining > 0 && ` • ${sprintTimeline.daysRemaining}d left`}
-              {sprintTimeline.isConfigured && <span className="ml-1">✓</span>}
             </p>
-            {showSprintConfig && (
-              <div className="absolute top-full left-0 mt-2 w-64 bg-white border-2 border-slate-300 rounded-lg shadow-xl p-4 z-50">
-                <h4 className="font-semibold text-slate-900 mb-2">Configure Sprint Days</h4>
-                <p className="text-xs text-slate-600 mb-3">Adjust for holidays or team availability</p>
-                <div className="flex gap-2 mb-2">
-                  <input type="number" min="1" max="30" placeholder={sprintTimeline.totalDays.toString()} value={tempDays} onChange={(e) => setTempDays(e.target.value)} className="flex-1 px-3 py-2 border border-slate-300 rounded text-sm text-slate-900" />
-                  <button onClick={() => {
-                    const days = parseInt(tempDays);
-                    if (days > 0) {
-                      setSprintDaysConfig(prev => ({ ...prev, [selectedSprint]: days }));
-                      setTempDays('');
-                      setShowSprintConfig(false);
-                    }
-                  }} className="px-3 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">Set</button>
-                </div>
-                {sprintTimeline.isConfigured && (
-                  <button onClick={() => {
-                    setSprintDaysConfig(prev => {
-                      const updated = { ...prev };
-                      delete updated[selectedSprint];
-                      return updated;
-                    });
-                    setShowSprintConfig(false);
-                  }} className="text-xs text-red-600 hover:text-red-800 underline">Reset to default</button>
-                )}
-              </div>
-            )}
           </div>
         )}
 
@@ -1416,15 +1222,6 @@ const OverviewSection = ({
         </div>
       </div>
 
-      {/* Project Work Breakdown */}
-      {selectedProject !== 'all' && (
-        <ProjectWorkBreakdown 
-          filteredData={filteredData}
-          selectedProject={selectedProject}
-          stats={stats}
-        />
-      )}
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl p-6">
           <h2 className="text-xl font-bold text-slate-900 mb-4">Team Workload Distribution</h2>
@@ -1447,18 +1244,10 @@ const OverviewSection = ({
                       'bg-green-500'
                     }`} style={{ width: `${activeWidth}%` }}></div>
                   </div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    {data.pmGuidance}
-                  </div>
+                  <div className="text-xs text-slate-500 mt-1">{data.pmGuidance}</div>
                 </div>
               );
             })}
-          </div>
-          <div className="flex gap-4 mt-4 text-sm">
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-blue-200 rounded"></div><span className="text-slate-600">Capacity</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-500 rounded"></div><span className="text-slate-600">Has Capacity</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-amber-500 rounded"></div><span className="text-slate-600">Fully Allocated</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-red-500 rounded"></div><span className="text-slate-600">Overloaded</span></div>
           </div>
         </div>
 
@@ -1491,20 +1280,127 @@ const OverviewSection = ({
                       )}
                     </div>
                   </div>
-                  <div className="flex justify-between text-xs text-slate-500 mt-1">
-                    <span>Active: {data.activeWorkload.toFixed(1)} SP</span>
-                    <span>Capacity: {data.sprintCapacity} SP</span>
-                  </div>
                 </div>
               );
             })}
           </div>
-          <div className="flex gap-4 mt-4 text-sm">
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-200 rounded"></div><span className="text-slate-600">Available Capacity</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-green-500 rounded"></div><span className="text-slate-600">Has Capacity</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-amber-500 rounded"></div><span className="text-slate-600">Fully Allocated</span></div>
-            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-red-500 rounded"></div><span className="text-slate-600">Overloaded</span></div>
+        </div>
+      </div>
+
+      {/* NEW: Ticket List Section for Overview */}
+      <div className="bg-white rounded-xl p-6 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900">Sprint Backlog Items</h2>
+            <p className="text-sm text-slate-500 mt-1">
+              {visibleTickets.length} of {filteredData?.length || 0} items shown
+            </p>
           </div>
+          
+          <div className="flex flex-wrap gap-3">
+            <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={hideDoneTickets} 
+                onChange={() => setHideDoneTickets(!hideDoneTickets)}
+                className="w-4 h-4 text-green-600 rounded focus:ring-green-500"
+              />
+              <span className="text-slate-700 text-sm font-medium select-none">Hide Completed</span>
+            </label>
+            
+            <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={hideTestingTickets} 
+                onChange={() => setHideTestingTickets(!hideTestingTickets)}
+                className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500"
+              />
+              <span className="text-slate-700 text-sm font-medium select-none">Hide Awaiting Testing</span>
+            </label>
+            
+            <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={hideVersioningTickets} 
+                onChange={() => setHideVersioningTickets(!hideVersioningTickets)}
+                className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+              />
+              <span className="text-slate-700 text-sm font-medium select-none">Hide Awaiting Versioning</span>
+            </label>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <table className="w-full text-sm text-left text-slate-700">
+            <thead className="text-xs text-slate-600 uppercase bg-slate-50 font-bold">
+              <tr>
+                <th className="px-4 py-3">Key</th>
+                <th className="px-4 py-3">Type</th>
+                <th className="px-4 py-3 w-1/3">Summary</th>
+                <th className="px-4 py-3">Project</th>
+                <th className="px-4 py-3">Assignee</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-center">SP</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {visibleTickets.length > 0 ? (
+                visibleTickets.slice(0, 100).map((ticket, idx) => {
+                  const sp = parseFloat(ticket['Story Points']) || 
+                         parseFloat(ticket['Story points']) ||
+                         parseFloat(ticket['Custom field (Story Points)']) ||
+                         0;
+                  return (
+                    <tr key={idx} className="bg-white hover:bg-slate-50 transition-colors">
+                      <td className="px-4 py-3 font-mono font-medium text-blue-600 whitespace-nowrap">
+                        {ticket['Issue key'] || ticket['Key']}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">
+                        {ticket['Issue Type']}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="truncate max-w-md text-slate-800" title={ticket['Summary']}>{ticket['Summary']}</div>
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">
+                        {ticket['Project'] || ticket['B']}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-700">
+                        {ticket['Assignee'] || ticket['D'] || 'Unassigned'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`px-2 py-1 rounded-full text-xs font-bold whitespace-nowrap
+                          ${ticket['Status'] === 'Done' ? 'bg-green-100 text-green-800 border border-green-300' : 
+                            ticket['Status'] === 'In Progress' ? 'bg-blue-100 text-blue-800 border border-blue-300' :
+                            ticket['Status'] === 'To Do' ? 'bg-slate-100 text-slate-700 border border-slate-300' :
+                            'bg-amber-100 text-amber-800 border border-amber-300'}
+                        `}>
+                          {ticket['Status']}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-center font-mono font-bold text-slate-700">
+                        {sp > 0 ? sp : '-'}
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan="7" className="px-4 py-8 text-center text-slate-500">
+                    <div className="flex flex-col items-center justify-center">
+                      <span className="text-3xl mb-2">🔍</span>
+                      <span className="font-medium">No tickets found</span>
+                      <span className="text-sm mt-1">Try adjusting the filters above</span>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          {visibleTickets.length > 100 && (
+            <div className="px-4 py-3 text-center text-slate-500 border-t border-slate-200 bg-slate-50">
+              Showing first 100 of {visibleTickets.length} items
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1577,7 +1473,8 @@ const RiskSection = ({ riskRegister, selectedSprint, selectedAssignee, selectedP
                     <td className="py-3 px-3 text-slate-700">{risk.project}</td>
                     <td className="py-3 px-3 text-slate-700">{risk.assignee}</td>
                     <td className="py-3 px-3 text-center">
-                      <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${risk.riskLevel === 'High' ? 'bg-red-100 text-red-800 border border-red-300' : 'bg-amber-100 text-amber-800 border border-amber-300'}`}>
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                        risk.riskLevel === 'High' ? 'bg-red-100 text-red-800 border border-red-300' : 'bg-amber-100 text-amber-800 border border-amber-300'}`}>
                         {risk.riskLevel}
                       </span>
                     </td>
@@ -1596,7 +1493,14 @@ const RiskSection = ({ riskRegister, selectedSprint, selectedAssignee, selectedP
 // UPDATED: CRITICAL CHANGES - PM-First Capacity Section
 const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssignees, handleSelectAllAssignees, handleToggleAssignee, setShowBulkCapacityEdit }) => {
   const assigneeList = Object.keys(stats);
-  
+
+  // Move calculations outside IIFE to make variables accessible
+  const totalPlannedSP = Object.values(stats).reduce((sum, s) => sum + s.totalStoryPoints, 0);
+  const completedSP = Object.values(stats).reduce((sum, s) => sum + s.totalCompletedSP, 0);
+  const activeWorkload = Object.values(stats).reduce((sum, s) => sum + s.activeWorkload, 0);
+  const awaitingWorkload = Object.values(stats).reduce((sum, s) => sum + s.awaitingWorkload, 0);
+  const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.sprintCapacity, 0);
+
   return (
     <div className="space-y-6">
       {/* PM-First Model Explanation */}
@@ -1631,99 +1535,87 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
           <CheckCircle className="w-5 h-5 text-green-600" />
           Sprint Work Scope (PM-First View)
         </h3>
-        
-        {(() => {
-          const totalPlannedSP = Object.values(stats).reduce((sum, s) => sum + s.totalStoryPoints, 0);
-          const completedSP = Object.values(stats).reduce((sum, s) => sum + s.totalCompletedSP, 0);
-          const activeWorkload = Object.values(stats).reduce((sum, s) => sum + s.activeWorkload, 0);
-          const awaitingWorkload = Object.values(stats).reduce((sum, s) => sum + s.awaitingWorkload, 0);
-          const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.sprintCapacity, 0);
-          
-          return (
-            <div className="space-y-4">
-              {/* Active Workload Section */}
-              <div>
-                <h4 className="text-sm font-semibold text-slate-700 mb-2">🎯 Active Workload (Consumes Capacity)</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="bg-red-50 rounded-lg p-4 border-2 border-red-300">
-                    <Tooltip content="Active Workload\n\nStory Points from items in To Do or In Progress status.\nThis is the only work that consumes assignee capacity right now.">
-                      <div className="text-sm font-medium text-red-700 mb-1 flex items-center gap-1">
-                        Active Workload
-                        <span className="text-red-400">ⓘ</span>
-                      </div>
-                    </Tooltip>
-                    <div className="text-3xl font-bold text-red-900">{activeWorkload.toFixed(1)} SP</div>
-                    <div className="text-xs text-red-600 mt-1">Consumes capacity</div>
+        <div className="space-y-4">
+          {/* Active Workload Section */}
+          <div>
+            <h4 className="text-sm font-semibold text-slate-700 mb-2">🎯 Active Workload (Consumes Capacity)</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-red-50 rounded-lg p-4 border-2 border-red-300">
+                <Tooltip content="Active Workload\n\nStory Points from items in To Do or In Progress status.\nThis is the only work that consumes assignee capacity right now.">
+                  <div className="text-sm font-medium text-red-700 mb-1 flex items-center gap-1">
+                    <span className="text-red-400">ⓘ</span>
+                    Active Workload
                   </div>
-                  
-                  <div className="bg-green-50 rounded-lg p-4 border-2 border-green-200">
-                    <Tooltip content="Remaining Capacity\n\nSprint Capacity minus Active Workload.\nThis is what's actually available for new work.">
-                      <div className="text-sm font-medium text-green-700 mb-1 flex items-center gap-1">
-                        Remaining Capacity
-                        <span className="text-green-400">ⓘ</span>
-                      </div>
-                    </Tooltip>
-                    <div className="text-3xl font-bold text-green-900">{(totalCapacity - activeWorkload).toFixed(1)} SP</div>
-                    <div className="text-xs text-green-600 mt-1">Available for new work</div>
-                  </div>
-                </div>
+                </Tooltip>
+                <div className="text-3xl font-bold text-red-900">{activeWorkload.toFixed(1)} SP</div>
+                <div className="text-xs text-red-600 mt-1">Consumes capacity</div>
               </div>
+              
+              <div className="bg-green-50 rounded-lg p-4 border-2 border-green-200">
+                <Tooltip content="Remaining Capacity\n\nSprint Capacity minus Active Workload.\nThis is what's actually available for new work.">
+                  <div className="text-sm font-medium text-green-700 mb-1 flex items-center gap-1">
+                    <span className="text-green-400">ⓘ</span>
+                    Remaining Capacity
+                  </div>
+                </Tooltip>
+                <div className="text-3xl font-bold text-green-900">{(totalCapacity - activeWorkload).toFixed(1)} SP</div>
+                <div className="text-xs text-green-600 mt-1">Available for new work</div>
+              </div>
+            </div>
+          </div>
 
-              {/* Completed/Awaiting Section (Transparency only) */}
-              {(completedSP > 0 || awaitingWorkload > 0) && (
-                <div>
-                  <Tooltip content="Completed/Awaiting Work\n\nWork that is already delivered or waiting for others.\nThis is shown for transparency but does NOT consume assignee capacity.">
-                    <h4 className="text-sm font-semibold text-slate-700 mb-2 inline-flex items-center gap-1">
-                      📋 Completed/Awaiting (Excluded from Capacity)
-                      <span className="text-slate-400">ⓘ</span>
-                    </h4>
+          {/* Completed/Awaiting Section (Transparency only) */}
+          {(completedSP > 0 || awaitingWorkload > 0) && (
+            <div>
+              <Tooltip content="Completed/Awaiting Work\n\nWork that is already delivered or waiting for others.\nThis is shown for transparency but does NOT consume assignee capacity.">
+                <h4 className="text-sm font-semibold text-slate-700 mb-2 inline-flex items-center gap-1">
+                  <span className="text-slate-400">ⓘ</span>
+                  Completed/Awaiting (Excluded from Capacity)
+                </h4>
+              </Tooltip>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
+                  <Tooltip content="Completed Work\n\nStory Points from items marked as Done.\nWork is delivered, assignee is free.">
+                    <div className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+                      <span className="text-gray-400">ⓘ</span>
+                      Completed (Done)
+                    </div>
+                    <div className="text-3xl font-bold text-gray-900">{completedSP.toFixed(1)} SP</div>
+                    <div className="text-xs text-gray-600 mt-1">Delivered, excluded</div>
                   </Tooltip>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
-                      <Tooltip content="Completed Work\n\nStory Points from items marked as Done.\nWork is delivered, assignee is free.">
-                        <div className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
-                          Completed (Done)
-                          <span className="text-gray-400">ⓘ</span>
-                        </div>
-                      </Tooltip>
-                      <div className="text-3xl font-bold text-gray-900">{completedSP.toFixed(1)} SP</div>
-                      <div className="text-xs text-gray-600 mt-1">Delivered, excluded</div>
-                    </div>
-                    
-                    <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
-                      <Tooltip content="Awaiting Downstream\n\nWork waiting for testing or versioning.\nAssignee's job is done, excluded from capacity.">
-                        <div className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
-                          Awaiting Downstream
-                          <span className="text-gray-400">ⓘ</span>
-                        </div>
-                      </Tooltip>
-                      <div className="text-3xl font-bold text-gray-900">{awaitingWorkload.toFixed(1)} SP</div>
-                      <div className="text-xs text-gray-600 mt-1">Waiting for others, excluded</div>
-                    </div>
-                  </div>
                 </div>
-              )}
-
-              {/* Clear PM Rule */}
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
-                  <div className="text-sm text-amber-800">
-                    <strong>PM Decision Rule:</strong> Only look at <strong>Active Workload ({activeWorkload.toFixed(1)} SP)</strong> versus <strong>Sprint Capacity ({totalCapacity} SP)</strong>. 
-                    Completed/Awaiting work ({completedSP.toFixed(1)} SP) is already delivered and doesn't affect capacity.
-                  </div>
+                <div className="bg-gray-50 rounded-lg p-4 border-2 border-gray-200">
+                  <Tooltip content="Awaiting Downstream\n\nWork waiting for testing or versioning.\nAssignee's job is done, excluded from capacity.">
+                    <div className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
+                      <span className="text-gray-400">ⓘ</span>
+                      Awaiting Downstream
+                    </div>
+                    <div className="text-3xl font-bold text-gray-900">{awaitingWorkload.toFixed(1)} SP</div>
+                    <div className="text-xs text-gray-600 mt-1">Waiting for others, excluded</div>
+                  </Tooltip>
                 </div>
               </div>
             </div>
-          );
-        })()}
+          )}
+
+          {/* Clear PM Rule */}
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div className="text-sm text-amber-800">
+                <strong>PM Decision Rule:</strong> Only look at <strong>Active Workload ({activeWorkload.toFixed(1)} SP)</strong> versus <strong>Sprint Capacity ({totalCapacity} SP)</strong>. 
+                Completed/Awaiting work ({completedSP.toFixed(1)} SP) is already delivered and doesn't affect capacity.
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* UPDATED: Capacity Planning Table - PM-First Design */}
       <div className="bg-white rounded-xl p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-bold text-slate-900">Sprint Capacity Planning</h2>
-          <button
+          <button 
             onClick={() => setShowBulkCapacityEdit(true)}
             disabled={selectedAssignees.size === 0}
             className={`px-4 py-2 rounded-lg font-semibold flex items-center gap-2 ${
@@ -1736,14 +1628,12 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
             Bulk Edit Capacity ({selectedAssignees.size})
           </button>
         </div>
-
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-slate-50">
+              <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-4 py-3 text-center">
-                  <input
-                    type="checkbox"
+                  <input type="checkbox"
                     checked={selectedAssignees.size === assigneeList.length && assigneeList.length > 0}
                     onChange={() => handleSelectAllAssignees(assigneeList)}
                     className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
@@ -1755,6 +1645,7 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
                 <th className="px-4 py-3 text-center font-semibold text-slate-700 bg-green-50">Remaining Capacity</th>
                 <th className="px-4 py-3 text-center font-semibold text-slate-700">Capacity Status</th>
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">PM Guidance</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-700">Completed/Awaiting</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
@@ -1792,7 +1683,7 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
                       data.remainingCapacity === 0 ? 'text-amber-600' :
                       'text-red-600'
                     }`}>
-                      {data.remainingCapacity > 0 ? '+' : ''}{data.remainingCapacity.toFixed(1)}
+                      {data.remainingCapacity > 0 ? '+' : ''}{data.remainingCapacity.toFixed(1)} SP
                     </div>
                     <div className="text-xs text-green-600">
                       {data.remainingCapacity > 0 ? 'Available' : data.remainingCapacity === 0 ? 'No buffer' : 'Overloaded'}
@@ -1830,36 +1721,13 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
             </tbody>
           </table>
         </div>
-        
-        {/* PM Decision Legend */}
-        <div className="mt-6 p-4 bg-slate-50 rounded-lg border border-slate-200">
-          <h4 className="text-sm font-semibold text-slate-700 mb-2">How to read this table (PM Perspective):</h4>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-green-500"></div>
-              <div>
-                <div className="font-semibold">✅ Has Capacity</div>
-                <div className="text-slate-600">Remaining Capacity &gt; 0. Safe to add work.</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-amber-500"></div>
-              <div>
-                <div className="font-semibold">🟡 Fully Allocated</div>
-                <div className="text-slate-600">Remaining Capacity = 0. No buffer, avoid adding work.</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 rounded-full bg-red-500"></div>
-              <div>
-                <div className="font-semibold">❌ Overloaded</div>
-                <div className="text-slate-600">Remaining Capacity &lt; 0. Reduce scope immediately.</div>
-              </div>
-            </div>
-          </div>
-          <div className="mt-3 text-xs text-slate-500">
-            <strong>Note:</strong> "Completed/Awaiting" SP is shown for transparency but excluded from capacity calculations.
-            Only "Active Workload" (To Do + In Progress) consumes capacity.
+      </div>
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+        <div className="flex items-start gap-2">
+          <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+          <div className="text-sm text-amber-800">
+            <strong>PM Decision Rule:</strong> Only look at <strong>Active Workload ({activeWorkload.toFixed(1)} SP)</strong> versus <strong>Sprint Capacity ({totalCapacity} SP)</strong>. 
+            Completed/Awaiting work ({completedSP.toFixed(1)} SP) is already delivered and doesn't affect capacity.
           </div>
         </div>
       </div>
@@ -1986,7 +1854,6 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
   const [showNoStoryPoints, setShowNoStoryPoints] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
   const [hideDone, setHideDone] = useState(false);
-
   const displayData = useMemo(() => {
     let result = filteredData;
     if (showNoStoryPoints) {
@@ -2072,7 +1939,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-slate-50">
+              <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Assignee</th>
                 <th className="px-4 py-3 text-center font-semibold text-slate-700">Stories</th>
                 <th className="px-4 py-3 text-center font-semibold text-slate-700">Bugs</th>
@@ -2092,101 +1959,14 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                   <td className="px-4 py-3 text-center font-semibold text-red-600">{data.activeWorkload.toFixed(1)}</td>
                   <td className="px-4 py-3 text-center text-green-600 font-semibold">{data.totalCompletedSP.toFixed(1)}</td>
                   <td className="px-4 py-3 text-center">
-                    <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                      data.capacityStatus === 'Has Capacity' ? 'bg-green-100 text-green-800' :
-                      data.capacityStatus === 'Fully Allocated' ? 'bg-amber-100 text-amber-800' :
-                      'bg-red-100 text-red-800'
+                    <span className={`px-2 py-1.5 rounded-full text-sm font-bold ${
+                      data.capacityStatus === 'Has Capacity' ? 'bg-green-100 text-green-800 border-2 border-green-300' :
+                      data.capacityStatus === 'Fully Allocated' ? 'bg-amber-100 text-amber-800 border-2 border-amber-300' :
+                      'bg-red-100 text-red-800 border-2 border-red-300'
                     }`}>
                       {data.capacityStatus}
                     </span>
                   </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl p-6 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-slate-900">
-            Raw Data ({displayData.length} items)
-          </h2>
-          <div className="flex items-center gap-6">
-            {/* Hide Done checkbox */}
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={hideDone}
-                onChange={(e) => setHideDone(e.target.checked)}
-                className="w-4 h-4 text-green-600 rounded focus:ring-green-500"
-              />
-              <span className="text-sm font-medium text-slate-700">
-                Hide Done items
-              </span>
-            </label>
-
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showNoStoryPoints}
-                onChange={(e) => setShowNoStoryPoints(e.target.checked)}
-                className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-              />
-              <span className="text-sm font-medium text-slate-700">
-                Show only tickets without Story Points
-              </span>
-            </label>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="px-4 py-3 text-left font-semibold text-slate-700">Issue Key</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-700">Type</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-700">Assignee</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-700">Status</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-700">SP</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-700">Summary</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {displayData.slice(0, 100).map((item, idx) => (
-                <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-4 py-3 font-mono text-xs text-blue-600 font-semibold">
-                    {item['Issue key'] || item['Key']}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-1 rounded text-xs font-medium ${
-                      item['Issue Type'] === 'Story' ? 'bg-green-100 text-green-800' :
-                      item['Issue Type'] === 'Bug' ? 'bg-red-100 text-red-800' :
-                      item['Issue Type'] === 'Task' || item['Issue Type'] === 'Sub-task' ? 'bg-blue-100 text-blue-800' :
-                      item['Issue Type'] === 'Epic' ? 'bg-purple-100 text-purple-800' :
-                      'bg-gray-100 text-gray-700'
-                    }`}>
-                      {item['Issue Type'] || 'N/A'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-slate-900 font-medium">
-                    {item['Assignee'] || item['D'] || 'Unassigned'}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-1 rounded text-xs font-medium ${
-                      item['Status'] === 'Done' ? 'bg-green-100 text-green-800' :
-                      item['Status'] === 'In Progress' ? 'bg-blue-100 text-blue-800' :
-                      item['Status'] === 'Awaiting Testing' ? 'bg-amber-100 text-amber-800' :
-                      item['Status'] === 'Awaiting Versioning' ? 'bg-purple-100 text-purple-800' :
-                      'bg-gray-100 text-gray-700'
-                    }`}>
-                      {item['Status'] || '-'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-center font-semibold text-slate-900">
-                    {item['Story Points'] || '-'}
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">{item['Summary']}</td>
                 </tr>
               ))}
             </tbody>
@@ -2209,7 +1989,7 @@ const TimelineSection = ({
   getProjectColor, 
   onProjectClick, 
   projectTargets, 
-  setProjectTargets,
+  setProjectTargets, 
   selectedSprint,
   setSelectedSprint,
   selectedAssignee,
@@ -2218,7 +1998,8 @@ const TimelineSection = ({
   setSelectedProject,
   sprints,
   assignees,
-  projects
+  projects,
+  filteredData
 }) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -2226,7 +2007,30 @@ const TimelineSection = ({
   const [statusFilter, setStatusFilter] = useState('all');
   const [showInsights, setShowInsights] = useState(true);
   const [showGantt, setShowGantt] = useState(true);
-  const [showFilters, setShowFilters] = useState(false);
+  const [ongoingProjects, setOngoingProjects] = useState({});
+
+  // Ticket visibility filters
+  const [hideDoneTickets, setHideDoneTickets] = useState(false);
+  const [hideTestingTickets, setHideTestingTickets] = useState(false);
+  const [hideVersioningTickets, setHideVersioningTickets] = useState(false);
+
+  const visibleTickets = useMemo(() => {
+    if (!filteredData) return [];
+    return filteredData.filter(item => {
+      const status = item['Status'];
+      if (hideDoneTickets && status === 'Done') return false;
+      if (hideTestingTickets && status === 'Awaiting Testing') return false;
+      if (hideVersioningTickets && status === 'Awaiting Versioning') return false;
+      return true;
+    });
+  }, [filteredData, hideDoneTickets, hideTestingTickets, hideVersioningTickets]);
+
+  const handleToggleOngoing = (projectName) => {
+    setOngoingProjects(prev => ({
+      ...prev,
+      [projectName]: !prev[projectName]
+    }));
+  };
 
   const enhancedTimelineData = useMemo(() => {
     return timelineData.map(project => {
@@ -2235,24 +2039,33 @@ const TimelineSection = ({
       const projectedEnd = new Date(effectiveEnd);
       const daysToTarget = Math.ceil((projectedEnd - today) / (1000 * 60 * 60 * 24));
       const isComplete = project.percentComplete >= 100;
-      const isDelayed = daysToTarget < 0 && !isComplete;
-      const isEarly = daysToTarget > 14 && !isComplete;
-      const status = isComplete ? 'Complete' : isDelayed ? 'Delayed' : isEarly ? 'Early' : 'On Track';
-
-      const sortOrder = isDelayed ? 0 : isEarly ? 1 : status === 'On Track' ? 2 : 3;
+      const isOngoing = ongoingProjects[project.project] || false;
+      
+      let status, isDelayed, isEarly;
+      if (isOngoing) {
+        status = 'Ongoing';
+        isDelayed = false;
+        isEarly = false;
+      } else {
+        isDelayed = daysToTarget < 0 && !isComplete;
+        isEarly = daysToTarget > 14 && !isComplete;
+        status = isComplete ? 'Complete' : isDelayed ? 'Delayed' : isEarly ? 'Early' : 'On Track';
+      }
+      const sortOrder = isOngoing ? 4 : isDelayed ? 0 : isEarly ? 1 : status === 'On Track' ? 2 : 3;
 
       return {
         ...project,
         effectiveEndDate: effectiveEnd,
         daysToTarget,
-        status,
         isComplete,
         isDelayed,
         isEarly,
+        isOngoing,
         sortOrder,
+        status
       };
     });
-  }, [timelineData, projectTargets]);
+  }, [timelineData, projectTargets, ongoingProjects]);
 
   const filteredAndSortedData = useMemo(() => {
     let data = enhancedTimelineData;
@@ -2269,7 +2082,6 @@ const TimelineSection = ({
   ganttMin.setMonth(ganttMin.getMonth() - 1);
   ganttMax.setMonth(ganttMax.getMonth() + 2);
   const ganttTotalDays = Math.ceil((ganttMax - ganttMin) / (1000 * 60 * 60 * 24));
-
   const monthHeader = [];
   let current = new Date(ganttMin);
   while (current <= ganttMax) {
@@ -2281,7 +2093,6 @@ const TimelineSection = ({
     });
     current.setMonth(current.getMonth() + 1);
   }
-
   const overlapZones = [];
   const dayStep = 7;
   for (let day = 0; day < ganttTotalDays; day += dayStep) {
@@ -2296,25 +2107,25 @@ const TimelineSection = ({
       overlapZones.push({ start, end });
     }
   }
-
   const analytics = useMemo(() => {
     const complete = filteredAndSortedData.filter(p => p.isComplete).length;
     const onTrack = filteredAndSortedData.filter(p => p.status === 'On Track').length;
     const early = filteredAndSortedData.filter(p => p.status === 'Early').length;
     const delayed = filteredAndSortedData.filter(p => p.isDelayed).length;
+    const ongoing = filteredAndSortedData.filter(p => p.isOngoing).length;
     const totalSP = filteredAndSortedData.reduce((sum, p) => sum + p.totalSP, 0);
     const completedSP = filteredAndSortedData.reduce((sum, p) => sum + p.completedSP, 0);
     const avgDays = filteredAndSortedData.length > 0 
       ? (filteredAndSortedData.reduce((sum, p) => sum + p.daysToTarget, 0) / filteredAndSortedData.length).toFixed(1)
       : 0;
 
-    return { complete, onTrack, early, delayed, totalSP, completedSP, avgDays: parseFloat(avgDays), total: filteredAndSortedData.length };
+    return { complete, onTrack, early, delayed, ongoing, totalSP, completedSP, avgDays: parseFloat(avgDays), total: filteredAndSortedData.length };
   }, [filteredAndSortedData]);
-
   const insights = [];
   if (analytics.delayed > 0) insights.push(`⚠️ ${analytics.delayed} project${analytics.delayed > 1 ? 's are' : ' is'} delayed`);
   if (analytics.early > 0) insights.push(`✓ ${analytics.early} project${analytics.early > 1 ? 's are' : ' is'} ahead`);
   if (analytics.complete > 0) insights.push(`✓ ${analytics.complete} project${analytics.complete > 1 ? 's' : ''} completed`);
+  if (analytics.ongoing > 0) insights.push(`🔄 ${analytics.ongoing} ongoing project${analytics.ongoing > 1 ? 's' : ''}`);
   if (analytics.avgDays !== 0) insights.push(`Overall ${Math.abs(analytics.avgDays)} days ${analytics.avgDays > 0 ? 'ahead' : 'behind'}`);
 
   return (
@@ -2325,13 +2136,6 @@ const TimelineSection = ({
           <p className="text-xl text-slate-400 mt-2">Project delivery status and scheduling</p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          <button 
-            onClick={() => setShowFilters(!showFilters)}
-            className="px-6 py-3 bg-slate-700 text-white rounded-xl hover:bg-slate-600 font-medium flex items-center gap-2"
-          >
-            <Filter className="w-4 h-4" />
-            {showFilters ? 'Hide' : 'Show'} Filters
-          </button>
           <button 
             onClick={() => setStatusFilter('Delayed')} 
             className={`px-6 py-3 rounded-xl font-medium transition ${statusFilter === 'Delayed' ? 'bg-red-600 text-white shadow-lg' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
@@ -2348,6 +2152,7 @@ const TimelineSection = ({
             <option value="Early">Early</option>
             <option value="On Track">On Track</option>
             <option value="Complete">Complete</option>
+            <option value="Ongoing">Ongoing</option>
           </select>
           <button 
             onClick={() => setShowGantt(!showGantt)}
@@ -2357,78 +2162,12 @@ const TimelineSection = ({
           </button>
           <label className="flex items-center gap-4 text-lg">
             <span className="text-slate-300 font-medium">Program Target:</span>
-            <input 
-              type="date" 
-              value={programEndDate} 
-              onChange={(e) => setProgramEndDate(e.target.value)}
-              className="px-5 py-3 bg-slate-800 border border-slate-600 rounded-xl text-white focus:ring-4 focus:ring-blue-500"
-            />
+            <input type="date" value={programEndDate} onChange={(e) => setProgramEndDate(e.target.value)}
+            className="px-5 py-3 bg-slate-800 border border-slate-600 rounded-xl text-white focus:ring-4 focus:ring-blue-500"
+          />
           </label>
         </div>
       </div>
-
-      {/* ADDED: Filter dropdowns for Timeline section */}
-      {showFilters && (
-        <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700">
-          <h3 className="text-xl font-bold text-white mb-4">Filter Timeline Data</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">Sprint</label>
-              <select
-                value={selectedSprint}
-                onChange={(e) => setSelectedSprint(e.target.value)}
-                className="w-full px-4 py-3 bg-slate-700 border border-slate-600 rounded-lg text-white focus:ring-2 focus:ring-blue-500"
-              >
-                {sprints.map(sprint => (
-                  <option key={sprint} value={sprint}>
-                    {sprint === 'all' ? 'All Sprints' : sprint}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">Assignee</label>
-              <select
-                value={selectedAssignee}
-                onChange={(e) => setSelectedAssignee(e.target.value)}
-                className="w-full px-4 py-3 bg-slate-700 border border-slate-600 rounded-lg text-white focus:ring-2 focus:ring-blue-500"
-              >
-                {assignees.map(assignee => (
-                  <option key={assignee} value={assignee}>
-                    {assignee === 'all' ? 'All Assignees' : assignee}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">Project</label>
-              <select
-                value={selectedProject}
-                onChange={(e) => setSelectedProject(e.target.value)}
-                className="w-full px-4 py-3 bg-slate-700 border border-slate-600 rounded-lg text-white focus:ring-2 focus:ring-blue-500"
-              >
-                {projects.map(project => (
-                  <option key={project} value={project}>
-                    {project === 'all' ? 'All Projects' : project}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="flex justify-end mt-4">
-            <button
-              onClick={() => {
-                setSelectedSprint('all');
-                setSelectedAssignee('all');
-                setSelectedProject('all');
-              }}
-              className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-colors"
-            >
-              Reset Filters
-            </button>
-          </div>
-        </div>
-      )}
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6">
         <KPICard icon={Briefcase} value={analytics.total} label="Total Projects" status="neutral" />
@@ -2459,8 +2198,7 @@ const TimelineSection = ({
       {showGantt && (
         <div className="bg-slate-900/60 rounded-2xl p-10 shadow-2xl">
           <h3 className="text-3xl font-bold text-white mb-8">Project Overlap & Concurrency</h3>
-
-          <div className="relative h-24 mb-12">
+          <div className="relative mb-8">
             <div className="absolute inset-x-0 top-0 h-px bg-slate-600" />
             <div className="absolute inset-x-0 bottom-0 h-px bg-slate-600" />
             <div className="flex h-full items-end justify-between px-8">
@@ -2473,33 +2211,13 @@ const TimelineSection = ({
             </div>
             <div className="absolute inset-x-0 top-full h-12">
               {overlapZones.map((zone, i) => (
-                <div
-                  key={i}
+                <div key={i}
                   className="absolute top-0 h-12 bg-amber-500/20 border border-amber-500/30"
                   style={{ left: `${zone.start}%`, width: `${zone.end - zone.start}%` }}
                 />
               ))}
-              <div className="relative h-full">
-                {filteredAndSortedData.map((project, i) => {
-                  const startPercent = ((new Date(project.startDate) - ganttMin) / (ganttTotalDays * 24 * 60 * 60 * 1000)) * 100;
-                  const endPercent = ((new Date(project.effectiveEndDate) - ganttMin) / (ganttTotalDays * 24 * 60 * 60 * 1000)) * 100;
-                  return (
-                    <div
-                      key={i}
-                      className="absolute top-0 h-8 rounded-lg shadow-lg transform transition-transform hover:scale-105 cursor-pointer"
-                      style={{
-                        left: `${startPercent}%`,
-                        width: `${endPercent - startPercent}%`,
-                        backgroundColor: getProjectColor(project.project),
-                      }}
-                      onClick={() => onProjectClick(project.project)}
-                    />
-                  );
-                })}
-              </div>
             </div>
           </div>
-
           <div className="flex items-center justify-between text-lg text-slate-400 px-4">
             <div className="flex items-center gap-3">
               <div className="w-4 h-4 bg-amber-500/20 border border-amber-500/30 rounded"></div>
@@ -2514,97 +2232,113 @@ const TimelineSection = ({
 
       <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-2xl p-8 shadow-2xl">
         <h3 className="text-3xl font-bold text-white mb-8">Project Timeline Details</h3>
-        
         <div className="overflow-x-auto rounded-xl border border-slate-700">
-          <table className="w-full text-lg">
+          <table className="w-full text-lg" style={{ minWidth: '1100px' }}>
             <thead className="bg-slate-800">
               <tr>
-                <th className="py-6 px-8 text-left font-semibold text-slate-300">Project</th>
-                <th className="py-6 px-8 text-left font-semibold text-slate-300">Progress</th>
-                <th className="py-6 px-8 text-left font-semibold text-slate-300">Start Date</th>
-                <th className="py-6 px-8 text-left font-semibold text-slate-300">Target End</th>
-                <th className="py-6 px-8 text-left font-semibold text-slate-300">Days to Target</th>
-                <th className="py-6 px-8 text-left font-semibold text-slate-300">Status</th>
-                <th className="py-6 px-8 text-left font-semibold text-slate-300">Actions</th>
+                <th className="py-5 px-6 text-left font-semibold text-slate-300" style={{ width: '18%' }}>Project</th>
+                <th className="py-5 px-6 text-left font-semibold text-slate-300" style={{ width: '22%' }}>Progress</th>
+                <th className="py-5 px-6 text-left font-semibold text-slate-300" style={{ width: '12%' }}>Start Date</th>
+                <th className="py-5 px-6 text-left font-semibold text-slate-300" style={{ width: '14%' }}>Target End</th>
+                <th className="py-5 px-6 text-center font-semibold text-slate-300" style={{ width: '10%' }}>Ongoing</th>
+                <th className="py-5 px-6 text-left font-semibold text-slate-300" style={{ width: '12%' }}>Days to Target</th>
+                <th className="py-5 px-6 text-left font-semibold text-slate-300" style={{ width: '12%' }}>Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700">
               {filteredAndSortedData.map((project, i) => (
                 <tr key={i} className="hover:bg-slate-800/50 transition-colors">
-                  <td className="py-6 px-8">
+                  <td className="py-5 px-6">
                     <button
                       onClick={() => onProjectClick(project.project)}
-                      className="flex items-center gap-4 hover:opacity-75 transition"
+                      className="flex items-center gap-3 hover:opacity-75 transition"
                     >
-                      <span
-                        className="w-5 h-5 rounded-full"
-                        style={{ backgroundColor: getProjectColor(project.project) }}
-                      />
-                      <span className="text-2xl font-bold text-white">
-                        {project.project}
+                      <span className="w-4 h-4 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: getProjectColor(project.project) }}>
                       </span>
+                      {project.project}
                     </button>
                   </td>
-                  <td className="py-6 px-8">
-                    <div className="flex items-center gap-6">
-                      <div className="w-56 bg-slate-700 rounded-full h-8 overflow-hidden">
+                  <td className="py-5 px-6">
+                    <div className="flex items-center gap-4">
+                      <div className="flex-1 bg-slate-700 rounded-full h-6 overflow-hidden min-w-[120px]">
                         <div
-                          className="h-8 rounded-full"
+                          className="h-6 rounded-full transition-all"
                           style={{
                             width: `${project.percentComplete}%`,
                             backgroundColor: getProjectColor(project.project),
                           }}
                         />
+                        <span className="text-xl font-bold text-white min-w-[50px]">
+                          {project.percentComplete}%
+                        </span>
                       </div>
-                      <span className="text-2xl font-bold text-white">
-                        {project.percentComplete}%
+                      <span className="text-base text-slate-400 mt-1">
+                        {project.completedSP.toFixed(0)} / {project.totalSP.toFixed(0)} SP
                       </span>
                     </div>
-                    <div className="text-lg text-slate-400 mt-2">
-                      {project.completedSP.toFixed(0)} / {project.totalSP.toFixed(0)} SP
-                    </div>
                   </td>
-                  <td className="py-6 px-8">
-                    <div className="text-2xl font-bold text-white">
+                  <td className="py-5 px-6">
+                    <div className="text-lg font-medium text-white">
                       {project.startDate ? new Date(project.startDate).toLocaleDateString('en-GB') : '-'}
                     </div>
                   </td>
-                  <td className="py-6 px-8">
-                    <div className="flex items-center gap-4">
-                      <input
-                        type="date"
-                        value={projectTargets[project.project] || project.endDate}
-                        onChange={(e) =>
-                          setProjectTargets(prev => ({
-                            ...prev,
-                            [project.project]: e.target.value,
-                          }))
-                        }
-                        className="px-4 py-3 bg-slate-700 border border-slate-600 rounded-lg text-white text-lg focus:ring-4 focus:ring-blue-500"
-                      />
-                    </div>
+                  <td className="py-5 px-6">
+                    <input
+                      type="date"
+                      value={projectTargets[project.project] || project.endDate}
+                      onChange={(e) =>
+                        setProjectTargets(prev => ({
+                          ...prev,
+                          [project.project]: e.target.value,
+                        }))
+                      }
+                      disabled={project.isOngoing}
+                      className={`px-3 py-2 border rounded-lg text-base focus:ring-2 focus:ring-blue-500 w-full ${
+                        project.isOngoing 
+                          ? 'bg-slate-600 border-slate-500 text-slate-400 cursor-not-allowed opacity-60' 
+                          : 'bg-slate-700 border-slate-600 text-white'
+                      }`}
+                    />
                   </td>
-                  <td className="py-6 px-8">
+                  <td className="py-5 px-6 text-center">
+                    <label className="inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={project.isOngoing}
+                        onChange={() => handleToggleOngoing(project.project)}
+                        className="w-5 h-5 text-blue-500 bg-slate-700 border-slate-500 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer"
+                      />
+                      <span className="text-sm font-medium text-white">Ongoing</span>
+                    </label>
+                  </td>
+                  <td className="py-5 px-6">
                     <div
-                      className={`text-3xl font-bold ${
-                        project.isComplete
+                      className={`text-2xl font-bold ${
+                        project.isOngoing
+                          ? 'text-blue-400'
+                          : project.isComplete
                           ? 'text-green-400'
                           : project.daysToTarget >= 0
                           ? 'text-green-400'
                           : 'text-red-400'
                       }`}
                     >
-                      {project.isComplete
+                      {project.isOngoing
+                        ? 'Ongoing'
+                        : project.isComplete
                         ? '✓'
                         : project.daysToTarget >= 0
                         ? `${project.daysToTarget}d`
                         : `${Math.abs(project.daysToTarget)}d late`}
                     </div>
                   </td>
-                  <td className="py-6 px-8">
+                  <td className="py-5 px-6">
                     <span
-                      className={`px-6 py-3 rounded-full text-xl font-bold ${
-                        project.isComplete
+                      className={`px-4 py-2 rounded-full text-base font-bold ${
+                        project.isOngoing
+                          ? 'bg-blue-900/30 text-blue-300 border border-blue-700'
+                          : project.isComplete
                           ? 'bg-emerald-900/30 text-emerald-300 border border-emerald-700'
                           : project.isDelayed
                           ? 'bg-red-900/30 text-red-300 border border-red-700'
@@ -2616,35 +2350,11 @@ const TimelineSection = ({
                       {project.status}
                     </span>
                   </td>
-                  <td className="py-6 px-8">
-                    <button
-                      onClick={() => {
-                        if (projectTargets[project.project]) {
-                          const newTargets = { ...projectTargets };
-                          delete newTargets[project.project];
-                          setProjectTargets(newTargets);
-                        } else {
-                          setProjectTargets(prev => ({
-                            ...prev,
-                            [project.project]: project.endDate,
-                          }));
-                        }
-                      }}
-                      className={`px-6 py-3 rounded-lg font-semibold text-lg ${
-                        projectTargets[project.project]
-                          ? 'bg-red-600/20 text-red-300 hover:bg-red-600/30'
-                          : 'bg-blue-600/20 text-blue-300 hover:bg-blue-600/30'
-                      }`}
-                    >
-                      {projectTargets[project.project] ? 'Reset Target' : 'Set Custom Target'}
-                    </button>
-                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-
         {filteredAndSortedData.length === 0 && (
           <div className="text-center py-16">
             <div className="text-8xl mb-8">📊</div>
@@ -2664,12 +2374,23 @@ const TimelineSection = ({
               <div className="flex items-center gap-4">
                 <span className="text-3xl">🎯</span>
                 <div>
-                  <h5 className="text-lg font-semibold text-white">Set Custom Targets</h5>
+                  <h5 className="text-lg font-semibold text-white">Set Target Dates</h5>
                   <p className="text-slate-400">
-                    Click "Set Custom Target" to adjust project end dates for planning
+                    Use the date picker to adjust project target end dates
                   </p>
                 </div>
               </div>
+              <div className="flex items-center gap-4">
+                <span className="text-3xl">🔄</span>
+                <div>
+                  <h5 className="text-lg font-semibold text-white">Mark as Ongoing</h5>
+                  <p className="text-slate-400">
+                    Check "Ongoing" for projects with no fixed end date
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-4">
               <div className="flex items-center gap-4">
                 <span className="text-3xl">⚠️</span>
                 <div>
@@ -2679,8 +2400,6 @@ const TimelineSection = ({
                   </p>
                 </div>
               </div>
-            </div>
-            <div className="space-y-4">
               <div className="flex items-center gap-4">
                 <span className="text-3xl">👀</span>
                 <div>
@@ -2690,17 +2409,123 @@ const TimelineSection = ({
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-4">
-                <span className="text-3xl">📈</span>
-                <div>
-                  <h5 className="text-lg font-semibold text-white">Program Deadline</h5>
-                  <p className="text-slate-400">
-                    Set a program target date to see overall progress against deadline
-                  </p>
-                </div>
-              </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* NEW: Ticket List Section */}
+      <div className="bg-slate-900 rounded-2xl p-8 shadow-2xl border border-slate-800 mt-8">
+        <div className="flex flex-wrap items-center justify-between gap-6 mb-6">
+          <div>
+            <h3 className="text-2xl font-bold text-white">Sprint Backlog Items</h3>
+            <p className="text-slate-400 mt-1">Detailed tickets from selected timeline view</p>
+          </div>
+          
+          <div className="flex flex-wrap gap-3">
+            <label className="flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-lg border border-slate-700 cursor-pointer hover:bg-slate-750 hover:border-slate-600 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={hideDoneTickets} 
+                onChange={() => setHideDoneTickets(!hideDoneTickets)}
+                className="w-4 h-4 text-green-500 rounded focus:ring-green-500 bg-slate-900 border-slate-600"
+              />
+              <span className="text-slate-300 font-medium select-none">Hide Completed</span>
+            </label>
+            
+            <label className="flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-lg border border-slate-700 cursor-pointer hover:bg-slate-750 hover:border-slate-600 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={hideTestingTickets} 
+                onChange={() => setHideTestingTickets(!hideTestingTickets)}
+                className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500 bg-slate-900 border-slate-600"
+              />
+              <span className="text-slate-300 font-medium select-none">Hide Awaiting Testing</span>
+            </label>
+            
+            <label className="flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-lg border border-slate-700 cursor-pointer hover:bg-slate-750 hover:border-slate-600 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={hideVersioningTickets} 
+                onChange={() => setHideVersioningTickets(!hideVersioningTickets)}
+                className="w-4 h-4 text-purple-500 rounded focus:ring-purple-500 bg-slate-900 border-slate-600"
+              />
+              <span className="text-slate-300 font-medium select-none">Hide Awaiting Versioning</span>
+            </label>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-xl border border-slate-700">
+          <table className="w-full text-sm text-left text-slate-300">
+             <thead className="text-xs text-slate-400 uppercase bg-slate-800 font-bold">
+               <tr>
+                 <th className="px-6 py-4">Key</th>
+                 <th className="px-6 py-4">Type</th>
+                 <th className="px-6 py-4 w-1/3">Summary</th>
+                 <th className="px-6 py-4">Project</th>
+                 <th className="px-6 py-4">Assignee</th>
+                 <th className="px-6 py-4">Status</th>
+                 <th className="px-6 py-4 text-center">SP</th>
+               </tr>
+             </thead>
+             <tbody className="divide-y divide-slate-700">
+               {visibleTickets.length > 0 ? (
+                 visibleTickets.slice(0, 200).map((ticket, idx) => {
+                    const sp = parseFloat(ticket['Story Points']) || 
+                           parseFloat(ticket['Story points']) ||
+                           parseFloat(ticket['Custom field (Story Points)']) ||
+                           0;
+                    return (
+                     <tr key={idx} className="bg-slate-800/40 hover:bg-slate-700/50 transition-colors">
+                        <td className="px-6 py-4 font-mono font-medium text-blue-400 whitespace-nowrap">
+                          {ticket['Issue key'] || ticket['Key']}
+                        </td>
+                        <td className="px-6 py-4 text-slate-600">
+                          {ticket['Issue Type']}
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="truncate max-w-md text-slate-800" title={ticket['Summary']}>{ticket['Summary']}</div>
+                        </td>
+                        <td className="px-6 py-4 text-slate-600">
+                          {ticket['Project'] || ticket['B']}
+                        </td>
+                        <td className="px-6 py-4 font-medium text-slate-700">
+                          {ticket['Assignee'] || ticket['D'] || 'Unassigned'}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`px-2 py-1 rounded-full text-xs font-bold whitespace-nowrap
+                            ${ticket['Status'] === 'Done' ? 'bg-green-100 text-green-800 border border-green-300' : 
+                              ticket['Status'] === 'In Progress' ? 'bg-blue-100 text-blue-800 border border-blue-300' :
+                              ticket['Status'] === 'To Do' ? 'bg-slate-100 text-slate-700 border border-slate-300' :
+                              'bg-amber-100 text-amber-800 border border-amber-300'}
+                          `}>
+                            {ticket['Status']}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-center font-mono font-bold text-slate-700">
+                           {sp > 0 ? sp : '-'}
+                        </td>
+                     </tr>
+                    );
+                 })
+               ) : (
+                 <tr>
+                   <td colSpan="7" className="px-6 py-12 text-center text-slate-500">
+                     <div className="flex flex-col items-center justify-center">
+                       <span className="text-4xl mb-3">🔍</span>
+                       <span className="font-medium">No tickets found</span>
+                       <span className="text-sm mt-1">Try adjusting the filters above</span>
+                     </div>
+                   </td>
+                 </tr>
+               )}
+             </tbody>
+          </table>
+          {visibleTickets.length > 200 && (
+             <div className="px-6 py-4 text-center text-slate-500 border-t border-slate-700 bg-slate-800/30">
+               Showing first 200 of {visibleTickets.length} items
+             </div>
+          )}
         </div>
       </div>
     </div>
