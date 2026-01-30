@@ -2018,14 +2018,18 @@ const OverviewSection = ({
 };
 
 const RiskSection = ({ riskRegister, selectedSprint, selectedAssignee, selectedProject }) => {
+  const [showHigh, setShowHigh] = useState(true);
+  const [showMedium, setShowMedium] = useState(true);
+
   const filteredRisks = useMemo(() => {
     return riskRegister.filter(risk => {
       const sprintMatch = selectedSprint === 'all' || risk.sprint === selectedSprint;
       const assigneeMatch = selectedAssignee === 'all' || risk.assignee === selectedAssignee;
       const projectMatch = selectedProject === 'all' || risk.project === selectedProject;
-      return sprintMatch && assigneeMatch && projectMatch;
+      const priorityMatch = (showHigh && risk.riskLevel === 'High') || (showMedium && risk.riskLevel === 'Medium');
+      return sprintMatch && assigneeMatch && projectMatch && priorityMatch;
     });
-  }, [riskRegister, selectedSprint, selectedAssignee, selectedProject]);
+  }, [riskRegister, selectedSprint, selectedAssignee, selectedProject, showHigh, showMedium]);
 
   const highRisks = filteredRisks.filter(r => r.riskLevel === 'High');
   const mediumRisks = filteredRisks.filter(r => r.riskLevel === 'Medium');
@@ -2063,6 +2067,37 @@ const RiskSection = ({ riskRegister, selectedSprint, selectedAssignee, selectedP
         </div>
         <div className="mt-4 text-xs text-slate-600 bg-white/50 rounded p-3">
           <strong>💡 Use this for:</strong> Daily standups, sprint planning, identifying overloaded team members, and stakeholder updates
+        </div>
+      </div>
+
+      {/* Priority Filter Checkboxes */}
+      <div className="bg-white rounded-lg border border-slate-200 p-4">
+        <div className="flex items-center gap-6">
+          <span className="text-sm font-semibold text-slate-700">Filter by Priority:</span>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showHigh}
+              onChange={(e) => setShowHigh(e.target.checked)}
+              className="w-4 h-4 text-red-600 rounded focus:ring-red-500"
+            />
+            <span className="text-sm font-medium text-slate-700 flex items-center gap-1">
+              <span className="text-lg">🔴</span>
+              High Priority
+            </span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showMedium}
+              onChange={(e) => setShowMedium(e.target.checked)}
+              className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500"
+            />
+            <span className="text-sm font-medium text-slate-700 flex items-center gap-1">
+              <span className="text-lg">🟠</span>
+              Medium Priority
+            </span>
+          </label>
         </div>
       </div>
 
