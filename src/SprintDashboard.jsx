@@ -1169,16 +1169,7 @@ const SprintDashboard = () => {
               Upload your Jira export to analyze sprint progress, capacity, and risks
             </p>
             
-            {lastUpdated && (
-              <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                <p className="text-sm text-blue-800">
-                  <Clock className="w-4 h-4 inline mr-2" />
-                  Last updated: {lastUpdated.toLocaleString()}
-                </p>
-              </div>
-            )}
-            
-            <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+            <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-6">
               <JiraRefreshButton 
                 onRefresh={handleJiraRefresh}
                 disabled={false}
@@ -1189,6 +1180,22 @@ const SprintDashboard = () => {
                 <input type="file" accept=".csv,.tsv,.txt" onChange={handleFileUpload} className="hidden" />
               </label>
             </div>
+            
+            {lastUpdated && (
+              <div className="mt-8 pt-4 border-t border-gray-200">
+                <p className="text-xs text-gray-500">
+                  <Clock className="w-3 h-3 inline mr-1" />
+                  Last updated: {lastUpdated.toLocaleString('en-GB', { 
+                    day: '2-digit', 
+                    month: '2-digit', 
+                    year: 'numeric', 
+                    hour: '2-digit', 
+                    minute: '2-digit',
+                    hour12: false 
+                  })}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1289,17 +1296,28 @@ const SprintDashboard = () => {
               {lastUpdated && (
                 <p className="text-xs text-slate-500 mt-1">
                   <Clock className="w-3 h-3 inline mr-1" />
-                  Last updated: {lastUpdated.toLocaleString()}
+                  Last updated: {lastUpdated.toLocaleString('en-GB', { 
+                    day: '2-digit', 
+                    month: '2-digit', 
+                    year: 'numeric', 
+                    hour: '2-digit', 
+                    minute: '2-digit',
+                    hour12: false 
+                  })}
                 </p>
               )}
             </div>
             <div className="flex flex-col items-end gap-2">
               <div className="text-right">
                 <div className="text-lg font-mono font-semibold text-blue-400">
-                  {currentTime.toLocaleTimeString()}
+                  {currentTime.toLocaleTimeString('en-GB', { hour12: false })}
                 </div>
                 <div className="text-xs text-slate-400">
-                  {currentTime.toLocaleDateString()}
+                  {currentTime.toLocaleDateString('en-GB', { 
+                    day: '2-digit', 
+                    month: '2-digit', 
+                    year: 'numeric' 
+                  })}
                 </div>
               </div>
               <div className="flex gap-3">
@@ -3021,39 +3039,42 @@ const TimelineSection = ({
             <span className="text-3xl">📊</span>
             Project Overlap & Concurrency
           </h3>
-          <div className="relative mb-12 bg-slate-900/50 rounded-xl p-6 border border-slate-700">
-            <div className="absolute inset-x-6 top-6 h-px bg-gradient-to-r from-transparent via-slate-600 to-transparent" />
-            <div className="absolute inset-x-6 bottom-6 h-px bg-gradient-to-r from-transparent via-slate-600 to-transparent" />
-            <div className="flex h-full items-end justify-between px-2">
+          
+          {/* Horizontal Month Timeline */}
+          <div className="relative mb-8 bg-slate-900/50 rounded-xl p-6 border border-slate-700">
+            {/* Month Headers */}
+            <div className="flex justify-between items-center mb-4">
               {monthHeader.map((m, i) => (
-                <div key={i} className="text-center pb-4 flex-1">
-                  <div className="text-2xl font-extrabold text-white">{m.month}</div>
-                  <div className="text-base text-slate-400 mt-1">{m.year}</div>
+                <div key={i} className="flex-1 text-center">
+                  <div className="text-xl font-bold text-white">{m.month}</div>
+                  <div className="text-sm text-slate-400">{m.year}</div>
                 </div>
               ))}
             </div>
-            <div className="absolute inset-x-6 top-full h-16 mt-2">
+            
+            {/* Timeline Bar */}
+            <div className="relative h-8 bg-slate-800 rounded-lg overflow-hidden">
+              {/* Gradient bar showing time progression */}
+              <div className="absolute inset-0 bg-gradient-to-r from-red-500 via-purple-500 via-blue-500 to-cyan-500 opacity-80"></div>
+              
+              {/* Overlap zones */}
               {overlapZones.map((zone, i) => (
                 <div key={i}
-                  className="absolute top-0 h-16 bg-gradient-to-r from-amber-500/10 via-amber-500/20 to-amber-500/10 border-t-2 border-b-2 border-amber-500/40 rounded"
+                  className="absolute top-0 bottom-0 bg-amber-500/30 border-t-2 border-b-2 border-amber-400"
                   style={{ left: `${zone.start}%`, width: `${zone.end - zone.start}%` }}
-                >
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="text-xs font-bold text-amber-300 bg-amber-900/50 px-3 py-1 rounded-full border border-amber-500/30">
-                      High Overlap
-                    </span>
-                  </div>
-                </div>
+                />
               ))}
             </div>
-          </div>
-          <div className="flex items-center justify-between text-base text-slate-400 px-4 bg-slate-900/30 rounded-lg p-4 border border-slate-700">
-            <div className="flex items-center gap-3">
-              <div className="w-5 h-5 bg-gradient-to-r from-amber-500/20 to-amber-500/30 border-2 border-amber-500/40 rounded"></div>
-              <span className="font-medium">High overlap zone (≥3 projects running concurrently)</span>
-            </div>
-            <div className="text-right font-semibold text-white">
-              {filteredAndSortedData.length} active projects shown
+            
+            {/* Legend */}
+            <div className="flex items-center justify-between mt-4 text-sm">
+              <div className="flex items-center gap-3 text-slate-400">
+                <div className="w-4 h-4 bg-amber-500/30 border border-amber-400 rounded"></div>
+                <span>High overlap zone (≥3 projects)</span>
+              </div>
+              <div className="text-slate-300 font-semibold">
+                {filteredAndSortedData.length} active projects shown
+              </div>
             </div>
           </div>
         </div>
@@ -3066,65 +3087,65 @@ const TimelineSection = ({
           Project Timeline Details
         </h3>
         <div className="overflow-x-auto rounded-xl border border-slate-700 shadow-lg">
-          <table className="w-full text-base" style={{ minWidth: '1100px' }}>
-            <thead className="bg-gradient-to-r from-slate-800 to-slate-900">
-              <tr>
-                <th className="py-4 px-6 text-left font-bold text-slate-200 border-b border-slate-700" style={{ width: '18%' }}>Project</th>
-                <th className="py-4 px-6 text-left font-bold text-slate-200 border-b border-slate-700" style={{ width: '22%' }}>Progress</th>
-                <th className="py-4 px-6 text-left font-bold text-slate-200 border-b border-slate-700" style={{ width: '12%' }}>Start Date</th>
-                <th className="py-4 px-6 text-left font-bold text-slate-200 border-b border-slate-700" style={{ width: '14%' }}>Target End</th>
-                <th className="py-4 px-6 text-center font-bold text-slate-200 border-b border-slate-700" style={{ width: '10%' }}>Ongoing</th>
-                <th className="py-4 px-6 text-left font-bold text-slate-200 border-b border-slate-700" style={{ width: '12%' }}>Days to Target</th>
-                <th className="py-4 px-6 text-left font-bold text-slate-200 border-b border-slate-700" style={{ width: '12%' }}>Status</th>
+          <table className="w-full text-sm" style={{ minWidth: '1100px' }}>
+            <thead className="bg-slate-800/80">
+              <tr className="border-b border-slate-700">
+                <th className="py-4 px-6 text-left font-semibold text-slate-300" style={{ width: '20%' }}>Project</th>
+                <th className="py-4 px-6 text-left font-semibold text-slate-300" style={{ width: '25%' }}>Progress</th>
+                <th className="py-4 px-6 text-center font-semibold text-slate-300" style={{ width: '12%' }}>Start Date</th>
+                <th className="py-4 px-6 text-center font-semibold text-slate-300" style={{ width: '12%' }}>Target End</th>
+                <th className="py-4 px-6 text-center font-semibold text-slate-300" style={{ width: '8%' }}>Ongoing</th>
+                <th className="py-4 px-6 text-center font-semibold text-slate-300" style={{ width: '13%' }}>Days to Target</th>
+                <th className="py-4 px-6 text-center font-semibold text-slate-300" style={{ width: '10%' }}>Status</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-700/50">
+            <tbody className="divide-y divide-slate-700/30">
               {filteredAndSortedData.map((project, i) => (
-                <tr key={i} className="hover:bg-slate-800/40 transition-all group">
+                <tr key={i} className="hover:bg-slate-800/30 transition-all group bg-slate-900/40">
                   <td className="py-4 px-6">
                     <button
                       onClick={() => onProjectClick(project.project)}
-                      className="flex items-center gap-3 hover:opacity-80 transition-all group-hover:translate-x-1"
+                      className="flex items-center gap-3 hover:opacity-80 transition-all"
                     >
-                      <span className="w-3 h-3 rounded-full flex-shrink-0 shadow-lg"
+                      <span className="w-2 h-2 rounded-full flex-shrink-0"
                         style={{ backgroundColor: getProjectColor(project.project) }}>
                       </span>
-                      <span className="font-semibold text-white">{project.project}</span>
+                      <span className="font-medium text-white text-left">{project.project}</span>
                     </button>
                   </td>
                   <td className="py-4 px-6">
                     <div className="flex items-center gap-3">
-                      <div className="flex-1 bg-slate-700/50 rounded-full h-7 overflow-hidden min-w-[120px] border border-slate-600">
+                      <div className="flex-1 bg-slate-700/50 rounded-full h-6 overflow-hidden border border-slate-600 min-w-[140px]">
                         <div
-                          className="h-7 rounded-full transition-all duration-500 flex items-center justify-center"
+                          className="h-6 rounded-full transition-all duration-500 relative"
                           style={{
                             width: `${project.percentComplete}%`,
                             background: `linear-gradient(90deg, ${getProjectColor(project.project)}, ${getProjectColor(project.project)}dd)`,
                           }}
                         >
-                          {project.percentComplete > 15 && (
-                            <span className="text-sm font-bold text-white drop-shadow">
+                          {project.percentComplete > 20 && (
+                            <span className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white">
                               {project.percentComplete}%
                             </span>
                           )}
                         </div>
                       </div>
-                      {project.percentComplete <= 15 && (
-                        <span className="text-base font-bold text-white min-w-[50px]">
+                      {project.percentComplete <= 20 && (
+                        <span className="text-sm font-bold text-white">
                           {project.percentComplete}%
                         </span>
                       )}
-                      <span className="text-sm text-slate-400 whitespace-nowrap">
-                        {project.completedSP.toFixed(0)} / {project.totalSP.toFixed(0)} SP
+                      <span className="text-xs text-slate-400 whitespace-nowrap">
+                        {project.completedSP.toFixed(0)} SP
                       </span>
                     </div>
                   </td>
-                  <td className="py-4 px-6">
-                    <div className="text-base font-medium text-slate-300">
+                  <td className="py-4 px-6 text-center">
+                    <div className="text-sm font-medium text-slate-300">
                       {project.startDate ? new Date(project.startDate).toLocaleDateString('en-GB') : '-'}
                     </div>
                   </td>
-                  <td className="py-4 px-6">
+                  <td className="py-4 px-6 text-center">
                     <input
                       type="date"
                       value={projectTargets[project.project] || project.endDate}
@@ -3135,27 +3156,26 @@ const TimelineSection = ({
                         }))
                       }
                       disabled={project.isOngoing}
-                      className={`px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 w-full transition-all ${
+                      className={`px-2 py-1.5 border rounded text-xs focus:ring-2 focus:ring-blue-500 w-full transition-all ${
                         project.isOngoing 
-                          ? 'bg-slate-700 border-slate-600 text-slate-400 cursor-not-allowed opacity-60' 
-                          : 'bg-slate-800 border-slate-600 text-white hover:bg-slate-750 hover:border-slate-500'
+                          ? 'bg-slate-700/50 border-slate-600 text-slate-500 cursor-not-allowed' 
+                          : 'bg-slate-800 border-slate-600 text-white hover:bg-slate-750'
                       }`}
                     />
                   </td>
                   <td className="py-4 px-6 text-center">
-                    <label className="inline-flex items-center gap-2 cursor-pointer group/checkbox">
+                    <label className="inline-flex items-center cursor-pointer">
                       <input
                         type="checkbox"
                         checked={project.isOngoing}
                         onChange={() => handleToggleOngoing(project.project)}
-                        className="w-5 h-5 text-blue-500 bg-slate-800 border-slate-600 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer transition-all"
+                        className="w-4 h-4 text-blue-500 bg-slate-800 border-slate-600 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer"
                       />
-                      <span className="text-sm font-medium text-slate-300 group-hover/checkbox:text-white transition-colors">Ongoing</span>
                     </label>
                   </td>
-                  <td className="py-4 px-6">
+                  <td className="py-4 px-6 text-center">
                     <div
-                      className={`text-xl font-bold ${
+                      className={`text-lg font-bold ${
                         project.isOngoing
                           ? 'text-blue-400'
                           : project.isComplete
@@ -3166,33 +3186,26 @@ const TimelineSection = ({
                       }`}
                     >
                       {project.isOngoing
-                        ? '🔄 Ongoing'
+                        ? '∞'
                         : project.isComplete
-                        ? '✓ Done'
+                        ? '✓'
                         : project.daysToTarget >= 0
                         ? `${project.daysToTarget}d`
                         : `${Math.abs(project.daysToTarget)}d late`}
                     </div>
                   </td>
-                  <td className="py-4 px-6">
+                  <td className="py-4 px-6 text-center">
                     <span
-                      className={`px-4 py-2 rounded-full text-sm font-bold inline-flex items-center gap-2 ${
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold ${
                         project.isOngoing
-                          ? 'bg-blue-900/40 text-blue-300 border-2 border-blue-700/50'
+                          ? 'bg-blue-900/40 text-blue-300 border border-blue-700/50'
                           : project.isComplete
-                          ? 'bg-emerald-900/40 text-emerald-300 border-2 border-emerald-700/50'
+                          ? 'bg-emerald-900/40 text-emerald-300 border border-emerald-700/50'
                           : project.isDelayed
-                          ? 'bg-red-900/40 text-red-300 border-2 border-red-700/50'
-                          : project.isEarly
-                          ? 'bg-blue-900/40 text-blue-300 border-2 border-blue-700/50'
-                          : 'bg-green-900/40 text-green-300 border-2 border-green-700/50'
+                          ? 'bg-red-900/40 text-red-300 border border-red-700/50'
+                          : 'bg-green-900/40 text-green-300 border border-green-700/50'
                       }`}
                     >
-                      {project.isOngoing && '🔄'}
-                      {project.isComplete && '✅'}
-                      {project.isDelayed && '🔴'}
-                      {project.isEarly && '🟢'}
-                      {!project.isOngoing && !project.isComplete && !project.isDelayed && !project.isEarly && '🟢'}
                       {project.status}
                     </span>
                   </td>
