@@ -1149,9 +1149,9 @@ const SprintDashboard = () => {
   // UPDATED: Restored Capacity Dashboard tab
   const tabs = {
     overview: { icon: LayoutDashboard, label: 'Overview' },
+    assignees: { icon: Users, label: 'Assignees' },
     risks: { icon: Shield, label: 'Risk Register' },
     capacity: { icon: Users, label: 'Capacity' },
-    assignees: { icon: Users, label: 'Assignees' },
     sprints: { icon: Target, label: 'Sprints' },
     projects: { icon: Briefcase, label: 'Projects' },
     timeline: { icon: BarChart3, label: 'Timeline' },
@@ -2032,6 +2032,40 @@ const RiskSection = ({ riskRegister, selectedSprint, selectedAssignee, selectedP
 
   return (
     <div className="space-y-6">
+      {/* Risk Register Explanation */}
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-l-4 border-blue-500 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
+          <AlertCircle className="w-5 h-5 text-blue-600" />
+          About Risk Register
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div className="bg-white rounded-lg p-4 border border-red-200">
+            <div className="font-semibold text-red-700 mb-2 flex items-center gap-2">
+              <span className="text-lg">🔴</span>
+              High Priority Risks
+            </div>
+            <ul className="text-slate-700 space-y-1 text-xs">
+              <li>• <strong>Overdue items</strong> - Past target date and not Done</li>
+              <li>• <strong>Overloaded assignees</strong> - Active work exceeds capacity</li>
+              <li>• <strong>Missing story points</strong> - No SP and due within 5 days</li>
+            </ul>
+          </div>
+          <div className="bg-white rounded-lg p-4 border border-amber-200">
+            <div className="font-semibold text-amber-700 mb-2 flex items-center gap-2">
+              <span className="text-lg">🟠</span>
+              Medium Priority Risks
+            </div>
+            <ul className="text-slate-700 space-y-1 text-xs">
+              <li>• <strong>Approaching deadline</strong> - Items due soon without story points</li>
+              <li>• <strong>Potential blockers</strong> - Items that may need attention</li>
+            </ul>
+          </div>
+        </div>
+        <div className="mt-4 text-xs text-slate-600 bg-white/50 rounded p-3">
+          <strong>💡 Use this for:</strong> Daily standups, sprint planning, identifying overloaded team members, and stakeholder updates
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-red-50 border-l-4 border-red-500 rounded-lg p-4">
           <div className="flex items-center justify-between mb-2">
@@ -2223,8 +2257,8 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
 
       {/* UPDATED: Capacity Planning Table - PM-First Design */}
       <div className="bg-white rounded-xl p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-slate-900">Sprint Capacity Planning</h2>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-slate-900">Sprint Capacity Planning</h2>
           <button 
             onClick={() => setShowBulkCapacityEdit(true)}
             disabled={selectedAssignees.size === 0}
@@ -2241,27 +2275,27 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="px-4 py-3 text-center">
+              <tr className="bg-slate-50 border-b-2 border-slate-200">
+                <th className="px-4 py-4 text-center w-12">
                   <input type="checkbox"
                     checked={selectedAssignees.size === assigneeList.length && assigneeList.length > 0}
                     onChange={() => handleSelectAllAssignees(assigneeList)}
                     className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
                   />
                 </th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-700">Assignee</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-700">Sprint Capacity</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-700 bg-red-50">Active Workload (SP)</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-700 bg-green-50">Remaining Capacity</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-700">Capacity Status</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-700">PM Guidance</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-700">Completed/Awaiting</th>
+                <th className="px-4 py-4 text-left font-bold text-slate-700">Assignee</th>
+                <th className="px-4 py-4 text-center font-bold text-slate-700">Sprint<br/>Capacity</th>
+                <th className="px-4 py-4 text-center font-bold text-slate-700 bg-red-50">Active<br/>Workload (SP)</th>
+                <th className="px-4 py-4 text-center font-bold text-slate-700 bg-green-50">Remaining<br/>Capacity</th>
+                <th className="px-4 py-4 text-center font-bold text-slate-700 min-w-[140px]">Capacity Status</th>
+                <th className="px-4 py-4 text-left font-bold text-slate-700 min-w-[200px]">PM Guidance</th>
+                <th className="px-4 py-4 text-center font-bold text-slate-700">Completed/<br/>Awaiting</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {Object.entries(stats).map(([assignee, data]) => (
-                <tr key={assignee} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 text-center">
+                <tr key={assignee} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-4 py-4 text-center">
                     <input
                       type="checkbox"
                       checked={selectedAssignees.has(assignee)}
@@ -2269,38 +2303,38 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
                       className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
                     />
                   </td>
-                  <td className="px-4 py-3 font-bold text-gray-900">{assignee}</td>
-                  <td className="px-4 py-3 text-center">
+                  <td className="px-4 py-4 font-semibold text-gray-900">{assignee}</td>
+                  <td className="px-4 py-4 text-center">
                     <input
                       type="number"
                       min={0}
                       value={assigneeCaps[assignee] ?? data.sprintCapacity}
                       onChange={(e) => setAssigneeCaps(prev => ({ ...prev, [assignee]: Number(e.target.value) || 0 }))}
-                      className="w-20 px-2 py-1 rounded text-center border border-slate-300 text-slate-900 bg-white"
+                      className="w-16 px-2 py-1.5 rounded text-center border border-slate-300 text-slate-900 bg-white font-semibold"
                     />
                   </td>
-                  <td className="px-4 py-3 text-center bg-red-50">
-                    <div className="font-semibold text-red-700 text-lg">
+                  <td className="px-4 py-4 text-center bg-red-50">
+                    <div className="font-bold text-red-700 text-lg">
                       {data.activeWorkload.toFixed(1)}
                     </div>
-                    <div className="text-xs text-red-600">
-                      ({data.activeItems} active items)
+                    <div className="text-xs text-red-600 mt-0.5">
+                      {data.activeItems} items
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-center bg-green-50">
-                    <div className={`text-2xl font-bold ${
+                  <td className="px-4 py-4 text-center bg-green-50">
+                    <div className={`text-xl font-bold ${
                       data.remainingCapacity > 0 ? 'text-green-600' :
                       data.remainingCapacity === 0 ? 'text-amber-600' :
                       'text-red-600'
                     }`}>
-                      {data.remainingCapacity > 0 ? '+' : ''}{data.remainingCapacity.toFixed(1)} SP
+                      {data.remainingCapacity > 0 ? '+' : ''}{data.remainingCapacity.toFixed(1)}
                     </div>
-                    <div className="text-xs text-green-600">
-                      {data.remainingCapacity > 0 ? 'Available' : data.remainingCapacity === 0 ? 'No buffer' : 'Overloaded'}
+                    <div className="text-xs text-slate-600 mt-0.5">
+                      {data.remainingCapacity > 0 ? 'Available' : data.remainingCapacity === 0 ? 'No buffer' : 'Over capacity'}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-center">
-                    <span className={`px-3 py-1.5 rounded-full text-sm font-bold ${
+                  <td className="px-4 py-4 text-center">
+                    <span className={`inline-block px-3 py-2 rounded-lg text-sm font-bold whitespace-nowrap ${
                       data.capacityStatus === 'Has Capacity' ? 'bg-green-100 text-green-800 border-2 border-green-300' :
                       data.capacityStatus === 'Fully Allocated' ? 'bg-amber-100 text-amber-800 border-2 border-amber-300' :
                       'bg-red-100 text-red-800 border-2 border-red-300'
@@ -2308,23 +2342,33 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
                       {data.capacityStatus}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-left">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">
+                  <td className="px-4 py-4">
+                    <div className="flex items-start gap-2">
+                      <span className="text-lg flex-shrink-0">
                         {data.capacityStatus === 'Has Capacity' ? '✅' :
                          data.capacityStatus === 'Fully Allocated' ? '🟡' :
                          '❌'}
                       </span>
-                      <span className="text-sm font-medium text-slate-700">
-                        {data.pmGuidance}
-                      </span>
-                    </div>
-                    {/* Show completed/awaiting for transparency */}
-                    {(data.completedWorkload > 0 || data.awaitingWorkload > 0) && (
-                      <div className="text-xs text-slate-500 mt-1">
-                        Completed/Awaiting: {(data.completedWorkload + data.awaitingWorkload).toFixed(1)} SP (excluded)
+                      <div>
+                        <span className="text-sm text-slate-700 leading-tight">
+                          {data.pmGuidance}
+                        </span>
+                        {/* Show completed/awaiting for transparency */}
+                        {(data.completedWorkload > 0 || data.awaitingWorkload > 0) && (
+                          <div className="text-xs text-slate-500 mt-1">
+                            {(data.completedWorkload + data.awaitingWorkload).toFixed(1)} SP (excluded)
+                          </div>
+                        )}
                       </div>
-                    )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-4 text-center">
+                    <div className="text-sm font-semibold text-slate-700">
+                      {(data.completedWorkload + data.awaitingWorkload).toFixed(1)} SP
+                    </div>
+                    <div className="text-xs text-slate-500 mt-0.5">
+                      ✓ {data.completedWorkload.toFixed(1)} / ⏳ {data.awaitingWorkload.toFixed(1)}
+                    </div>
                   </td>
                 </tr>
               ))}
