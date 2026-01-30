@@ -59,6 +59,28 @@ app.use(express.json());
 // load .env if present
 dotenv.config();
 
+function jiraAuthHeader() {
+  const email = process.env.JIRA_EMAIL;
+  const token = process.env.JIRA_API_TOKEN;
+  if (!email || !token) return null;
+  const base64 = Buffer.from(`${email}:${token}`).toString("base64");
+  return `Basic ${base64}`;
+}
+
+function requireJiraEnv(res) {
+  const baseUrl = process.env.JIRA_BASE_URL;
+  const auth = jiraAuthHeader();
+  if (!baseUrl || !auth) {
+    res.status(500).json({
+      error: "Missing Jira env vars. Need JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN",
+    });
+    return null;
+  }
+  return { baseUrl, auth };
+}
+
+
+
 // Create HTTPS agent that ignores certificate validation for Azure DevOps hosted instances
 // This is needed when the server certificate doesn't match the hostname
 const httpsAgent = new https.Agent({
@@ -267,5 +289,195 @@ app.get('/api/azdo-config', (req, res) => {
   }
 });
 
+// Jira API endpoints
+app.post('/api/jira/issues', async (req, res) => {
+  try {
+    const jiraConfig = requireJiraEnv(res);
+    if (!jiraConfig) return;
+
+    const { jql = '', fields = 'summary,status,assignee,reporter,created,updated,duedate,priority,issuetype,project,resolution,customfield_10010,customfield_10002,fixVersions,timeoriginalestimate,customfield_10007,customfield_10008,customfield_10009,customfield_10011,customfield_10012,customfield_10013,customfield_10014,customfield_10016,customfield_10017', startAt = 0, maxResults = 100 } = req.body;
+
+    // If no JQL provided, use a broad query to get all projects
+    const finalJql = jql || 'project in (DND,CSFR,AISITS,ACI,CSR,AFMS,AFSDWAM,BROAD,BMS,CADEP,CCTA,CTONGO,CABO,CPM,CS000344,CFT,CS00300,CS00304,CS00332,INSETT,CSAU,IRROA,SMSI,CS00386,CSDRECONC,CS00398A,CS00398B,CNBIL408,CS00415PT,CSB,CS00429,CS00434,CBAHESF,CS441SAPD,COGP,TRFCSPRM,CCPI,DRM,DWHP,NXCLR,ECBS,FAA,FSM,BSWAP21,ISE,INTTAX,MOS,MDP,MCA,OGSN,OTPCA,PIR,PIRSOW,PEWS,PS,RC,RF,RB,SSP,SRFCSS,SETINPFILE,SSLM,SD,SIR,SPROJ,SRDUAT,STLU,SI,T2S,TT,TP,T0ORS,UP,UPB,UPNTOLD,WFNDS,WBILL,XPRES,XPONGO,QO00443)';
+
+    console.log('Proxy POST /api/jira/issues:', { jql: finalJql, startAt, maxResults });
+
+    const url = `${jiraConfig.baseUrl}/rest/api/3/search/jql?jql=${encodeURIComponent(finalJql)}&fields=${encodeURIComponent(fields)}&startAt=${startAt}&maxResults=${maxResults}`;
+
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': jiraConfig.auth,
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Jira API error response:', errorText);
+      return res.status(response.status).json({ error: `Jira API error: ${response.status}`, details: errorText });
+    }
+
+    const data = await response.json();
+    // Return full pagination metadata to frontend
+    res.json({
+      issues: data.issues,
+      total: data.total,
+      startAt: data.startAt,
+      maxResults: data.maxResults
+    });
+  } catch (error) {
+    console.error('Jira API error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Keep GET for backward compatibility (temporary)
+app.get('/api/jira/issues', async (req, res) => {
+  try {
+    const jiraConfig = requireJiraEnv(res);
+    if (!jiraConfig) return;
+    
+    const { jql = '', fields = 'summary,status,assignee,reporter,created,updated,duedate,priority,issuetype,project,resolution,customfield_10010,customfield_10002,fixVersions,timeoriginalestimate,customfield_10007,customfield_10008,customfield_10009,customfield_10011,customfield_10012,customfield_10013,customfield_10014,customfield_10016,customfield_10017', startAt = 0, maxResults = 100 } = req.query;
+    
+    // If no JQL provided, use a broad query to get all projects
+    const finalJql = jql || 'project in (DND,CSFR,AISITS,ACI,CSR,AFMS,AFSDWAM,BROAD,BMS,CADEP,CCTA,CTONGO,CABO,CPM,CS000344,CFT,CS00300,CS00304,CS00332,INSETT,CSAU,IRROA,SMSI,CS00386,CSDRECONC,CS00398A,CS00398B,CNBIL408,CS00415PT,CSB,CS00429,CS00434,CBAHESF,CS441SAPD,COGP,TRFCSPRM,CCPI,DRM,DWHP,NXCLR,ECBS,FAA,FSM,BSWAP21,ISE,INTTAX,MOS,MDP,MCA,OGSN,OTPCA,PIR,PIRSOW,PEWS,PS,RC,RF,RB,SSP,SRFCSS,SETINPFILE,SSLM,SD,SIR,SPROJ,SRDUAT,STLU,SI,T2S,TT,TP,T0ORS,UP,UPB,UPNTOLD,WFNDS,WBILL,XPRES,XPONGO,QO00443)';
+    
+    const url = `${jiraConfig.baseUrl}/rest/api/3/search/jql?jql=${encodeURIComponent(finalJql)}&fields=${encodeURIComponent(fields)}&startAt=${startAt}&maxResults=${maxResults}`;
+    
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': jiraConfig.auth,
+        'Accept': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).json({ error: `Jira API error: ${response.status}`, details: errorText });
+    }
+    
+    const data = await response.json();
+    // Return full pagination metadata to frontend (matching POST route)
+    res.json({
+      issues: data.issues || [],
+      total: data.total ?? 0,
+      startAt: data.startAt ?? Number(startAt),
+      maxResults: data.maxResults ?? Number(maxResults)
+    });
+  } catch (error) {
+    console.error('Jira API error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Get all projects
+app.get('/api/jira/projects', async (req, res) => {
+  try {
+    const jiraConfig = requireJiraEnv(res);
+    if (!jiraConfig) return;
+    
+    const url = `${jiraConfig.baseUrl}/rest/api/3/project`;
+    
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': jiraConfig.auth,
+        'Accept': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).json({ error: `Jira API error: ${response.status}`, details: errorText });
+    }
+    
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Jira API error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Get sprints for a board
+app.get('/api/jira/sprints/:boardId', async (req, res) => {
+  try {
+    const jiraConfig = requireJiraEnv(res);
+    if (!jiraConfig) return;
+    
+    const { boardId } = req.params;
+    const { state = 'active,future' } = req.query;
+    
+    const url = `${jiraConfig.baseUrl}/rest/agile/1.0/board/${boardId}/sprint?state=${state}`;
+    
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': jiraConfig.auth,
+        'Accept': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).json({ error: `Jira API error: ${response.status}`, details: errorText });
+    }
+    
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Jira API error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Get all boards
+app.get('/api/jira/boards', async (req, res) => {
+  try {
+    const jiraConfig = requireJiraEnv(res);
+    if (!jiraConfig) return;
+    
+    const { projectKeyOrId } = req.query;
+    const url = projectKeyOrId 
+      ? `${jiraConfig.baseUrl}/rest/agile/1.0/board?projectKeyOrId=${projectKeyOrId}`
+      : `${jiraConfig.baseUrl}/rest/agile/1.0/board`;
+    
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': jiraConfig.auth,
+        'Accept': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).json({ error: `Jira API error: ${response.status}`, details: errorText });
+    }
+    
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Jira API error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
+  }
+});
+
+// Safe config endpoint — shows whether Jira config is available (does NOT expose credentials)
+app.get('/api/jira-config', (req, res) => {
+  try {
+    const baseUrl = process.env.JIRA_BASE_URL;
+    const email = process.env.JIRA_EMAIL;
+    const hasConfig = !!(baseUrl && email && process.env.JIRA_API_TOKEN);
+    
+    return res.json({ 
+      hasCredentials: hasConfig, 
+      baseUrl: baseUrl || null,
+      email: email ? email.replace(/(.{2}).*(@.*)/, '$1***$2') : null,
+      source: 'env'
+    });
+  } catch (err) {
+    console.error('jira-config error', err && err.message);
+    return res.status(500).json({ error: 'Failed to read config' });
+  }
+});
+
 const port = process.env.PORT || 4000;
-app.listen(port, () => console.log(`AZDO proxy listening on ${port}`));
+app.listen(port, () => console.log(`Proxy server listening on ${port}`));

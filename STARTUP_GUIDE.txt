@@ -1,0 +1,86 @@
+╔══════════════════════════════════════════════════════════════╗
+║         JIRA SPRINT DASHBOARD - STARTUP GUIDE                ║
+╚══════════════════════════════════════════════════════════════╝
+
+✅ EASIEST WAY TO START:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Option 1: Double-click "start-dashboard.bat"
+Option 2: Run "npm start" in terminal
+
+This starts BOTH servers automatically:
+  → Backend:  http://localhost:4001
+  → Frontend: http://localhost:5174
+
+To STOP: Press Ctrl+C in the terminal
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 AVAILABLE COMMANDS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+npm start              → Start both servers (RECOMMENDED)
+npm run start:all      → Same as above
+npm run start:backend  → Start only backend server
+npm run start:frontend → Start only frontend server
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔧 FIRST TIME SETUP:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Install dependencies:
+   npm install
+   cd server
+   npm install
+   cd ..
+
+2. Create server/.env file with your Jira credentials:
+   JIRA_BASE_URL=https://your-domain.atlassian.net
+   JIRA_EMAIL=your-email@example.com
+   JIRA_API_TOKEN=your-api-token
+
+3. Start the dashboard:
+   npm start
+
+4. Open browser:
+   http://localhost:5174
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 DAILY WORKFLOW:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Run: npm start (or double-click start-dashboard.bat)
+2. Open: http://localhost:5174
+3. Click: "Refresh from Jira" button to load latest data
+4. Stop: Press Ctrl+C when done
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🐛 TROUBLESHOOTING:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Problem: Port already in use
+Solution: Kill the process:
+  netstat -ano | findstr :4001
+  taskkill /PID <PID> /F
+
+Problem: No data showing
+Solution: 
+  1. Click "Refresh from Jira"
+  2. Check browser console (F12)
+  3. Verify server/.env exists
+
+Problem: Connection refused
+Solution: Make sure both servers are running (npm start)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📚 MORE INFO:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+See README.md for full documentation
+See QUICK_START.md for quick reference
+
+╚══════════════════════════════════════════════════════════════╝

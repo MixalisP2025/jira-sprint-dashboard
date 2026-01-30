@@ -1,4 +1,158 @@
-# React + Vite
+# Jira Sprint Dashboard
+
+A comprehensive Sprint Analytics Dashboard that integrates with Jira to provide real-time insights into sprint progress, team capacity, and workload distribution.
+
+## 🚀 Quick Start
+
+### Option 1: One Command (Recommended)
+Start both backend and frontend servers simultaneously:
+
+```bash
+npm start
+```
+
+Or use the convenient startup scripts:
+
+**Windows (Command Prompt):**
+```cmd
+start-dashboard.bat
+```
+
+**Windows (PowerShell):**
+```powershell
+.\start-dashboard.ps1
+```
+
+This will start:
+- **Backend Server**: http://localhost:4001
+- **Frontend Server**: http://localhost:5174
+
+Press `Ctrl+C` to stop both servers.
+
+### Option 2: Manual Start (Individual Servers)
+
+**Start Backend Only:**
+```bash
+npm run start:backend
+```
+
+**Start Frontend Only:**
+```bash
+npm run start:frontend
+```
+
+## 📋 Prerequisites
+
+1. **Node.js** (v16 or higher)
+2. **npm** (comes with Node.js)
+3. **Jira Account** with API access
+
+## 🔧 Setup
+
+### 1. Install Dependencies
+
+```bash
+npm install
+cd server
+npm install
+cd ..
+```
+
+### 2. Configure Jira Credentials
+
+Create a `.env` file in the `server` directory:
+
+```env
+JIRA_BASE_URL=https://your-domain.atlassian.net
+JIRA_EMAIL=your-email@example.com
+JIRA_API_TOKEN=your-jira-api-token
+```
+
+**How to get a Jira API Token:**
+1. Go to https://id.atlassian.com/manage-profile/security/api-tokens
+2. Click "Create API token"
+3. Give it a name and copy the token
+4. Paste it in your `.env` file
+
+### 3. Update Jira Configuration
+
+Edit `src/config/jiraConfig.js` to match your Jira instance:
+- Update project keys in the `projects` array
+- Verify custom field IDs match your Jira instance
+
+## 📊 Features
+
+- **Real-time Jira Integration**: Fetch data directly from Jira API
+- **Capacity Planning**: Track team capacity vs active workload
+- **Sprint Analytics**: Monitor sprint progress and completion rates
+- **Risk Management**: Identify overloaded team members and at-risk items
+- **Workload Distribution**: Visualize team workload across projects
+- **File Upload**: Support for CSV/TSV Jira exports
+
+## 🛠️ Available Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm start` | Start both backend and frontend servers |
+| `npm run start:all` | Same as `npm start` |
+| `npm run start:backend` | Start only the backend server |
+| `npm run start:frontend` | Start only the frontend server |
+| `npm run dev` | Start frontend in development mode |
+| `npm run build` | Build for production |
+| `npm test` | Run tests |
+| `npm run lint` | Run ESLint |
+
+## 📁 Project Structure
+
+```
+jira-sprint-dashboard/
+├── server/                 # Backend Express server
+│   ├── server.js          # Main server file
+│   ├── .env               # Environment variables (create this)
+│   └── package.json       # Backend dependencies
+├── src/                   # Frontend React application
+│   ├── components/        # React components
+│   ├── config/           # Configuration files
+│   ├── utils/            # Utility functions
+│   └── SprintDashboard.jsx # Main dashboard component
+├── start-dashboard.bat    # Windows batch startup script
+├── start-dashboard.ps1    # PowerShell startup script
+└── package.json          # Root dependencies
+```
+
+## 🔒 Security Notes
+
+- Never commit `.env` files or API tokens to version control
+- The `.env` file is already in `.gitignore`
+- Keep your Jira API token secure and rotate it regularly
+
+## 🐛 Troubleshooting
+
+**Port Already in Use:**
+If you see "Port 4001 already in use", stop any running backend servers:
+```bash
+# Find and kill process on port 4001 (Windows)
+netstat -ano | findstr :4001
+taskkill /PID <PID> /F
+```
+
+**Jira Connection Issues:**
+- Verify your `.env` file is in the `server` directory
+- Check that your Jira API token is valid
+- Ensure your Jira base URL is correct (no trailing slash)
+
+**No Data Showing:**
+- Click "Refresh from Jira" button
+- Check browser console for errors
+- Verify custom field IDs in `src/config/jiraConfig.js` match your Jira instance
+
+## 📝 License
+
+This project is private and proprietary.
+
+---
+
+## React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 

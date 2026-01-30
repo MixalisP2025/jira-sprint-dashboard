@@ -8,7 +8,7 @@ export default defineConfig({
     strictPort: false, // allow fallback if 5174 is in use
     proxy: {
       '/api': {
-        target: process.env.VITE_PROXY_URL || 'http://localhost:4000',
+        target: process.env.VITE_PROXY_URL || 'http://localhost:4001',
         changeOrigin: true,
         secure: false,
       },

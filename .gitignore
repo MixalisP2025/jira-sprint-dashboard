@@ -25,3 +25,7 @@ azdo.config.json
 *.njsproj
 *.sln
 *.sw?
+
+# Local env files (keep secrets out of Git)
+server/.env
+server/.env.*

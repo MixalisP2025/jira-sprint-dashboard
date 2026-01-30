@@ -1,0 +1,3892 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import allowedAssignees from './data/allowedAssignees.json';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  LineChart,
+  Line,
+} from 'recharts';
+import {
+  Upload,
+  Users,
+  TrendingUp,
+  CheckCircle,
+  Clock,
+  AlertCircle,
+  Calendar,
+  Home,
+} from 'lucide-react';
+import { computeSuggestions, computeWhatIfProjection, computeSuggestionsDetailed, computeSprintProjectProgress } from './utils/allocation';
+
+const SprintDashboard = () => {
+  const [data, setData] = useState([]);
+  const [selectedSprint, setSelectedSprint] = useState('all');
+  const [selectedAssignee, setSelectedAssignee] = useState('all');
+  const [sprintDates, setSprintDates] = useState({});
+  const [assigneeCaps, setAssigneeCaps] = useState({});
+  // Optional mapping of assignee -> Set of allowed project codes/names
+  const [assigneeProjectMap, setAssigneeProjectMap] = useState({});
+  const [projectAllowedMap, setProjectAllowedMap] = useState({});
+  const [mappingLoadedCount, setMappingLoadedCount] = useState(0);
+  const [mappingDiagnostics, setMappingDiagnostics] = useState([]);
+  const [showMappingDiagnostics, setShowMappingDiagnostics] = useState(false);
+  const [diagnosticRowAssignee, setDiagnosticRowAssignee] = useState({});
+  const [showMergedDuplicates, setShowMergedDuplicates] = useState(false);
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestionRejections, setSuggestionRejections] = useState([]);
+  const [whatIfMultiplier, setWhatIfMultiplier] = useState(1);
+  const [jiraPreview, setJiraPreview] = useState([]);
+  const [jiraPreviewVisible, setJiraPreviewVisible] = useState(false);
+  const [jiraLog, setJiraLog] = useState([]);
+  const [isApplying, setIsApplying] = useState(false);
+  const [selectedSuggestionIds, setSelectedSuggestionIds] = useState([]);
+  const [thresholds, setThresholds] = useState({ under: 0.7, over: 1 });
+  // UI state for assignee ticket quick-actions
+  const [assigneeTicketSelectedKeys, setAssigneeTicketSelectedKeys] = useState([]);
+  const [showDoneTickets, setShowDoneTickets] = useState(true);
+  const [showNoStoryPoints, setShowNoStoryPoints] = useState(false);
+  const [showAwaitingTesting, setShowAwaitingTesting] = useState(true);
+  const [showAwaitingVersioning, setShowAwaitingVersioning] = useState(true);
+  const [selectedIssueTypes, setSelectedIssueTypes] = useState(['Epic', 'Story', 'Task', 'Sub-task', 'Bug']);
+  // Use only configured JIRA base URL; do not fall back to a hard-coded tenant in production
+  const JIRA_BASE_URL = import.meta.env.VITE_JIRA_BASE_URL || null;
+  // Azure DevOps connection (optional). For security, prefer calling a server-side proxy.
+  const AZDO_ORG_URL = import.meta.env.VITE_AZDO_ORG_URL || null;
+  const AZDO_PAT = import.meta.env.VITE_AZDO_PAT || null;
+  const [azdoGroupBy, setAzdoGroupBy] = useState('AreaPath');
+  const [riskLevelFilter, setRiskLevelFilter] = useState('all');
+  const [riskProjectFilter, setRiskProjectFilter] = useState('all');
+  const [riskSortBy, setRiskSortBy] = useState('level');
+  const [riskSprintFilter, setRiskSprintFilter] = useState('all');
+  const [riskAssigneeFilter, setRiskAssigneeFilter] = useState('all');
+  const [riskStatusFilter, setRiskStatusFilter] = useState('all');
+  const [workloadShowOnly, setWorkloadShowOnly] = useState('all'); // all, overloaded, near-limit, underutilized
+  const [workloadSprintFilter, setWorkloadSprintFilter] = useState('all');
+  const [workloadAssigneeFilter, setWorkloadAssigneeFilter] = useState('all');
+
+  // Reset handler for Workload & Capacity filters
+  const handleClearWorkloadFilters = () => {
+    // Reset sprint to 'all' (show all sprints), and reset other filters
+    setWorkloadSprintFilter('all');
+    setWorkloadAssigneeFilter('all');
+    setWorkloadShowOnly('all');
+  };
+
+  const parseAssigneeProjectMapping = (text) => {
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return {};
+
+    // split header and find relevant columns
+    const separator = lines[0].includes('\t') ? '\t' : ',';
+    const headerCols = lines[0].split(separator).map((h) => h.trim().toLowerCase());
+    const teamIdx = headerCols.findIndex((h) => h.includes('team') || h.includes('member') || h.includes('name'));
+    const projectCodeIdx = headerCols.findIndex((h) => h.includes('code'));
+    const projectNameIdx = headerCols.findIndex((h) => h.includes('project') && !h.includes('code'));
+
+    const map = {};
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(separator).map((c) => c.trim());
+      const name = (teamIdx >= 0 ? parts[teamIdx] : parts[0]) || '';
+      const code = (projectCodeIdx >= 0 ? parts[projectCodeIdx] : '') || (projectNameIdx >= 0 ? parts[projectNameIdx] : '');
+      if (!name) continue;
+      const key = name.trim();
+      if (!map[key]) map[key] = new Set();
+      if (code) map[key].add(code.trim());
+    }
+
+    return map;
+  };
+
+  const normalizeProject = (s) => {
+    if (!s) return '';
+    return String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  };
+
+  const builtinProjectKeys = useMemo(() => {
+    try {
+      return new Set(Object.keys(allowedAssignees || {}).map((p) => normalizeProject(p)));
+    } catch (e) {
+      return new Set();
+    }
+  }, [allowedAssignees]);
+
+  const isBuiltinProject = (project) => {
+    if (!project) return false;
+    return builtinProjectKeys.has(normalizeProject(project));
+  };
+
+  const hasBuiltinRejections = useMemo(() => {
+    try {
+      return Array.isArray(suggestionRejections) && suggestionRejections.some((r) => isBuiltinProject(r.project));
+    } catch (e) {
+      return false;
+    }
+  }, [suggestionRejections, builtinProjectKeys]);
+
+  const renderListPreview = (arr = [], max = 5) => {
+    if (!arr || !Array.isArray(arr) || arr.length === 0) return null;
+    const shown = arr.slice(0, max).join(', ');
+    return arr.length > max ? <span title={arr.join(', ')}>{shown}, +{arr.length - max} more</span> : <span title={arr.join(', ')}>{shown}</span>;
+  };
+
+  const handleMappingUpload = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      const ab = await file.arrayBuffer();
+      const text = new TextDecoder('utf-8').decode(ab);
+      const parsed = parseAssigneeProjectMapping(text);
+      setAssigneeProjectMap(parsed);
+      setMappingLoadedCount(Object.keys(parsed).length);
+      try { setMappingDiagnostics(computeMappingDiagnostics()); } catch (e) {}
+      try {
+        const serial = {};
+        Object.keys(parsed).forEach((k) => {
+          serial[k] = Array.from(parsed[k] || []);
+        });
+        localStorage.setItem('assigneeProjectMap', JSON.stringify(serial));
+      } catch (e) {}
+    } catch (err) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const parsed = parseAssigneeProjectMapping(ev.target.result);
+        setAssigneeProjectMap(parsed);
+        setMappingLoadedCount(Object.keys(parsed).length);
+        try { setMappingDiagnostics(computeMappingDiagnostics()); } catch (e) {}
+        try {
+          const serial = {};
+          Object.keys(parsed).forEach((k) => {
+            serial[k] = Array.from(parsed[k] || []);
+          });
+          localStorage.setItem('assigneeProjectMap', JSON.stringify(serial));
+        } catch (e) {}
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  const exportMapping = () => {
+    try {
+      const map = assigneeProjectMap || {};
+      const rows = [];
+      Object.keys(map).forEach((assignee) => {
+        const projects = Array.from(map[assignee] || []);
+        if (projects.length === 0) {
+          rows.push([assignee, '']);
+        } else {
+          projects.forEach((p) => rows.push([assignee, p]));
+        }
+      });
+      if (rows.length === 0) {
+        window.alert('No mapping loaded to export');
+        return;
+      }
+      const header = ['Assignee', 'Project'];
+      const csv = [header.join(','), ...rows.map((r) => r.map((c) => `"${(c||'').toString().replace(/"/g,'""')}"`).join(','))].join('\r\n');
+      const bom = '\uFEFF';
+      const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'assignee-project-mapping.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Export mapping failed', e);
+      window.alert('Export failed');
+    }
+  };
+
+  const exportDiagnostics = (rows = []) => {
+    try {
+      if (!rows || rows.length === 0) {
+        window.alert('No diagnostics to export');
+        return;
+      }
+      const headers = ['Issue', 'Project', 'Summary'];
+      const csvRows = rows.map((r) => [r.issueKey, r.project, (r.summary || '').replace(/"/g, '""')]);
+      const csv = [headers.join(','), ...csvRows.map((r) => r.map((c) => `"${(c||'').toString().replace(/"/g,'""')}"`).join(','))].join('\r\n');
+      const bom = '\uFEFF';
+      const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'mapping-diagnostics.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Export diagnostics failed', e);
+      window.alert('Export diagnostics failed');
+    }
+  };
+
+  const clearMapping = () => {
+    if (!window.confirm('Clear loaded mapping and forget persisted mapping?')) return;
+    setAssigneeProjectMap({});
+    setMappingLoadedCount(0);
+    try {
+      localStorage.removeItem('assigneeProjectMap');
+    } catch (e) {}
+    setMappingDiagnostics([]);
+    setShowMappingDiagnostics(false);
+  };
+
+  const computeMappingDiagnostics = () => {
+    const diagnostics = [];
+    const map = assigneeProjectMap || {};
+    if (!map || Object.keys(map).length === 0) return diagnostics;
+    filteredData.forEach((item) => {
+      const project = item['Project'] || item.Project || item['Project key'] || item['Project Key'] || '';
+      const key = String(item['Issue key'] || item['Key'] || item['Issue Key'] || item.id || '');
+      if (!project) return;
+      const projNorm = normalizeProject(project);
+      const has = Object.keys(map).some((assignee) => {
+        const set = map[assignee] || new Set();
+        return Array.from(set).some((p) => {
+          const an = normalizeProject(p);
+          return an === projNorm || an.includes(projNorm) || projNorm.includes(an);
+        });
+      });
+      if (!has) {
+        diagnostics.push({ issueKey: key, project, summary: item.Summary || item.summary || '' });
+      }
+    });
+    return diagnostics;
+  };
+
+const quickAddMapping = (assignee, project) => {
+  if (!assignee) return;
+  const map = { ...(assigneeProjectMap || {}) };
+  if (!map[assignee]) map[assignee] = new Set();
+  map[assignee].add(project);
+  setAssigneeProjectMap(map);
+  setMappingLoadedCount(Object.keys(map).length);
+  try {
+    const serial = {};
+    Object.keys(map).forEach((k) => {
+      serial[k] = Array.from(map[k] || []);
+    });
+    localStorage.setItem('assigneeProjectMap', JSON.stringify(serial));
+  } catch (e) {}
+  try { setMappingDiagnostics(computeMappingDiagnostics()); } catch (e) {}
+};
+
+  // load persisted mapping on mount and merge with built-in allowedAssignees
+  useEffect(() => {
+    try {
+      // extract merge+persist logic so it can be re-run on demand (force refresh)
+      const buildAndPersistMergedMapping = () => {
+        const builtin = {};
+        Object.keys(allowedAssignees || {}).forEach((project) => {
+          const list = allowedAssignees[project] || [];
+          list.forEach((assignee) => {
+            const a = (assignee || '').toString();
+            if (!a) return;
+            if (!builtin[a]) builtin[a] = new Set();
+            builtin[a].add(project);
+          });
+        });
+
+        const raw = localStorage.getItem('assigneeProjectMap');
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            Object.keys(parsed).forEach((k) => {
+              const arr = parsed[k] || [];
+              if (!builtin[k]) builtin[k] = new Set();
+              arr.forEach((p) => builtin[k].add(p));
+            });
+          } catch (e) {
+            // malformed persisted mapping; ignore
+          }
+        }
+
+        // Persist the merged mapping back to localStorage (so built-in mapping becomes editable)
+        try {
+          const serial = {};
+          Object.keys(builtin).forEach((k) => {
+            serial[k] = Array.from(builtin[k] || []);
+          });
+          localStorage.setItem('assigneeProjectMap', JSON.stringify(serial));
+        } catch (e) {}
+
+        setAssigneeProjectMap(builtin);
+        setMappingLoadedCount(Object.keys(builtin).length);
+
+        // Build project->allowedAssignees map for quick lookup (plain arrays)
+        const projAllowed = {};
+        // Start from built-in allowedAssignees JSON
+        Object.keys(allowedAssignees || {}).forEach((project) => {
+          const list = allowedAssignees[project] || [];
+          projAllowed[project] = Array.from(new Set([...(projAllowed[project] || []), ...list.map((s) => (s || '').toString())]));
+        });
+        // Merge persisted mapping (builtin contains assignee->projects)
+        Object.keys(builtin).forEach((assignee) => {
+          const projects = Array.from(builtin[assignee] || []);
+          projects.forEach((project) => {
+            // If this project has an explicit builtin allowed list, prefer that and do NOT merge uploaded mappings for it.
+            if (allowedAssignees && Object.prototype.hasOwnProperty.call(allowedAssignees, project)) {
+              return;
+            }
+            if (!projAllowed[project]) projAllowed[project] = [];
+            if (!projAllowed[project].includes(assignee)) projAllowed[project].push(assignee);
+          });
+        });
+
+        setProjectAllowedMap(projAllowed);
+        try {
+          setMappingDiagnostics(computeMappingDiagnostics());
+        } catch (e) {}
+      };
+
+      // run once at mount
+      buildAndPersistMergedMapping();
+
+      // expose for manual invocation via window for debugging and forced refresh
+      try {
+        window.__refreshAssigneeMapping = buildAndPersistMergedMapping;
+      } catch (e) {}
+    } catch (e) {}
+  }, []);
+
+  // small helper: trigger a forced refresh and persist of the merged mapping
+  const forceRefreshMapping = () => {
+    try {
+      if (window && window.__refreshAssigneeMapping) window.__refreshAssigneeMapping();
+      else {
+        // fallback: re-run the same logic by reloading the page so mount effect runs
+        window.location.reload();
+      }
+    } catch (e) {
+      try { window.location.reload(); } catch (err) {}
+    }
+  };
+
+  const parseCSV = (text) => {
+    const lines = text.split('\n').filter((line) => line.trim());
+    if (lines.length === 0) return [];
+
+    const headers = lines[0].split('\t').map((h) => h.trim());
+
+    console.log('Headers found:', headers);
+    console.log('Assignee column (D):', headers[3]);
+    console.log('Sprint column (G):', headers[6]);
+
+    const parsedData = lines.slice(1).map((line, index) => {
+      const values = line.split('\t');
+      const obj = {};
+      headers.forEach((header, i) => {
+        obj[header] = values[i]?.trim() || '';
+      });
+
+      if (index < 3) {
+        console.log(
+          `Row ${index + 1} - Assignee:`,
+          obj[headers[3]],
+          'Sprint:',
+          obj[headers[6]],
+        );
+      }
+
+      return obj;
+    });
+
+    // Extract sprint dates
+    const dates = {};
+    parsedData.forEach((item) => {
+      const sprint = item['Sprint'] || item['G'] || '';
+      if (sprint && !dates[sprint]) {
+        const dateMatch = sprint.match(
+          /(\d{2}-\d{2}-\d{2})\s+to\s+(\d{2}-\d{2}-\d{2})/,
+        );
+        if (dateMatch) {
+          const startParts = dateMatch[1].split('-');
+          const endParts = dateMatch[2].split('-');
+          dates[sprint] = {
+            start: `${startParts[0]}/${startParts[1]}/20${startParts[2]}`,
+            end: `${endParts[0]}/${endParts[1]}/20${endParts[2]}`,
+          };
+        }
+      }
+    });
+
+    setSprintDates(dates);
+    console.log('Sprint dates extracted:', dates);
+
+    return parsedData;
+  };
+
+  const handleGoHome = () => {
+    // Clear the loaded data so the component shows the initial upload screen
+    setData([]);
+    setSelectedSprint('all');
+    setSelectedAssignee('all');
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setJiraPreview([]);
+    setJiraPreviewVisible(false);
+    setJiraLog([]);
+    // Note: we intentionally do not clear persisted settings like assigneeCaps
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // Try decoding with UTF-8 first; if we see replacement characters, fallback to common Greek encodings
+    try {
+      const ab = await file.arrayBuffer();
+      const tryDecode = (buffer, label) => {
+        try {
+          return new TextDecoder(label).decode(buffer);
+        } catch (err) {
+          return null;
+        }
+      };
+
+      let text = tryDecode(ab, 'utf-8');
+      const hasReplacement = !text || / /.test(text);
+      if (hasReplacement) {
+        // try Windows-1253 (Greek) and ISO-8859-7 as fallbacks
+        text = tryDecode(ab, 'windows-1253') || tryDecode(ab, 'iso-8859-7') || text || '';
+      }
+
+      const parsed = parseCSV(text);
+      setData(parsed);
+    } catch (err) {
+      // last-resort fallback to FileReader (text, default encoding)
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const parsed = parseCSV(event.target.result);
+        setData(parsed);
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  const sprints = useMemo(() => {
+    const sprintSet = new Set();
+    data.forEach((item) => {
+      const sprint = item['Sprint'] || item['G'] || '';
+      if (sprint) sprintSet.add(sprint);
+    });
+    console.log('Sprints found:', Array.from(sprintSet));
+    // Sort sprints so that numeric sprint names appear newest-first
+    const arr = Array.from(sprintSet);
+    arr.sort((a, b) => {
+      const na = (a && (a.match(/(\d+)/) || [])[1]) || null;
+      const nb = (b && (b.match(/(\d+)/) || [])[1]) || null;
+      if (na && nb) return Number(nb) - Number(na); // numeric desc
+      if (na && !nb) return -1; // put numeric before non-numeric
+      if (!na && nb) return 1;
+      // fallback: reverse lexicographic so recent-like names come first
+      return b.localeCompare(a);
+    });
+
+    return ['all', ...arr];
+  }, [data]);
+
+
+  
+
+  const assignees = useMemo(() => {
+    const assigneeSet = new Set();
+    data.forEach((item) => {
+      const assignee = item['Assignee'] || item['D'] || '';
+      if (assignee) assigneeSet.add(assignee);
+    });
+    console.log('Assignees found:', Array.from(assigneeSet));
+    return ['all', ...Array.from(assigneeSet).sort()];
+  }, [data]);
+
+  const filteredData = useMemo(() => {
+    return data.filter((item) => {
+      const itemSprint = item['Sprint'] || item['G'] || '';
+      const itemAssignee = item['Assignee'] || item['D'] || '';
+
+      const sprintMatch =
+        selectedSprint === 'all' || itemSprint === selectedSprint;
+      const assigneeMatch =
+        selectedAssignee === 'all' || itemAssignee === selectedAssignee;
+      return sprintMatch && assigneeMatch;
+    });
+  }, [data, selectedSprint, selectedAssignee]);
+
+  const stats = useMemo(() => {
+    const byAssignee = {};
+
+    filteredData.forEach((item) => {
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      if (!byAssignee[assignee]) {
+        byAssignee[assignee] = {
+          initiatives: 0,
+          epics: 0,
+          stories: 0,
+          bugs: 0,
+          tasks: 0,
+          subtasks: 0,
+          totalStoryPoints: 0,
+          completedStoryPoints: 0,
+          remainingStoryPoints: 0,
+          awaitingTestingStoryPoints: 0,
+          awaitingVersioningStoryPoints: 0,
+          availableStoryPoints: 0,
+          inProgressStoryPoints: 0,
+          toDoStoryPoints: 0,
+          sprintCapacity: assigneeCaps[assignee] || 16, // allow per-assignee override
+          toleranceHours: 4, // 4 hours tolerance
+          capacityUsed: 0,
+          capacityRemaining: 0,
+          capacityUtilization: 0,
+          allocationStatus: 'On Track',
+          timeLogged: 0,
+          estimatedTime: 0,
+          doneCount: 0,
+          inProgressCount: 0,
+          todoCount: 0,
+          awaitingTestingCount: 0,
+          awaitingVersioningCount: 0,
+          items: [],
+        };
+      }
+
+      const type = item['Issue Type'];
+      if (type === 'Initiative') byAssignee[assignee].initiatives++;
+      else if (type === 'Epic') byAssignee[assignee].epics++;
+      else if (type === 'Story') byAssignee[assignee].stories++;
+      else if (type === 'Bug') byAssignee[assignee].bugs++;
+      else if (type === 'Task') byAssignee[assignee].tasks++;
+      else if (type === 'Sub-task') byAssignee[assignee].subtasks++;
+
+      // Track status counts
+      const status = item['Status'];
+      if (status === 'Done') byAssignee[assignee].doneCount++;
+      else if (status === 'In Progress') byAssignee[assignee].inProgressCount++;
+      else if (status === 'To Do') byAssignee[assignee].todoCount++;
+      else if (status === 'Awaiting Testing')
+        byAssignee[assignee].awaitingTestingCount++;
+      else if (status === 'Awaiting Versioning')
+        byAssignee[assignee].awaitingVersioningCount++;
+
+      // Only count story points for Stories, not sub-tasks
+      const sp = parseFloat(item['Story Points']) || 0;
+      if (sp > 0) {
+        byAssignee[assignee].totalStoryPoints += sp;
+
+        if (status === 'Done') {
+          byAssignee[assignee].completedStoryPoints += sp;
+        } else if (status === 'Awaiting Testing') {
+          byAssignee[assignee].awaitingTestingStoryPoints += sp;
+          byAssignee[assignee].remainingStoryPoints += sp;
+        } else if (status === 'Awaiting Versioning') {
+          byAssignee[assignee].awaitingVersioningStoryPoints += sp;
+          byAssignee[assignee].remainingStoryPoints += sp;
+        } else if (status === 'In Progress') {
+          byAssignee[assignee].inProgressStoryPoints += sp;
+          byAssignee[assignee].remainingStoryPoints += sp;
+          byAssignee[assignee].availableStoryPoints += sp;
+        } else if (status === 'To Do') {
+          byAssignee[assignee].toDoStoryPoints += sp;
+          byAssignee[assignee].remainingStoryPoints += sp;
+          byAssignee[assignee].availableStoryPoints += sp;
+        } else {
+          byAssignee[assignee].remainingStoryPoints += sp;
+          byAssignee[assignee].availableStoryPoints += sp;
+        }
+      }
+
+      // Parse time tracking
+      const timeTracking = item['Time Tracking (inc subtasks)'] || '';
+      const hoursMatch = timeTracking.match(/(\d+\.?\d*)\s*hrs/);
+      if (hoursMatch) {
+        byAssignee[assignee].timeLogged += parseFloat(hoursMatch[1]);
+      }
+
+      const estimate = item['Ó Original Estimate'] || '';
+      const estimateMatch = estimate.match(/(\d+)/);
+      if (estimateMatch) {
+        byAssignee[assignee].estimatedTime +=
+          parseFloat(estimateMatch[1]) / 3600;
+      }
+
+      byAssignee[assignee].items.push(item);
+    });
+
+    // Calculate capacity metrics for each assignee
+    Object.keys(byAssignee).forEach((assignee) => {
+      const data = byAssignee[assignee];
+      // Capacity Used = In Progress + To Do story points
+      data.capacityUsed = data.inProgressStoryPoints + data.toDoStoryPoints;
+      // Capacity Remaining = Sprint Capacity - Capacity Used
+      data.capacityRemaining = data.sprintCapacity - data.capacityUsed;
+      // Utilization percentage
+      data.capacityUtilization =
+        data.sprintCapacity > 0
+          ? (data.capacityUsed / data.sprintCapacity) * 100
+          : 0;
+
+      // Determine allocation status based on capacity and tolerance
+      const hoursDifference = Math.abs(data.capacityRemaining * 0.8); // rough conversion SP to hours
+
+      if (data.capacityUsed > data.sprintCapacity) {
+        data.allocationStatus = 'Over Allocated';
+      } else if (data.capacityUsed < data.sprintCapacity * 0.7) {
+        data.allocationStatus = 'Under Allocated';
+      } else if (hoursDifference <= data.toleranceHours) {
+        data.allocationStatus = 'On Track';
+      } else {
+        data.allocationStatus = 'On Track';
+      }
+    });
+
+    return byAssignee;
+  }, [filteredData, assigneeCaps]);
+
+  // persist assigneeCaps and thresholds in localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('assigneeCaps');
+      if (saved) setAssigneeCaps(JSON.parse(saved));
+    } catch (e) {
+      // ignore
+    }
+    try {
+      const t = localStorage.getItem('dashboardThresholds');
+      if (t) setThresholds(JSON.parse(t));
+    } catch (e) {}
+
+    // restore previously persisted suggestion selections if present
+    try {
+      const sel = localStorage.getItem('selectedSuggestionIds');
+      if (sel) setSelectedSuggestionIds(JSON.parse(sel));
+    } catch (e) {}
+  }, []);
+
+  // persist selection changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('selectedSuggestionIds', JSON.stringify(selectedSuggestionIds));
+    } catch (e) {}
+  }, [selectedSuggestionIds]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('assigneeCaps', JSON.stringify(assigneeCaps));
+    } catch (e) {}
+  }, [assigneeCaps]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dashboardThresholds', JSON.stringify(thresholds));
+    } catch (e) {}
+  }, [thresholds]);
+
+  const sprintStats = useMemo(() => {
+    const bySprint = {};
+
+    data.forEach((item) => {
+      const sprint = item['Sprint'] || item['G'] || 'No Sprint';
+      if (!bySprint[sprint]) {
+        bySprint[sprint] = {
+          total: 0,
+          done: 0,
+          inProgress: 0,
+          todo: 0,
+          awaitingTesting: 0,
+          awaitingVersioning: 0,
+          totalSP: 0,
+          completedSP: 0,
+          remainingSP: 0,
+          awaitingTestingSP: 0,
+          awaitingVersioningSP: 0,
+          availableSP: 0,
+        };
+      }
+
+      bySprint[sprint].total++;
+      const status = item.Status;
+      if (status === 'Done') bySprint[sprint].done++;
+      else if (status === 'In Progress') bySprint[sprint].inProgress++;
+      else if (status === 'To Do') bySprint[sprint].todo++;
+      else if (status === 'Awaiting Testing')
+        bySprint[sprint].awaitingTesting++;
+      else if (status === 'Awaiting Versioning')
+        bySprint[sprint].awaitingVersioning++;
+
+      const sp = parseFloat(item['Story Points']) || 0;
+      if (sp > 0) {
+        bySprint[sprint].totalSP += sp;
+        if (status === 'Done') {
+          bySprint[sprint].completedSP += sp;
+        } else if (status === 'Awaiting Testing') {
+          bySprint[sprint].awaitingTestingSP += sp;
+          bySprint[sprint].remainingSP += sp;
+        } else if (status === 'Awaiting Versioning') {
+          bySprint[sprint].awaitingVersioningSP += sp;
+          bySprint[sprint].remainingSP += sp;
+        } else {
+          bySprint[sprint].remainingSP += sp;
+          bySprint[sprint].availableSP += sp;
+        }
+      }
+    });
+
+    return bySprint;
+  }, [data]);
+
+  // Milestone Tracking - compute progress status for each sprint
+  const milestoneTracking = useMemo(() => {
+    const milestones = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Get unique sprints with their data
+    const sprintMap = {};
+    data.forEach((item) => {
+      const sprint = item['Sprint'] || item['G'] || '';
+      if (!sprint || sprint === 'No Sprint') return;
+      
+      const project = item['Project'] || item['B'] || 'Unknown';
+      const key = `${project}|||${sprint}`;
+      
+      if (!sprintMap[key]) {
+        sprintMap[key] = {
+          project,
+          sprint,
+          totalSP: 0,
+          completedSP: 0,
+          items: 0,
+          doneItems: 0,
+        };
+      }
+      
+      sprintMap[key].items++;
+      const status = item['Status'];
+      if (status === 'Done') sprintMap[key].doneItems++;
+      
+      const sp = parseFloat(item['Story Points']) || 0;
+      if (sp > 0) {
+        sprintMap[key].totalSP += sp;
+        if (status === 'Done') {
+          sprintMap[key].completedSP += sp;
+        }
+      }
+    });
+
+    // Process each sprint to calculate status
+    Object.values(sprintMap).forEach((m) => {
+      const dates = sprintDates[m.sprint];
+      let targetEnd = null;
+      let startDate = null;
+      let daysRemaining = null;
+      let totalDays = null;
+      let daysElapsed = null;
+      let timeProgress = null;
+
+      if (dates) {
+        const [endMonth, endDay, endYear] = dates.end.split('/');
+        targetEnd = new Date(parseInt(endYear), parseInt(endMonth) - 1, parseInt(endDay));
+        
+        const [startMonth, startDay, startYear] = dates.start.split('/');
+        startDate = new Date(parseInt(startYear), parseInt(startMonth) - 1, parseInt(startDay));
+        
+        totalDays = Math.ceil((targetEnd - startDate) / (1000 * 60 * 60 * 24));
+        daysElapsed = Math.ceil((today - startDate) / (1000 * 60 * 60 * 24));
+        daysRemaining = Math.ceil((targetEnd - today) / (1000 * 60 * 60 * 24));
+        timeProgress = totalDays > 0 ? Math.min(100, Math.max(0, (daysElapsed / totalDays) * 100)) : 0;
+      }
+
+      const percentComplete = m.totalSP > 0 
+        ? Math.round((m.completedSP / m.totalSP) * 100) 
+        : (m.items > 0 ? Math.round((m.doneItems / m.items) * 100) : 0);
+
+      // Determine status
+      let status = 'Unknown';
+      let statusColor = 'gray';
+      
+      if (targetEnd) {
+        const isPastDue = today > targetEnd;
+        
+        if (percentComplete >= 100) {
+          status = 'Complete';
+          statusColor = 'emerald';
+        } else if (isPastDue) {
+          status = 'Delayed';
+          statusColor = 'red';
+        } else if (timeProgress !== null) {
+          // Compare work progress to time progress
+          const progressDiff = percentComplete - timeProgress;
+          
+          if (progressDiff >= -10) {
+            status = 'On Track';
+            statusColor = 'green';
+          } else if (progressDiff >= -25) {
+            status = 'At Risk';
+            statusColor = 'amber';
+          } else {
+            status = 'Behind';
+            statusColor = 'red';
+          }
+        }
+      } else {
+        // No dates available
+        if (percentComplete >= 100) {
+          status = 'Complete';
+          statusColor = 'emerald';
+        } else if (percentComplete >= 75) {
+          status = 'On Track';
+          statusColor = 'green';
+        } else if (percentComplete >= 50) {
+          status = 'At Risk';
+          statusColor = 'amber';
+        } else {
+          status = 'Behind';
+          statusColor = 'red';
+        }
+      }
+
+      milestones.push({
+        project: m.project,
+        sprint: m.sprint,
+        targetEnd: dates ? dates.end : 'N/A',
+        targetEndDate: targetEnd,
+        totalSP: m.totalSP,
+        completedSP: m.completedSP,
+        percentComplete,
+        timeProgress: timeProgress !== null ? Math.round(timeProgress) : null,
+        daysRemaining,
+        status,
+        statusColor,
+        items: m.items,
+        doneItems: m.doneItems,
+      });
+    });
+
+    // Sort by status priority then by target end date
+    const statusPriority = { 'Delayed': 0, 'Behind': 1, 'At Risk': 2, 'On Track': 3, 'Complete': 4, 'Unknown': 5 };
+    milestones.sort((a, b) => {
+      const pa = statusPriority[a.status] ?? 99;
+      const pb = statusPriority[b.status] ?? 99;
+      if (pa !== pb) return pa - pb;
+      if (a.targetEndDate && b.targetEndDate) return a.targetEndDate - b.targetEndDate;
+      return a.sprint.localeCompare(b.sprint);
+    });
+
+    return milestones;
+  }, [data, sprintDates]);
+
+  // Risk Register - scan issues for risks
+  const riskRegister = useMemo(() => {
+    const risks = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Get assignee utilization from stats
+    const assigneeUtilization = {};
+    Object.entries(stats).forEach(([assignee, s]) => {
+      assigneeUtilization[assignee] = s.sprintCapacity > 0 
+        ? (s.totalStoryPoints / s.sprintCapacity) * 100 
+        : 0;
+    });
+
+    data.forEach((item) => {
+      const issueKey = item['Issue key'] || item['Key'] || '';
+      const project = item['Project'] || item['B'] || 'Unknown';
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      const status = item['Status'] || '';
+      const sp = parseFloat(item['Story Points']) || 0;
+      const sprint = item['Sprint'] || item['G'] || '';
+
+      // Helper function to parse DD/MM/YY or DD/MM/YYYY date format
+      const parseDDMMYY = (dateStr) => {
+        if (!dateStr) return null;
+        const match = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+        if (match) {
+          const day = parseInt(match[1]);
+          const month = parseInt(match[2]) - 1;
+          let year = parseInt(match[3]);
+          if (year < 100) year += 2000;
+          return new Date(year, month, day);
+        }
+        // Try standard parsing as fallback
+        const parsed = new Date(dateStr);
+        return isNaN(parsed) ? null : parsed;
+      };
+
+      // Get Due Date or Target End from the item (NOT from sprint)
+      const dueDate = item['Due Date'] || item['Due date'] || item['DueDate'] || '';
+      const targetEnd = item['Target End'] || item['Target end'] || item['TargetEnd'] || item['Target End Date'] || '';
+      
+      let targetEndDate = parseDDMMYY(dueDate) || parseDDMMYY(targetEnd);
+      
+      // Only fallback to sprint end date if no Due Date or Target End
+      if (!targetEndDate) {
+        const dates = sprintDates[sprint];
+        if (dates) {
+          const [endMonth, endDay, endYear] = dates.end.split('/');
+          targetEndDate = new Date(parseInt(endYear), parseInt(endMonth) - 1, parseInt(endDay));
+        }
+      }
+      
+      
+      // Parse Updated date if available (format varies)
+      let updatedDate = null;
+      const updated = item['Updated'] || item['Last Updated'] || '';
+      if (updated) {
+        const parsed = new Date(updated);
+        if (!isNaN(parsed)) updatedDate = parsed;
+      }
+
+      // Parse Created date if available (handle DD/MM/YY format)
+      let createdDate = null;
+      const created = item['Created'] || item['Created Date'] || '';
+      if (created) {
+        // Try to parse DD/MM/YY or DD/MM/YYYY format first
+        const ddmmyyMatch = created.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+        if (ddmmyyMatch) {
+          const day = parseInt(ddmmyyMatch[1]);
+          const month = parseInt(ddmmyyMatch[2]) - 1;
+          let year = parseInt(ddmmyyMatch[3]);
+          if (year < 100) year += 2000; // Convert YY to 20YY
+          createdDate = new Date(year, month, day);
+        } else {
+          // Fallback to standard parsing
+          const parsed = new Date(created);
+          if (!isNaN(parsed)) createdDate = parsed;
+        }
+      }
+
+      // Calculate days
+      let daysLate = null;
+      let daysInStatus = null;
+
+      // Only calculate daysLate if item was created before sprint end
+      // (i.e., it was actually supposed to be completed in that sprint)
+      if (targetEndDate) {
+        const potentialDaysLate = Math.ceil((today - targetEndDate) / (1000 * 60 * 60 * 24));
+        
+        // Skip overdue calculation if:
+        // 1. Item was created after sprint ended (added retroactively)
+        // 2. No created date available AND sprint ended > 30 days ago (likely retroactive)
+        if (createdDate && createdDate > targetEndDate) {
+          daysLate = null; // Item added after sprint ended
+        } else if (!createdDate && potentialDaysLate > 30) {
+          daysLate = null; // No created date + old sprint = likely retroactive, skip
+        } else {
+          daysLate = potentialDaysLate;
+        }
+      }
+
+      if (updatedDate) {
+        daysInStatus = Math.ceil((today - updatedDate) / (1000 * 60 * 60 * 24));
+      }
+      const utilization = assigneeUtilization[assignee] || 0;
+
+      // HIGH RISK: Overdue and not done
+      if (targetEndDate && daysLate > 0 && status !== 'Done') {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'High',
+          reason: `Overdue by ${daysLate} day${daysLate !== 1 ? 's' : ''} - Status: ${status}`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+        return; // Don't double-count
+      }
+
+      // HIGH RISK: Assignee utilization > 200%
+      if (utilization > 200 && status !== 'Done') {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'High',
+          reason: `Assignee at ${Math.round(utilization)}% utilization (overloaded)`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+        return;
+      }
+
+      // MEDIUM RISK: In Progress but stale (no update > 5 days)
+      if (status === 'In Progress' && daysInStatus !== null && daysInStatus > 5) {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'Medium',
+          reason: `In Progress for ${daysInStatus} days without update`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+        return;
+      }
+
+      // MEDIUM RISK: No story points and due within 5 days
+      if (sp === 0 && targetEndDate && daysLate !== null && daysLate >= -5 && daysLate < 0 && status !== 'Done') {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'Medium',
+          reason: `No Story Points assigned - due in ${Math.abs(daysLate)} day${Math.abs(daysLate) !== 1 ? 's' : ''}`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+        return;
+      }
+
+      // LOW RISK: Due within 3 days and not In Progress or Done
+      if (targetEndDate && daysLate !== null && daysLate >= -3 && daysLate < 0 && status !== 'In Progress' && status !== 'Done') {
+        risks.push({
+          issueKey,
+          project,
+          assignee,
+          riskLevel: 'Low',
+          reason: `Due in ${Math.abs(daysLate)} day${Math.abs(daysLate) !== 1 ? 's' : ''} but not started`,
+          daysLate,
+          daysInStatus,
+          status,
+          sp,
+          sprint,
+        });
+      }
+    });
+
+    // Sort by risk level priority
+    const levelPriority = { 'High': 0, 'Medium': 1, 'Low': 2 };
+    risks.sort((a, b) => {
+      const pa = levelPriority[a.riskLevel] ?? 99;
+      const pb = levelPriority[b.riskLevel] ?? 99;
+      if (pa !== pb) return pa - pb;
+      return (b.daysLate || 0) - (a.daysLate || 0);
+    });
+
+    return risks;
+  }, [data, stats, sprintDates]);
+
+  // Filtered risk register based on user selections
+  const filteredRiskRegister = useMemo(() => {
+    // Map dropdown values to status substrings for grouped filtering
+    const statusAliases = {
+      'Awaiting Test': ['awaiting testing', 'awaiting versioning'],
+      // Add more aliases as needed
+    };
+    return riskRegister.filter((r) => {
+      if (riskLevelFilter !== 'all' && r.riskLevel !== riskLevelFilter) return false;
+      if (riskProjectFilter !== 'all' && r.project !== riskProjectFilter) return false;
+      if (riskSprintFilter !== 'all' && r.sprint !== riskSprintFilter) return false;
+      if (riskAssigneeFilter !== 'all' && r.assignee !== riskAssigneeFilter) return false;
+      if (riskStatusFilter !== 'all') {
+        // Normalize both stored status and selected filter to allow reliable comparisons
+        const normalizeStatus = (s) => (s || '').toString().toLowerCase().replace(/\s+/g, ' ').trim();
+        const status = normalizeStatus(r.status);
+        const filter = normalizeStatus(riskStatusFilter);
+        // Match exact normalized status (no substring matching) so options map 1:1 to statuses
+        if (status !== filter) return false;
+      }
+      return true;
+    }).sort((a, b) => {
+      if (riskSortBy === 'level') {
+        const levelPriority = { 'High': 0, 'Medium': 1, 'Low': 2 };
+        return (levelPriority[a.riskLevel] ?? 99) - (levelPriority[b.riskLevel] ?? 99);
+      } else if (riskSortBy === 'project') {
+        return a.project.localeCompare(b.project);
+      } else if (riskSortBy === 'assignee') {
+        return a.assignee.localeCompare(b.assignee);
+      } else if (riskSortBy === 'daysLate') {
+        return (b.daysLate || 0) - (a.daysLate || 0);
+      }
+      return 0;
+    });
+  }, [riskRegister, riskLevelFilter, riskProjectFilter, riskSprintFilter, riskAssigneeFilter, riskStatusFilter, riskSortBy]);
+
+  // Get unique projects for risk filter dropdown
+  const riskProjects = useMemo(() => {
+    const projects = new Set(riskRegister.map((r) => r.project));
+    return ['all', ...Array.from(projects).sort()];
+  }, [riskRegister]);
+
+  // Get unique sprints for risk filter dropdown
+  const riskSprints = useMemo(() => {
+    const sprints = Array.from(new Set(riskRegister.map((r) => r.sprint).filter(Boolean)));
+    // Sort numerically descending if format is 'Sprint N'
+    sprints.sort((a, b) => {
+      const numA = parseInt(a.match(/\d+/)?.[0] || '0', 10);
+      const numB = parseInt(b.match(/\d+/)?.[0] || '0', 10);
+      return numB - numA;
+    });
+    return ['all', ...sprints];
+  }, [riskRegister]);
+
+  // Get unique assignees for risk filter dropdown
+  const riskAssignees = useMemo(() => {
+    const assignees = new Set(riskRegister.map((r) => r.assignee).filter(Boolean));
+    return ['all', ...Array.from(assignees).sort()];
+  }, [riskRegister]);
+
+  // Get unique statuses for risk filter dropdown
+  const riskStatusOptions = useMemo(() => {
+    // Fixed set of statuses required by the product owner.
+    // Always present these in this order (plus 'all') so the dropdown matches expectations.
+    return ['all', 'Done', 'To Do', 'In Progress', 'Awaiting Versioning', 'Awaiting Testing'];
+  }, [riskRegister]);
+
+  // ============================================
+  // WORKLOAD & CAPACITY DASHBOARD DATA
+  // ============================================
+  
+  const workloadCapacityData = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Collect all unique sprints and assignees for filters
+    const allSprints = new Set();
+    const allAssignees = new Set();
+    data.forEach((item) => {
+      const sprint = item['Sprint'] || item['G'] || '';
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      if (sprint) allSprints.add(sprint);
+      if (assignee) allAssignees.add(assignee);
+    });
+
+    // Filter data based on sprint and assignee selections
+    const filteredData = data.filter((item) => {
+      const sprint = item['Sprint'] || item['G'] || '';
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      
+      if (workloadSprintFilter !== 'all' && sprint !== workloadSprintFilter) return false;
+      if (workloadAssigneeFilter !== 'all' && assignee !== workloadAssigneeFilter) return false;
+      return true;
+    });
+
+    // Build per-assignee workload data
+    const assigneeWorkload = {};
+    const teamWorkload = {};
+
+    filteredData.forEach((item) => {
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      const project = item['Project'] || item['B'] || 'Unknown';
+      const status = item['Status'] || '';
+      const sp = parseFloat(item['Story Points']) || 0;
+      const issueType = item['Issue Type'] || '';
+      const priority = item['Priority'] || 'Medium';
+      
+      // Initialize assignee data
+      if (!assigneeWorkload[assignee]) {
+        assigneeWorkload[assignee] = {
+          assignee,
+          totalSP: 0,
+          completedSP: 0,
+          inProgressSP: 0,
+          toDoSP: 0,
+          awaitingTestingSP: 0,
+          awaitingVersioningSP: 0,
+          capacity: assigneeCaps[assignee] || 16,
+          totalItems: 0,
+          completedItems: 0,
+          inProgressItems: 0,
+          toDoItems: 0,
+          blockedItems: 0,
+          highPriorityItems: 0,
+          projects: new Set(),
+          items: [],
+        };
+      }
+      
+      // Initialize team/project data
+      if (!teamWorkload[project]) {
+        teamWorkload[project] = {
+          project,
+          totalSP: 0,
+          completedSP: 0,
+          inProgressSP: 0,
+          toDoSP: 0,
+          capacity: 0,
+          assignees: new Set(),
+          totalItems: 0,
+        };
+      }
+      
+      // Aggregate assignee data
+      assigneeWorkload[assignee].totalItems++;
+      assigneeWorkload[assignee].projects.add(project);
+      assigneeWorkload[assignee].items.push(item);
+      
+      if (sp > 0) {
+        assigneeWorkload[assignee].totalSP += sp;
+        teamWorkload[project].totalSP += sp;
+        
+        if (status === 'Done') {
+          assigneeWorkload[assignee].completedSP += sp;
+          assigneeWorkload[assignee].completedItems++;
+          teamWorkload[project].completedSP += sp;
+        } else if (status === 'In Progress') {
+          assigneeWorkload[assignee].inProgressSP += sp;
+          assigneeWorkload[assignee].inProgressItems++;
+          teamWorkload[project].inProgressSP += sp;
+        } else if (status === 'To Do') {
+          assigneeWorkload[assignee].toDoSP += sp;
+          assigneeWorkload[assignee].toDoItems++;
+          teamWorkload[project].toDoSP += sp;
+        } else if (status === 'Awaiting Testing') {
+          assigneeWorkload[assignee].awaitingTestingSP += sp;
+        } else if (status === 'Awaiting Versioning') {
+          assigneeWorkload[assignee].awaitingVersioningSP += sp;
+        }
+      }
+      
+      // Track blocked and high priority
+      if (status === 'Blocked' || status === 'On Hold') {
+        assigneeWorkload[assignee].blockedItems++;
+      }
+      if (priority === 'Highest' || priority === 'High' || priority === 'Critical') {
+        assigneeWorkload[assignee].highPriorityItems++;
+      }
+      
+      // Track team data
+      teamWorkload[project].totalItems++;
+      teamWorkload[project].assignees.add(assignee);
+    });
+    
+    // Calculate utilization and status for each assignee
+    const assigneeList = Object.values(assigneeWorkload).map((a) => {
+      const activeSP = a.totalSP - a.completedSP; // Work remaining
+      const utilization = a.capacity > 0 ? (activeSP / a.capacity) * 100 : 0;
+      
+      let utilizationStatus = 'healthy';
+      let utilizationColor = 'green';
+      if (utilization > 100) {
+        utilizationStatus = 'overloaded';
+        utilizationColor = 'red';
+      } else if (utilization >= 80) {
+        utilizationStatus = 'near-limit';
+        utilizationColor = 'amber';
+      } else if (utilization < 60) {
+        utilizationStatus = 'underutilized';
+        utilizationColor = 'blue';
+      }
+      
+      return {
+        ...a,
+        activeSP,
+        utilization: Math.round(utilization),
+        utilizationStatus,
+        utilizationColor,
+        projectCount: a.projects.size,
+        projects: Array.from(a.projects),
+      };
+    }).sort((a, b) => b.utilization - a.utilization);
+    
+    // Calculate team totals
+    const teamList = Object.values(teamWorkload).map((t) => {
+      // Sum capacity of all assignees in this project
+      const teamCapacity = Array.from(t.assignees).reduce((sum, assignee) => {
+        return sum + (assigneeCaps[assignee] || 16);
+      }, 0);
+      
+      const activeSP = t.totalSP - t.completedSP;
+      const utilization = teamCapacity > 0 ? (activeSP / teamCapacity) * 100 : 0;
+      
+      let utilizationStatus = 'healthy';
+      if (utilization > 100) utilizationStatus = 'overloaded';
+      else if (utilization >= 80) utilizationStatus = 'near-limit';
+      else if (utilization < 60) utilizationStatus = 'underutilized';
+      
+      return {
+        ...t,
+        capacity: teamCapacity,
+        activeSP,
+        utilization: Math.round(utilization),
+        utilizationStatus,
+        assigneeCount: t.assignees.size,
+        assignees: Array.from(t.assignees),
+      };
+    }).sort((a, b) => b.utilization - a.utilization);
+    
+    // Summary stats
+    const totalCapacity = assigneeList.reduce((sum, a) => sum + a.capacity, 0);
+    const totalActiveSP = assigneeList.reduce((sum, a) => sum + a.activeSP, 0);
+    const overallUtilization = totalCapacity > 0 ? Math.round((totalActiveSP / totalCapacity) * 100) : 0;
+    
+    const overloadedCount = assigneeList.filter((a) => a.utilizationStatus === 'overloaded').length;
+    const nearLimitCount = assigneeList.filter((a) => a.utilizationStatus === 'near-limit').length;
+    const healthyCount = assigneeList.filter((a) => a.utilizationStatus === 'healthy').length;
+    const underutilizedCount = assigneeList.filter((a) => a.utilizationStatus === 'underutilized').length;
+    
+    // Sort sprints so numeric sprint names appear newest-first (eg Sprint 13 before Sprint 12)
+    const allSprintsArr = Array.from(allSprints);
+    allSprintsArr.sort((a, b) => {
+      const na = (a && (a.match(/(\d+)/) || [])[1]) || null;
+      const nb = (b && (b.match(/(\d+)/) || [])[1]) || null;
+      if (na && nb) return Number(nb) - Number(na); // numeric desc
+      if (na && !nb) return -1; // put numeric before non-numeric
+      if (!na && nb) return 1;
+      // fallback: reverse lexicographic so recent-like names come first
+      return b.localeCompare(a);
+    });
+
+    return {
+      assignees: assigneeList,
+      teams: teamList,
+      allSprints: allSprintsArr,
+      allAssignees: Array.from(allAssignees).sort(),
+      summary: {
+      teams: teamList,
+        totalCapacity,
+        totalActiveSP,
+        overallUtilization,
+        overloadedCount,
+        nearLimitCount,
+        healthyCount,
+        underutilizedCount,
+        totalAssignees: assigneeList.length,
+        totalTeams: teamList.length,
+      },
+    };
+  }, [data, assigneeCaps, workloadSprintFilter, workloadAssigneeFilter]);
+
+
+  const workloadChartData = useMemo(() => {
+    return Object.entries(stats)
+      .sort(([, a], [, b]) => b.totalStoryPoints - a.totalStoryPoints)
+      .slice(0, 10)
+      .map(([name, data]) => ({
+        name: name.length > 12 ? name.substring(0, 12) + '...' : name,
+        'Total Items': data.stories + data.bugs + data.tasks + data.epics,
+        'Story Points': data.totalStoryPoints,
+      }));
+  }, [stats]);
+
+  const capacityChartData = useMemo(() => {
+    return Object.entries(stats)
+      .sort(([, a], [, b]) => b.capacityUsed - a.capacityUsed)
+      .map(([name, data]) => ({
+        name: name.length > 12 ? name.substring(0, 12) + '...' : name,
+        Done: data.completedStoryPoints,
+        'In Progress': data.inProgressStoryPoints,
+        'To Do': data.toDoStoryPoints,
+        Capacity: data.sprintCapacity,
+      }));
+  }, [stats]);
+
+  // Detect duplicate rows by issue key and summarize them (for preview)
+  const mergedDuplicates = useMemo(() => {
+    const map = {};
+    data.forEach((item) => {
+      const id = item['Issue key'] || item['Key'] || null;
+      if (!id) return;
+      const key = String(id);
+      if (!map[key]) {
+        map[key] = {
+          id: key,
+          count: 0,
+          totalSP: 0,
+          project: item['Project'] || item['E'] || '',
+          summary: item['Summary'] || item['Issue summary'] || '',
+        };
+      }
+      map[key].count += 1;
+      map[key].totalSP += parseFloat(item['Story Points']) || 0;
+    });
+    return Object.values(map).filter((m) => m.count > 1).sort((a, b) => b.count - a.count);
+  }, [data]);
+
+  // Suggest reassignments wrapper using extracted helper
+  const suggestReassignments = () => {
+    const res = computeSuggestionsDetailed(filteredData, stats, assigneeProjectMap, projectAllowedMap, true);
+    const suggestionsLocal = (res && res.suggestions) ? res.suggestions : [];
+    const rejections = (res && res.rejections) ? res.rejections : [];
+    setSuggestions(suggestionsLocal);
+    setSuggestionRejections(rejections);
+    setShowSuggestions(true);
+    try {
+      const diags = computeMappingDiagnostics();
+      setMappingDiagnostics(diags);
+    } catch (e) {
+      setMappingDiagnostics([]);
+    }
+    // Do NOT auto-select all by default. Restore any previously persisted selection
+    // that intersects current suggestions; otherwise keep deselected.
+    try {
+      const saved = JSON.parse(localStorage.getItem('selectedSuggestionIds') || '[]');
+      const ids = suggestionsLocal.map((s) => String(s.id));
+      const restored = Array.isArray(saved)
+        ? saved.filter((id) => ids.includes(String(id)))
+        : [];
+      setSelectedSuggestionIds(restored);
+    } catch (e) {
+      setSelectedSuggestionIds([]);
+    }
+  };
+
+  const applySuggestions = () => {
+    const selectedIds = new Set(selectedSuggestionIds.map(String));
+    const selected = suggestions.filter((s) => selectedIds.has(String(s.id)));
+    if (selected.length === 0) return;
+    const idMap = new Map(selected.map((s) => [String(s.id), s.to]));
+    const newData = data.map((item, idx) => {
+      const id = item['Issue key'] || item['Key'] || idx;
+      const mapped = idMap.get(String(id));
+      if (mapped) {
+        return { ...item, Assignee: mapped };
+      }
+      return item;
+    });
+    setData(newData);
+    // clear suggestions + selections after applying
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setSelectedSuggestionIds([]);
+  };
+
+  // Export suggestions as CSV
+  const exportSuggestionsCSV = () => {
+    const selectedIds = new Set(selectedSuggestionIds.map(String));
+    const selected = suggestions.filter((s) => selectedIds.has(String(s.id)));
+    if (!selected || selected.length === 0) return;
+    const headers = ['id', 'from', 'to', 'sp', 'summary'];
+    const rows = selected.map((s) => [s.id, s.from, s.to, s.sp, `"${(s.summary||'').replace(/"/g,'""')}"`]);
+    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'suggestions.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Reset the suggestions/preview/log view (keeps uploaded data intact)
+  const resetView = () => {
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setJiraPreview([]);
+    setJiraPreviewVisible(false);
+    setJiraLog([]);
+    setIsApplying(false);
+    // clear current selections and persisted selection state
+    setSelectedSuggestionIds([]);
+    try {
+      localStorage.removeItem('selectedSuggestionIds');
+    } catch (e) {}
+  };
+
+  // Build a plain preview payload for display
+  const previewJiraChanges = () => {
+    const selectedIds = new Set(selectedSuggestionIds.map(String));
+    const selected = suggestions.filter((s) => selectedIds.has(String(s.id)));
+    const preview = selected.map((s) => ({
+      issueKey: String(s.id),
+      from: s.from,
+      to: s.to,
+      sp: s.sp,
+    }));
+    setJiraPreview(preview);
+    setJiraPreviewVisible(true);
+  };
+
+  // selection helpers for suggestions
+  const toggleSelectSuggestion = (id) => {
+    setSelectedSuggestionIds((prev) => {
+      const s = new Set(prev.map(String));
+      const sid = String(id);
+      if (s.has(sid)) s.delete(sid);
+      else s.add(sid);
+      return Array.from(s);
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (!suggestions || suggestions.length === 0) {
+      setSelectedSuggestionIds([]);
+      return;
+    }
+    if (selectedSuggestionIds.length < suggestions.length) {
+      setSelectedSuggestionIds(suggestions.map((s) => String(s.id)));
+    } else {
+      setSelectedSuggestionIds([]);
+    }
+  };
+
+  // Assignee tickets quick-action helpers
+  useEffect(() => {
+    // clear any selected per-assignee ticket keys when assignee or filtered data changes
+    setAssigneeTicketSelectedKeys([]);
+  }, [selectedAssignee, data, showDoneTickets]);
+
+  const toggleAssigneeTicketSelection = (key) => {
+    setAssigneeTicketSelectedKeys((prev) => {
+      const s = new Set(prev.map(String));
+      const k = String(key);
+      if (s.has(k)) s.delete(k);
+      else s.add(k);
+      return Array.from(s);
+    });
+  };
+
+  const toggleAssigneeSelectAll = (visibleKeys = []) => {
+    if (!visibleKeys || visibleKeys.length === 0) {
+      setAssigneeTicketSelectedKeys([]);
+      return;
+    }
+    if (assigneeTicketSelectedKeys.length < visibleKeys.length) {
+      setAssigneeTicketSelectedKeys(visibleKeys.map(String));
+    } else {
+      setAssigneeTicketSelectedKeys([]);
+    }
+  };
+
+  const copyAssigneeSelectedKeys = async () => {
+    if (!assigneeTicketSelectedKeys || assigneeTicketSelectedKeys.length === 0) return;
+    const txt = assigneeTicketSelectedKeys.join('\n');
+    try {
+      await navigator.clipboard.writeText(txt);
+      alert(`Copied ${assigneeTicketSelectedKeys.length} key(s) to clipboard`);
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = txt;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      alert(`Copied ${assigneeTicketSelectedKeys.length} key(s) to clipboard`);
+    }
+  };
+  // Export rows to CSV (used by Export to Excel button)
+  const exportRowsToCSV = (rows = [], filename = 'tickets.csv') => {
+    if (!rows || rows.length === 0) return;
+    const headers = ['Issue Key', 'Project', 'Type', 'Story Points', 'Status', 'Summary'];
+    const csvRows = rows.map((it) => {
+      const key = String(it['Issue key'] || it['Key'] || '');
+      const project = it['Project'] || it['E'] || '';
+      const type = it['Issue Type'] || it['Type'] || it['IssueType'] || it['Issue type'] || '';
+      const sp = it['Story Points'] || it['SP'] || '';
+      const status = it['Status'] || '';
+      const summary = (it['Summary'] || it['Issue summary'] || it['Title'] || '').toString().replace(/"/g, '""');
+      return [key, project, type, sp, status, `"${summary}"`].join(',');
+    });
+    // Use CRLF for Windows/Excel and prepend UTF-8 BOM so Excel detects UTF-8 correctly
+    const csv = [headers.join(','), ...csvRows].join('\r\n');
+    const bom = '\uFEFF';
+    const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Export project progress as CSV
+  const exportProjectProgressCSV = (rows = [], filename = 'project-progress.csv') => {
+    if (!rows || rows.length === 0) return;
+    const headers = ['Project', 'Total Items', 'Done Items', 'Total SP', 'Completed SP', 'Remaining SP', 'Percent (SP or items)'];
+    const csvRows = rows.map((r) => {
+      const project = r.project;
+      const totalItems = r.totalItems || 0;
+      const doneItems = r.doneItems || 0;
+      const totalSP = (r.totalSP || 0).toFixed(1);
+      const completedSP = (r.completedSP || 0).toFixed(1);
+      const remainingSP = (r.remainingSP || 0).toFixed(1);
+      const pct = r.percentSP !== null ? `${r.percentSP.toFixed(1)}%` : `${r.percentCount.toFixed(1)}%`;
+      return [
+        `"${String(project).replace(/"/g, '""')}"`,
+        totalItems,
+        doneItems,
+        totalSP,
+        completedSP,
+        remainingSP,
+        `"${pct}"`,
+      ].join(',');
+    });
+    const csv = [headers.join(','), ...csvRows].join('\r\n');
+    const bom = '\uFEFF';
+    const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Apply suggestions to Jira (gated by environment variables and explicit confirm)
+  const applyToJira = async (suggests = []) => {
+    if (!suggests || suggests.length === 0) return;
+    const base = import.meta.env.VITE_JIRA_BASE_URL;
+    const email = import.meta.env.VITE_JIRA_EMAIL;
+    const token = import.meta.env.VITE_JIRA_API_TOKEN;
+
+    if (!base || !email || !token) {
+      alert('Jira credentials not configured. Set VITE_JIRA_BASE_URL, VITE_JIRA_EMAIL and VITE_JIRA_API_TOKEN in your environment.');
+      return;
+    }
+
+    setIsApplying(true);
+    setJiraLog([]);
+
+    const auth = btoa(`${email}:${token}`);
+
+    for (const s of suggests) {
+      const issueKey = String(s.id);
+      try {
+        // try to resolve user by display name
+        const userSearchUrl = `${base.replace(/\/+$/,'')}/rest/api/3/user/search?query=${encodeURIComponent(s.to)}`;
+        const userRes = await fetch(userSearchUrl, {
+          headers: {
+            Authorization: `Basic ${auth}`,
+            'Accept': 'application/json',
+          },
+        });
+
+        if (!userRes.ok) {
+          const text = await userRes.text();
+          setJiraLog((l) => [...l, `User lookup failed for '${s.to}': ${userRes.status} ${text}`]);
+          continue;
+        }
+
+        const users = await userRes.json();
+        if (!Array.isArray(users) || users.length === 0) {
+          setJiraLog((l) => [...l, `No Jira user found matching '${s.to}'`]);
+          continue;
+        }
+
+        const accountId = users[0].accountId || users[0].accountId;
+        if (!accountId) {
+          setJiraLog((l) => [...l, `Could not resolve accountId for '${s.to}'`]);
+          continue;
+        }
+
+        const assignUrl = `${base.replace(/\/+$/,'')}/rest/api/3/issue/${encodeURIComponent(issueKey)}/assignee`;
+        const assignRes = await fetch(assignUrl, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Basic ${auth}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({ accountId }),
+        });
+
+        if (!assignRes.ok) {
+          const text = await assignRes.text();
+          setJiraLog((l) => [...l, `Failed to assign ${issueKey} -> ${s.to}: ${assignRes.status} ${text}`]);
+          continue;
+        }
+
+        setJiraLog((l) => [...l, `Assigned ${issueKey} -> ${s.to}`]);
+      } catch (err) {
+        setJiraLog((l) => [...l, `Error updating ${s.id}: ${err.message || err}`]);
+      }
+    }
+
+    setIsApplying(false);
+  };
+
+  // computeWhatIfProjection is provided by the helper in ./utils/allocation
+
+  const projectStats = useMemo(() => {
+    const byProject = {};
+
+    data.forEach((item) => {
+      const project = item['Project'] || item['E'] || 'No Project';
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      const sprint = item['Sprint'] || item['G'] || '';
+      const status = item['Status'] || '';
+
+      if (!byProject[project]) {
+        byProject[project] = {
+          assignees: new Set(),
+          total: 0,
+          withSprint: 0,
+          withoutSprint: 0,
+          inProgressNoSprint: 0,
+          doneNoSprint: 0,
+          items: [],
+        };
+      }
+
+      byProject[project].assignees.add(assignee);
+      byProject[project].total++;
+
+      if (sprint) {
+        byProject[project].withSprint++;
+      } else {
+        byProject[project].withoutSprint++;
+        if (status === 'In Progress') {
+          byProject[project].inProgressNoSprint++;
+        } else if (status === 'Done') {
+          byProject[project].doneNoSprint++;
+        }
+      }
+
+      byProject[project].items.push(item);
+    });
+
+    Object.keys(byProject).forEach((project) => {
+      byProject[project].assignees = Array.from(byProject[project].assignees);
+    });
+
+    return byProject;
+  }, [data]);
+
+  // Compute per-project progress (items and story points)
+  const projectProgressData = useMemo(() => {
+    return computeSprintProjectProgress(data || [], selectedSprint || 'all');
+  }, [data, selectedSprint]);
+
+  const assigneeProjects = useMemo(() => {
+    const byAssignee = {};
+
+    data.forEach((item) => {
+      const assignee = item['Assignee'] || item['D'] || 'Unassigned';
+      const project = item['Project'] || item['E'] || 'No Project';
+
+      if (!byAssignee[assignee]) {
+        byAssignee[assignee] = {
+          projects: new Set(),
+          projectCounts: {},
+        };
+      }
+
+      byAssignee[assignee].projects.add(project);
+
+      if (!byAssignee[assignee].projectCounts[project]) {
+        byAssignee[assignee].projectCounts[project] = 0;
+      }
+      byAssignee[assignee].projectCounts[project]++;
+    });
+
+    Object.keys(byAssignee).forEach((assignee) => {
+      byAssignee[assignee].projects = Array.from(byAssignee[assignee].projects);
+    });
+
+    return byAssignee;
+  }, [data]);
+
+  const unallocatedItems = useMemo(() => {
+    return data.filter((item) => {
+      const sprint = item['Sprint'] || item['G'] || '';
+      const status = item['Status'] || '';
+      return !sprint && (status === 'In Progress' || status === 'Done');
+    });
+  }, [data]);
+
+  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+
+  // Deterministic color picker for a project name
+  const getProjectColor = (name = '') => {
+    if (!name) return COLORS[0];
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+      hash = (hash << 5) - hash + name.charCodeAt(i);
+      hash |= 0;
+    }
+    return COLORS[Math.abs(hash) % COLORS.length];
+  };
+
+  // Color class for issue type badges (used to color the Status cell)
+  const getTypeBadgeClass = (issueType = '') => {
+    const t = (issueType || '').toString().toLowerCase();
+    if (t.includes('epic')) return 'bg-purple-500 text-white';
+    if (t.includes('story')) return 'bg-emerald-500 text-white';
+    if (t.includes('sub') || t.includes('sub-task') || t.includes('subtask')) return 'bg-sky-300 text-slate-900';
+    if (t.includes('task')) return 'bg-blue-500 text-white';
+    return 'bg-slate-700 text-slate-200';
+  };
+
+  // Floating scroll-to-top button (always visible on the right side)
+  const ScrollToTopButton = () => (
+    <button
+      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+      className="fixed right-4 top-1/2 transform -translate-y-1/2 z-50 bg-blue-600 text-white p-3 rounded-full shadow-lg hover:bg-blue-500"
+      aria-label="Scroll to top"
+      title="Scroll to top"
+    >
+      ↑
+    </button>
+  );
+
+  if (data.length === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
+        <ScrollToTopButton />
+        <div className="max-w-4xl mx-auto">
+          <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
+            <Upload className="w-20 h-20 mx-auto text-blue-500 mb-6" />
+            <h1 className="text-4xl font-bold text-gray-800 mb-4">
+              Jira Sprint Dashboard
+            </h1>
+            <p className="text-gray-600 mb-8 text-lg">
+              Upload your Jira export file to analyze sprint progress, team
+              capacity, and workload distribution
+            </p>
+            <label className="inline-block px-8 py-4 bg-blue-600 text-white rounded-lg cursor-pointer hover:bg-blue-700 transition-colors text-lg font-semibold">
+              Upload Jira Data (TSV/CSV)
+              <input
+                type="file"
+                accept=".csv,.tsv,.txt"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+            </label>
+            {showMergedDuplicates && mergedDuplicates.length > 0 && (
+              <div className="mt-3 bg-yellow-50 border border-yellow-200 p-3 rounded-md text-sm text-slate-900">
+                <div className="font-medium mb-2">Detected duplicate rows (merged preview)</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-slate-600 border-b">
+                        <th className="py-2">Issue</th>
+                        <th className="py-2">Rows</th>
+                        <th className="py-2">Total SP</th>
+                        <th className="py-2">Project</th>
+                        <th className="py-2">Summary (sample)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {mergedDuplicates.map((d) => (
+                        <tr key={d.id} className="align-top">
+                          <td className="py-2 font-medium">{d.id}</td>
+                          <td className="py-2">{d.count}</td>
+                          <td className="py-2">{d.totalSP.toFixed(1)}</td>
+                          <td className="py-2">{d.project}</td>
+                          <td className="py-2">{d.summary}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {showMappingDiagnostics && (
+              <div className="mt-3 bg-amber-50 border border-amber-200 p-3 rounded-md text-sm text-slate-900">
+                <div className="flex items-center justify-between">
+                  <div className="font-medium mb-2">Mapping Diagnostics</div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => exportDiagnostics(mappingDiagnostics)} className="px-2 py-1 bg-slate-200 text-slate-900 rounded text-xs">Export Diagnostics</button>
+                    <button onClick={() => setMappingDiagnostics(computeMappingDiagnostics())} className="px-2 py-1 bg-slate-100 text-slate-900 rounded text-xs">Refresh</button>
+                  </div>
+                </div>
+                {mappingDiagnostics && mappingDiagnostics.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-xs text-slate-600 border-b">
+                          <th className="py-2">Issue</th>
+                          <th className="py-2">Project</th>
+                          <th className="py-2">Summary</th>
+                          <th className="py-2">Add mapping</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {mappingDiagnostics.map((d, i) => (
+                          <tr key={`${d.issueKey}-${i}`} className="align-top">
+                            <td className="py-2 font-medium">{d.issueKey}</td>
+                            <td className="py-2">{d.project}</td>
+                            <td className="py-2">{d.summary}</td>
+                            <td className="py-2">
+                              <div className="flex items-center gap-2">
+                                <select
+                                  value={diagnosticRowAssignee[d.issueKey] || (assignees && assignees.length > 1 ? assignees[1] : '')}
+                                  onChange={(e) => setDiagnosticRowAssignee((p) => ({ ...p, [d.issueKey]: e.target.value }))}
+                                  className="px-2 py-1 bg-white text-slate-900 rounded text-xs"
+                                >
+                                  {(assignees || []).slice(1).map((a) => (
+                                    <option key={a} value={a}>{a}</option>
+                                  ))}
+                                </select>
+                                <button
+                                  onClick={() => {
+                                    const pick = diagnosticRowAssignee[d.issueKey] || (assignees && assignees.length > 1 ? assignees[1] : null);
+                                    if (pick) quickAddMapping(pick.trim(), d.project);
+                                  }}
+                                  className="px-2 py-1 bg-emerald-600 text-white rounded text-xs"
+                                >
+                                  Add
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-700">No mapping diagnostics (all projects have at least one mapped assignee).</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 p-6 text-slate-100">
+      <ScrollToTopButton />
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* HEADER + FILTERS + KPIs */}
+        <div className="bg-slate-900/80 rounded-2xl shadow-lg border border-slate-800 p-6 mb-6 space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <h1 className="text-3xl font-semibold text-slate-50">
+              Sprint Analytics Dashboard
+            </h1>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setSelectedSprint('all');
+                  setSelectedAssignee('all');
+                }}
+                className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 
+                           transition-colors font-medium flex items-center gap-2 shadow-md text-sm"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                  />
+                </svg>
+                Reset All Filters
+              </button>
+              <button
+                onClick={handleGoHome}
+                className="px-4 py-2.5 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition-colors flex items-center gap-2 shadow-md text-sm"
+                title="Go to Home (re-upload data)"
+              >
+                <Home className="w-4 h-4" />
+                Home
+              </button>
+              <label className="px-5 py-2.5 bg-blue-600 text-white rounded-lg cursor-pointer hover:bg-blue-500 
+                                 transition-colors flex items-center gap-2 shadow-md text-sm font-medium">
+                <Upload className="w-4 h-4" />
+                Re-upload Data
+                <input
+                  type="file"
+                  accept=".csv,.tsv,.txt"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Filters */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-2 uppercase tracking-wide">
+                Filter by Sprint
+              </label>
+              <select
+                value={selectedSprint}
+                onChange={(e) => setSelectedSprint(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950/70 border border-slate-700 rounded-lg 
+                           text-slate-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 
+                           outline-none"
+              >
+                {sprints.map((sprint) => (
+                  <option key={sprint} value={sprint}>
+                    {sprint === 'all' ? 'All Sprints' : sprint}
+                  </option>
+                ))}
+              </select>
+
+              {selectedSprint !== 'all' && sprintDates[selectedSprint] && (
+                <div className="mt-3 p-3 bg-slate-950/60 border border-slate-700 rounded-lg flex items-center gap-3">
+                  <Calendar className="w-5 h-5 text-blue-400" />
+                  <div className="text-xs">
+                    <div className="font-semibold text-slate-100">
+                      Sprint Duration
+                    </div>
+                    <div className="text-slate-300">
+                      <span className="font-medium">Start:</span>{' '}
+                      {sprintDates[selectedSprint].start}
+                      <span className="mx-2">→</span>
+                      <span className="font-medium">End:</span>{' '}
+                      {sprintDates[selectedSprint].end}
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      📅 2-week sprint (10 working days)
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-2 uppercase tracking-wide">
+                Filter by Assignee
+              </label>
+              <select
+                value={selectedAssignee}
+                onChange={(e) => setSelectedAssignee(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950/70 border border-slate-700 rounded-lg 
+                           text-slate-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 
+                           outline-none"
+              >
+                {assignees.map((assignee) => (
+                  <option key={assignee} value={assignee}>
+                    {assignee === 'all' ? 'All Assignees' : assignee}
+                  </option>
+                ))}
+              </select>
+              {/* Show selected assignee's active tickets */}
+              {selectedAssignee !== 'all' && stats[selectedAssignee] && (
+                <div className="mt-3 p-3 bg-slate-950/50 border border-slate-800 rounded-md text-sm">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="font-medium text-slate-100">Tickets for {selectedAssignee}</div>
+                    <div className="text-xs text-slate-400">{stats[selectedAssignee].items.length} items</div>
+                  </div>
+                  {/* Issue Type Filters */}
+                  <div className="bg-slate-800/50 rounded-lg p-3 mb-3 border border-slate-700 flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-slate-400 uppercase tracking-wide">Filters:</span>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer group">
+                      <input
+                        type="checkbox"
+                        checked={selectedIssueTypes.length === 5 && showDoneTickets && showNoStoryPoints && showAwaitingTesting && showAwaitingVersioning}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedIssueTypes(['Epic', 'Story', 'Task', 'Sub-task', 'Bug']);
+                            setShowDoneTickets(true);
+                            setShowNoStoryPoints(true);
+                            setShowAwaitingTesting(true);
+                            setShowAwaitingVersioning(true);
+                          } else {
+                            setSelectedIssueTypes([]);
+                            setShowDoneTickets(false);
+                            setShowNoStoryPoints(false);
+                            setShowAwaitingTesting(false);
+                            setShowAwaitingVersioning(false);
+                          }
+                        }}
+                        className="w-4 h-4 rounded border-slate-500 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900"
+                      />
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold text-white bg-gradient-to-r from-indigo-600 to-purple-600 shadow-sm group-hover:from-indigo-500 group-hover:to-purple-500 transition-all">
+                        Select All
+                      </span>
+                    </label>
+                    <span className="text-slate-600 mx-1">|</span>
+                    {[
+                      { type: 'Epic', color: 'bg-purple-600', label: 'Epics' },
+                      { type: 'Story', color: 'bg-green-600', label: 'Stories' },
+                      { type: 'Task', color: 'bg-blue-600', label: 'Tasks' },
+                      { type: 'Sub-task', color: 'bg-slate-500', label: 'Sub-tasks' },
+                      { type: 'Bug', color: 'bg-red-600', label: 'Bugs' },
+                    ].map(({ type, color, label }) => {
+                      const count = (stats[selectedAssignee]?.items || []).filter(it => (it['Issue Type'] || '') === type).length;
+                      return (
+                        <label key={type} className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedIssueTypes.includes(type)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedIssueTypes((prev) => [...prev, type]);
+                              } else {
+                                setSelectedIssueTypes((prev) => prev.filter((t) => t !== type));
+                              }
+                            }}
+                            className="w-4 h-4 rounded border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-slate-900"
+                          />
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium text-white ${color}`}>
+                            {label} ({count})
+                          </span>
+                        </label>
+                      );
+                    })}
+                    <span className="text-slate-600 mx-1">|</span>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showDoneTickets}
+                        onChange={() => setShowDoneTickets((v) => !v)}
+                        className="w-4 h-4 rounded border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-slate-900"
+                      />
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium text-white bg-emerald-600">
+                        Done ({(stats[selectedAssignee]?.items || []).filter(it => (it['Status'] || '').toLowerCase() === 'done').length})
+                      </span>
+                    </label>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showNoStoryPoints}
+                        onChange={() => setShowNoStoryPoints((v) => !v)}
+                        className="w-4 h-4 rounded border-slate-600 text-blue-500 focus:ring-blue-500 focus:ring-offset-slate-900"
+                      />
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium text-white bg-amber-600">
+                        Only No SP ({(stats[selectedAssignee]?.items || []).filter(it => { const sp = parseFloat(it['Story Points'] || it['SP'] || ''); return isNaN(sp) || sp <= 0; }).length})
+                      </span>
+                    </label>
+                  </div>
+                  {(() => {
+                    const items = stats[selectedAssignee].items || [];
+                    const visible = items.filter((it) => {
+                      const status = String(it['Status'] || '').toLowerCase();
+                      const spRaw = (it['Story Points'] || it['SP'] || '').toString().trim();
+                      const spVal = parseFloat(spRaw);
+                      const hasSP = spRaw !== '' && !isNaN(spVal) && spVal > 0;
+                      const issueType = it['Issue Type'] || '';
+                      // include if not filtered out by done filter and not filtered out by no-SP filter
+                      if (!showDoneTickets && status === 'done') return false;
+                      if (showNoStoryPoints && hasSP) return false; // AND filter: when checked, hide items WITH SP
+                      // filter by issue type
+                      if (!selectedIssueTypes.includes(issueType)) return false;
+                      return true;
+                    });
+                    const visibleKeys = visible.map((it, i) => String(it['Issue key'] || it['Key'] || i));
+                    const allSelected = visibleKeys.length > 0 && visibleKeys.every((k) => assigneeTicketSelectedKeys.includes(String(k)));
+
+                    return (
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => toggleAssigneeSelectAll(visibleKeys)}
+                              className="px-3 py-1 bg-slate-700 text-white rounded-md text-xs hover:bg-slate-600"
+                            >
+                              {allSelected ? 'Unselect All' : 'Select All Visible'}
+                            </button>
+                            <button
+                              onClick={copyAssigneeSelectedKeys}
+                              disabled={!assigneeTicketSelectedKeys || assigneeTicketSelectedKeys.length === 0}
+                              className="px-3 py-1 bg-indigo-600 text-white rounded-md text-xs hover:bg-indigo-500 disabled:opacity-50"
+                            >
+                              Copy Selected ({assigneeTicketSelectedKeys.length})
+                            </button>
+                            <button
+                              onClick={() => {
+                                // export selected if any, otherwise export visible
+                                const selectedSet = new Set((assigneeTicketSelectedKeys || []).map(String));
+                                const rowsToExport = (selectedSet.size > 0)
+                                  ? items.filter((it, i) => selectedSet.has(String(it['Issue key'] || it['Key'] || i)))
+                                  : visible;
+                                exportRowsToCSV(rowsToExport, `${selectedAssignee || 'assignee'}-tickets.csv`);
+                              }}
+                              disabled={((assigneeTicketSelectedKeys || []).length === 0 && visible.length === 0)}
+                              className="px-3 py-1 bg-amber-600 text-white rounded-md text-xs hover:bg-amber-500 disabled:opacity-50"
+                            >
+                              Export to Excel
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left text-xs text-slate-400 border-b">
+                                <th className="py-2 w-8 text-center">
+                                  <input type="checkbox" checked={allSelected} onChange={() => toggleAssigneeSelectAll(visibleKeys)} />
+                                </th>
+                                <th className="py-2">Issue</th>
+                                <th className="py-2">Project</th>
+                                <th className="py-2">Type</th>
+                                <th className="py-2 text-center">SP</th>
+                                <th className="py-2">Status</th>
+                                <th className="py-2">Summary</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                              {visible.map((it, idx) => {
+                                const key = String(it['Issue key'] || it['Key'] || idx);
+                                const project = it['Project'] || it['E'] || 'Unknown';
+                                const issueType = it['Issue Type'] || it['Type'] || it['IssueType'] || it['Issue type'] || '';
+                                const sp = it['Story Points'] || it['SP'] || '';
+                                const status = it['Status'] || '';
+                                const summary = it['Summary'] || it['Issue summary'] || it['Title'] || '';
+                                const checked = assigneeTicketSelectedKeys.includes(String(key));
+                                return (
+                                  <tr key={idx} className="hover:bg-slate-900/40">
+                                    <td className="py-2 text-center">
+                                      <input type="checkbox" className="w-4 h-4" checked={checked} onChange={() => toggleAssigneeTicketSelection(key)} />
+                                    </td>
+                                    <td className="py-2 font-medium text-slate-100">
+                                      <div className="flex items-center gap-2">
+                                        {JIRA_BASE_URL && key ? (
+                                          <a href={`${JIRA_BASE_URL.replace(/\/+$/,'')}/browse/${encodeURIComponent(key)}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
+                                            {key}
+                                          </a>
+                                        ) : (
+                                          <span className="text-slate-200">{key}</span>
+                                        )}
+                                        {/* per-row Open button removed — issue key itself links to Jira */}
+                                      </div>
+                                    </td>
+                                    <td className="py-2 text-slate-300">{project}</td>
+                                    <td className="py-2">
+                                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getTypeBadgeClass(issueType)}`}>
+                                        {issueType}
+                                      </span>
+                                    </td>
+                                    <td className="py-2 text-center text-slate-200">{sp}</td>
+                                    <td className="py-2">
+                                      <span
+                                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${getTypeBadgeClass(issueType)}`}
+                                      >
+                                        {status}
+                                      </span>
+                                    </td>
+                                    <td className="py-2 text-slate-300 whitespace-normal break-words">{summary}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* KPI CARDS */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <Users className="w-6 h-6 text-blue-400" />
+                <span className="text-2xl font-bold text-slate-50">
+                  {Object.keys(stats).length}
+                </span>
+              </div>
+              <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+                Team Members
+              </p>
+            </div>
+
+            <div className="bg-slate-950/60 border border-emerald-700/70 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <CheckCircle className="w-6 h-6 text-emerald-400" />
+                <span className="text-2xl font-bold text-emerald-400">
+                  {Object.values(stats)
+                    .reduce((sum, s) => sum + s.completedStoryPoints, 0)
+                    .toFixed(1)}
+                </span>
+              </div>
+              <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+                Completed SP
+              </p>
+            </div>
+
+            <div className="bg-slate-950/60 border border-purple-700/70 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <AlertCircle className="w-6 h-6 text-purple-400" />
+                <span className="text-2xl font-bold text-purple-400">
+                  {Object.values(stats)
+                    .reduce((sum, s) => sum + s.awaitingTestingStoryPoints, 0)
+                    .toFixed(1)}
+                </span>
+              </div>
+              <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+                Awaiting Testing SP
+              </p>
+            </div>
+
+            <div className="bg-slate-950/60 border border-orange-700/70 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <TrendingUp className="w-6 h-6 text-orange-400" />
+                <span className="text-2xl font-bold text-orange-400">
+                  {Object.values(stats)
+                    .reduce((sum, s) => sum + s.availableStoryPoints, 0)
+                    .toFixed(1)}
+                </span>
+              </div>
+              <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+                Available SP
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* CHARTS */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+          <div className="bg-white rounded-2xl shadow-xl p-6 text-slate-900">
+            <h2 className="text-xl font-bold text-slate-900 mb-4">
+              Team Workload (Story Points)
+            </h2>
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart data={workloadChartData} layout="vertical" margin={{ left: 8, right: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis type="number" tick={{ fill: '#0f172a', fontSize: 12 }} />
+                <YAxis dataKey="name" type="category" width={160} tick={{ fill: '#0f172a', fontSize: 12 }} />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="Story Points" fill="#3b82f6" />
+                <Bar dataKey="Total Items" fill="#10b981" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-xl p-6 text-slate-900">
+            <h2 className="text-xl font-bold text-slate-900 mb-4">
+              Sprint Capacity vs Actual Work
+            </h2>
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart data={capacityChartData} margin={{ left: 8, right: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="name"
+                  angle={-45}
+                  textAnchor="end"
+                  height={100}
+                  tick={{ fill: '#0f172a', fontSize: 11 }}
+                />
+                <YAxis
+                  label={{
+                    value: 'Story Points',
+                    angle: -90,
+                    position: 'insideLeft',
+                  }}
+                  tick={{ fill: '#0f172a', fontSize: 12 }}
+                />
+                <Tooltip />
+                <Legend />
+                <Bar
+                  dataKey="Capacity"
+                  fill="#d1d5db"
+                  name="Sprint Capacity (16 SP)"
+                />
+                <Bar dataKey="Done" stackId="a" fill="#10b981" />
+                <Bar dataKey="In Progress" stackId="a" fill="#3b82f6" />
+                <Bar dataKey="To Do" stackId="a" fill="#f59e0b" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* CAPACITY PLANNING TABLE */}
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <h2 className="text-xl font-bold text-slate-900 mb-4">
+            Sprint Capacity Planning
+          </h2>
+          <div className="overflow-x-auto mb-6">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Assignee
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Sprint Capacity
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    In Progress
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    To Do
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Used
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Remaining
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Utilization
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Allocation Status
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {Object.entries(stats)
+                  .sort(([, a], [, b]) => {
+                    const statusOrder = {
+                      'Over Allocated': 0,
+                      'On Track': 1,
+                      'Under Allocated': 2,
+                    };
+                    return (
+                      statusOrder[a.allocationStatus] -
+                      statusOrder[b.allocationStatus]
+                    );
+                  })
+                  .map(([assignee, data]) => {
+                    const utilizationColor =
+                      data.allocationStatus === 'Over Allocated'
+                        ? 'text-red-600'
+                        : data.allocationStatus === 'On Track'
+                        ? 'text-green-600'
+                        : 'text-orange-600';
+
+                    const statusBg =
+                      data.allocationStatus === 'Over Allocated'
+                        ? 'bg-red-100 text-red-800 border-red-300'
+                        : data.allocationStatus === 'On Track'
+                        ? 'bg-green-100 text-green-800 border-green-300'
+                        : 'bg-orange-100 text-orange-800 border-orange-300';
+
+                    const statusIcon =
+                      data.allocationStatus === 'Over Allocated'
+                        ? '\u{1F534}'
+                        : data.allocationStatus === 'On Track'
+                        ? '\u{1F7E2}'
+                        : '\u{1F7E0}';
+
+                    return (
+                      <tr key={assignee} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 text-sm font-bold text-gray-900">
+                          {assignee}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-center">
+                          <div className="flex items-center justify-center gap-2">
+                            <input
+                              type="number"
+                              min={0}
+                              value={assigneeCaps[assignee] ?? data.sprintCapacity}
+                              onChange={(e) => {
+                                const v = Number(e.target.value) || 0;
+                                setAssigneeCaps((prev) => ({ ...prev, [assignee]: v }));
+                              }}
+                              className="w-20 px-2 py-1 rounded-md text-sm text-center bg-white text-gray-900 border"
+                              title="Override sprint capacity (SP) for this assignee"
+                            />
+                            <div className="text-xs text-gray-500">SP</div>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">(10 days)</div>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-center">
+                          <span className="font-semibold text-blue-600 text-base">
+                            {data.inProgressStoryPoints.toFixed(1)}
+                          </span>
+                          <div className="text-xs text-gray-500">
+                            {data.inProgressCount} items
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-center">
+                          <span className="font-semibold text-gray-600 text-base">
+                            {data.toDoStoryPoints.toFixed(1)}
+                          </span>
+                          <div className="text-xs text-gray-500">
+                            {data.todoCount} items
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-center">
+                          <span className="font-bold text-gray-900 text-base">
+                            {data.capacityUsed.toFixed(1)} SP
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-center">
+                          <span
+                            className={`font-bold text-lg ${
+                              data.capacityRemaining < 0
+                                ? 'text-red-600'
+                                : 'text-green-600'
+                            }`}
+                          >
+                            {data.capacityRemaining.toFixed(1)} SP
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-center">
+                          <div className="flex flex-col items-center gap-2">
+                            <div className="w-full bg-gray-200 rounded-full h-4">
+                              <div
+                                className={`h-4 rounded-full ${
+                                  data.allocationStatus === 'Over Allocated'
+                                    ? 'bg-red-600'
+                                    : data.allocationStatus === 'On Track'
+                                    ? 'bg-green-600'
+                                    : 'bg-orange-500'
+                                }`}
+                                style={{
+                                  width: `${Math.min(
+                                    data.capacityUtilization,
+                                    100,
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                            <span
+                              className={`text-base font-bold ${utilizationColor}`}
+                            >
+                              {data.capacityUtilization.toFixed(0)}%
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-center">
+                          <span
+                            className={`px-4 py-2 rounded-full text-sm font-bold border-2 ${statusBg} inline-flex items-center gap-2`}
+                          >
+                            <span className="text-lg">{statusIcon}</span>
+                            {data.allocationStatus}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Suggestions Panel */}
+          <div className="mt-4">
+            <div className="flex items-center gap-3">
+              {mergedDuplicates.length > 0 && (
+                <div className="ml-2 text-sm text-slate-600">
+                  Merged duplicates: <strong className="text-slate-900">{mergedDuplicates.length}</strong>
+                  <button
+                    onClick={() => setShowMergedDuplicates((s) => !s)}
+                    className="ml-3 px-2 py-1 bg-slate-100 text-slate-900 rounded text-xs"
+                  >
+                    {showMergedDuplicates ? 'Hide' : 'View'}
+                  </button>
+                </div>
+              )}
+              {suggestions.length > 0 && (
+                <>
+                  <button
+                    onClick={applySuggestions}
+                    disabled={selectedSuggestionIds.length === 0}
+                    className="px-4 py-2 bg-emerald-600 text-white rounded-md text-sm hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    Apply Suggestions ({selectedSuggestionIds.length})
+                  </button>
+                  <button
+                    onClick={exportSuggestionsCSV}
+                    disabled={selectedSuggestionIds.length === 0}
+                    className="px-3 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-600 disabled:opacity-50"
+                  >
+                    Export CSV ({selectedSuggestionIds.length})
+                  </button>
+                  <button
+                    onClick={resetView}
+                    className="px-3 py-2 bg-amber-600 text-white rounded-md text-sm hover:bg-amber-500 ml-2"
+                  >
+                    Reset View
+                  </button>
+                </>
+              )}
+              {showSuggestions && suggestions.length === 0 && (
+                <div className="text-sm text-gray-600">No suggestions available</div>
+              )}
+            </div>
+
+            {showSuggestions && suggestions.length > 0 && (
+              <div className="mt-3 bg-slate-50 p-3 rounded-md text-sm text-slate-900">
+                <div className="font-medium mb-2">Suggested moves</div>
+
+                {suggestionRejections && suggestionRejections.length > 0 && (
+                  <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
+                    <div className="font-medium mb-1">Filtered suggestions (rejected)</div>
+                    <div className="text-xs">
+                      {suggestionRejections.map((r, idx) => (
+                        <div key={idx} className="mb-2">
+                          <div className="font-semibold">{r.id} — {r.reason}</div>
+                          {r.allowed && Array.isArray(r.allowed) && r.allowed.length > 0 && (
+                            <div className="text-[11px] text-amber-800">Allowed: {renderListPreview(r.allowed)}</div>
+                          )}
+                          {r.eligible && Array.isArray(r.eligible) && r.eligible.length > 0 && (
+                            <div className="text-[11px] text-amber-700">Eligible: {renderListPreview(r.eligible)}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* helper to find issue/project from uploaded data */}
+                {(() => {
+                  const getIssueInfo = (id) => {
+                    const strId = String(id);
+                    const found = data.find((it, idx) => {
+                      const key = String(it['Issue key'] || it['Key'] || idx);
+                      return key === strId;
+                    });
+                    return {
+                      key: found ? String(found['Issue key'] || found['Key'] || strId) : strId,
+                      project: found ? String(found['Project'] || found['E'] || 'Unknown') : 'Unknown',
+                      summary: found ? String(found['Summary'] || found['Issue summary'] || found['Title'] || '') : '',
+                    };
+                  };
+
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-xs text-slate-600 border-b">
+                            <th className="py-2 w-8 text-center">
+                              <input
+                                type="checkbox"
+                                checked={suggestions.length > 0 && selectedSuggestionIds.length === suggestions.length}
+                                onChange={toggleSelectAll}
+                                title="Select all suggestions"
+                              />
+                            </th>
+                            <th className="py-2">Issue</th>
+                            <th className="py-2 text-center">Project</th>
+                            <th className="py-2 text-center">SP</th>
+                            <th className="py-2">From</th>
+                            <th className="py-2">To</th>
+                              <th className="py-2">Summary</th>
+                              <th className="py-2">Notes</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {suggestions.map((s, i) => {
+                            const info = getIssueInfo(s.id);
+                            const checked = selectedSuggestionIds.includes(String(s.id));
+                            // prefer algorithm-provided candidate lists (attached to suggestion), fallback to local recompute
+                            const eligibleList = Array.isArray(s.eligibleCandidates) ? s.eligibleCandidates : (() => {
+                              const underAssignees = Object.entries(stats).map(([assignee, aData]) => {
+                                const cap = aData.sprintCapacity || 16;
+                                const used = aData.capacityUsed || 0;
+                                const slack = cap - used;
+                                return { assignee, slack };
+                              }).filter((a) => a.slack > 0);
+                              return underAssignees.filter((u) => (u.slack || 0) >= (s.sp || 0)).map((u) => u.assignee);
+                            })();
+
+                            const allowedList = Array.isArray(s.allowedCandidates) ? s.allowedCandidates : (() => {
+                              if (!assigneeProjectMap) return eligibleList;
+                              const projNorm = normalizeProject(info.project);
+                              return eligibleList.filter((assignee) => {
+                                const allowed = assigneeProjectMap[assignee];
+                                if (!allowed || allowed.size === 0) return true;
+                                if (!projNorm) return true;
+                                return Array.from(allowed).some((a) => {
+                                  const an = normalizeProject(a);
+                                  return an === projNorm || an.includes(projNorm) || projNorm.includes(an);
+                                });
+                              });
+                            })();
+
+                            const candidateCount = (Array.isArray(eligibleList) ? eligibleList.length : (s.eligibleCount || 0));
+                            const allowedCount = (Array.isArray(allowedList) ? allowedList.length : (s.allowedCount || 0));
+                            const filteredOut = (Array.isArray(eligibleList) && Array.isArray(allowedList)) ? eligibleList.filter((a) => !allowedList.includes(a)) : [];
+
+                            return (
+                              <tr key={i} className="hover:bg-slate-100">
+                                <td className="py-2 text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => toggleSelectSuggestion(s.id)}
+                                    className="w-4 h-4"
+                                  />
+                                </td>
+                                <td className="py-2 font-medium text-slate-900">
+                                  {(() => {
+                                    const key = info.key || '';
+                                    const base = JIRA_BASE_URL;
+                                    const looksLikeKey = /[A-Z]+-\d+/i.test(key);
+                                    // Make the issue key a hyperlink whenever a JIRA base URL is configured.
+                                    // Previously we required the key to strictly match a pattern; relax that so
+                                    // users with different key formats still get clickable links when configured.
+                                    if (base && key) {
+                                      const url = `${base.replace(/\/+$/,'')}/browse/${encodeURIComponent(key)}`;
+                                      return (
+                                        <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-indigo-600 hover:underline">
+                                          <span>{key}</span>
+                                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-3 h-3 inline-block text-indigo-500" fill="none" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18 13v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" />
+                                          </svg>
+                                        </a>
+                                      );
+                                    }
+                                    return key;
+                                  })()}
+                                </td>
+                                <td className="py-2 text-left text-slate-700">
+                                  <div className="flex items-center gap-2">
+                                    <span>{info.project}</span>
+                                                {isBuiltinProject(info.project) && (
+                                                  <span title="Authoritative built-in mapping — uploaded mappings are ignored for this project" className="text-[11px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded">Built-in</span>
+                                                )}
+                                  </div>
+                                </td>
+                                <td className="py-2 text-center text-slate-800 font-semibold">{s.sp}</td>
+                                <td className="py-2 text-slate-700">{s.from}</td>
+                                <td className="py-2 text-slate-700">{s.to}</td>
+                                <td className="py-2 text-slate-600">{s.summary || info.summary || '-'}</td>
+                                <td className="py-1 text-xs text-slate-500">
+                                  {candidateCount > 0 && (
+                                    <span className="inline-flex items-center gap-1">
+                                      <span>Eligible targets:</span>
+                                      <strong className="text-slate-800">{allowedCount}/{candidateCount}</strong>
+                                      {mappingLoadedCount > 0 && filteredOut.length > 0 && (
+                                        <span
+                                          title={`Filtered out by mapping: ${filteredOut.join(', ')}`}
+                                          className="ml-2 text-[11px] text-slate-400 cursor-help"
+                                        >
+                                          (filtered)
+                                        </span>
+                                      )}
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+            {/* Jira preview / apply log */}
+            {jiraPreviewVisible && jiraPreview.length > 0 && (
+              <div className="mt-3 bg-slate-50 p-3 rounded-md text-sm text-slate-900">
+                <div className="font-medium mb-2">Jira Preview</div>
+                <ul className="list-disc pl-5 space-y-1">
+                  {jiraPreview.map((p, i) => (
+                    <li key={i}>
+                      Issue <strong>{p.issueKey}</strong>: {p.from} → <strong>{p.to}</strong> ({p.sp} SP)
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-2 text-xs text-slate-700">
+                  To actually update Jira, set `VITE_JIRA_BASE_URL`, `VITE_JIRA_EMAIL`, and `VITE_JIRA_API_TOKEN` and click "Apply to Jira". The apply is gated and will ask for confirmation.
+                </div>
+              </div>
+            )}
+
+            {jiraLog.length > 0 && (
+              <div className="mt-3 bg-neutral-900/80 p-3 rounded-md text-sm text-slate-100">
+                <div className="font-medium mb-2">Jira Operation Log</div>
+                <ul className="list-disc pl-5 space-y-1">
+                  {jiraLog.map((line, i) => (
+                    <li key={i} className="text-xs">
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {/* What-if simulator */}
+            <div className="mt-4 bg-slate-900/60 p-3 rounded-md text-sm text-slate-100">
+              <div className="flex items-center justify-between">
+                <div className="font-medium">What‑If: scale capacities</div>
+                <div className="text-xs text-slate-300">Multiplier</div>
+              </div>
+              <div className="mt-2 flex items-center gap-3">
+                <input
+                  type="range"
+                  min={0.5}
+                  max={1.5}
+                  step={0.05}
+                  value={whatIfMultiplier}
+                  onChange={(e) => setWhatIfMultiplier(Number(e.target.value))}
+                  className="w-1/2"
+                />
+                <input
+                  type="number"
+                  step={0.05}
+                  value={whatIfMultiplier}
+                  onChange={(e) => setWhatIfMultiplier(Number(e.target.value) || 1)}
+                  className="w-20 px-2 py-1 rounded-md text-sm text-center bg-white text-gray-900 border"
+                />
+                <div className="ml-auto text-sm">
+                  {(() => {
+                    const p = computeWhatIfProjection(whatIfMultiplier);
+                    return (
+                      <div>
+                        Projected Completion: <strong>{p.projectedCompletion.toFixed(0)}%</strong>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* LEGEND CARDS */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-2xl">🔴</span>
+                <h3 className="text-sm font-bold text-red-900">
+                  Over Allocated
+                </h3>
+              </div>
+              <p className="text-sm text-red-800">
+                Capacity Used &gt; 16 SP
+                <br />
+                <strong>Action:</strong> Reduce workload or extend sprint
+              </p>
+            </div>
+
+            <div className="bg-green-50 border-l-4 border-green-500 p-4 rounded">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-2xl">🟢</span>
+                <h3 className="text-sm font-bold text-green-900">On Track</h3>
+              </div>
+              <p className="text-sm text-green-800">
+                70-100% capacity (11.2-16 SP)
+                <br />
+                <strong>Tolerance:</strong> ±4 hours
+              </p>
+            </div>
+
+            <div className="bg-orange-50 border-l-4 border-orange-500 p-4 rounded">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-2xl">🟡</span>
+                <h3 className="text-sm font-bold text-orange-900">
+                  Under Allocated
+                </h3>
+              </div>
+              <p className="text-sm text-orange-800">
+                Capacity Used &lt; 70% (&lt;9.8 SP)
+                <br />
+                <strong>Action:</strong> Assign more work
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* ASSIGNEE DETAILS */}
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <h2 className="text-xl font-bold text-slate-900 mb-4">
+            Assignee Details
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-slate-50">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Assignee
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Epics
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Stories
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Bugs
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Tasks
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Sub-tasks
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Done
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Awaiting Test
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Await Ver
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Total SP
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Done SP
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Test SP
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Ver SP
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Available SP
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                    Hours
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {Object.entries(stats).map(([assignee, data]) => (
+                  <tr key={assignee} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                      {assignee}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-gray-700">
+                      {data.epics}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-gray-700">
+                      {data.stories}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-gray-700">
+                      {data.bugs}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-gray-700">
+                      {data.tasks}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-gray-700">
+                      {data.subtasks}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-green-600 font-semibold">
+                      {data.doneCount}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-purple-600 font-semibold">
+                      {data.awaitingTestingCount}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-indigo-600 font-semibold">
+                      {data.awaitingVersioningCount}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center font-semibold text-gray-900">
+                      {data.totalStoryPoints.toFixed(1)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-green-600 font-semibold">
+                      {data.completedStoryPoints.toFixed(1)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-purple-600 font-semibold">
+                      {data.awaitingTestingStoryPoints.toFixed(1)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-indigo-600 font-semibold">
+                      {data.awaitingVersioningStoryPoints.toFixed(1)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-orange-600 font-semibold">
+                      {data.availableStoryPoints.toFixed(1)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-center text-blue-600 font-semibold">
+                      {data.timeLogged.toFixed(1)}h
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* SPRINT SUMMARY (only when All Sprints) */}
+        {selectedSprint === 'all' && (
+          <div className="bg-white rounded-2xl shadow-xl p-6">
+            <h2 className="text-xl font-bold text-slate-900 mb-4">
+              Sprint Summary
+            </h2>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-slate-50">
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      Sprint
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      Total Items
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      Done
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      In Progress
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      To Do
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      Total SP
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      Completed SP
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      Remaining SP
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      Completion
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {Object.entries(sprintStats)
+                    .sort(([a], [b]) => {
+                      // 1) Prefer numeric sprint names: "Sprint 12", "12", etc.
+                      const extractNumber = (s) => {
+                        if (!s) return null;
+                        const str = String(s);
+                        // common: "Sprint 12" or "Sprint-12"
+                        let m = str.match(/\bSprint\b[^0-9]*(\d{1,4})\b/i);
+                        if (m) return parseInt(m[1], 10);
+                        // fallback: trailing number
+                        m = str.match(/\b(\d{1,4})\b$/);
+                        if (m) return parseInt(m[1], 10);
+                        return null;
+                      };
+
+                      const na = extractNumber(a);
+                      const nb = extractNumber(b);
+                      if (na != null && nb != null) return nb - na; // numeric desc
+                      if (na != null && nb == null) return -1; // numeric first
+                      if (na == null && nb != null) return 1;
+
+                      // 2) Fall back to end-date parsing (if sprintDates present or pattern like "DD-MM-YY to DD-MM-YY")
+                      const parseEndTs = (s) => {
+                        if (!s) return null;
+                        const dstr = sprintDates[s]?.end;
+                        if (dstr) {
+                          const t = Date.parse(dstr);
+                          if (!isNaN(t)) return t;
+                        }
+                        const m = String(s).match(/to\s*(\d{2}-\d{2}-\d{2})/);
+                        if (m) {
+                          const parts = m[1].split('-'); // DD-MM-YY
+                          const iso = `20${parts[2]}-${parts[1]}-${parts[0]}`; // YYYY-MM-DD
+                          const t = Date.parse(iso);
+                          if (!isNaN(t)) return t;
+                        }
+                        const t2 = Date.parse(s);
+                        return isNaN(t2) ? null : t2;
+                      };
+
+                      const da = parseEndTs(a);
+                      const db = parseEndTs(b);
+                      if (da && db) return db - da; // latest first
+                      if (da && !db) return -1;
+                      if (!da && db) return 1;
+
+                      // 3) final fallback: alphabetical
+                      return b.localeCompare(a);
+                    })
+                    .map(([sprint, data]) => {
+                      let completion = 0;
+                      if (data.totalSP > 0 && data.completedSP > 0) {
+                        completion = ((data.completedSP / data.totalSP) * 100);
+                      } else if (data.total > 0) {
+                        // Fallback to item-count based completion when SPs aren't available for done items
+                        completion = (data.done / data.total) * 100;
+                      } else {
+                        completion = 0;
+                      }
+                      completion = Number.isFinite(completion) ? completion.toFixed(0) : 0;
+                      return (
+                        <tr key={sprint} className="hover:bg-gray-50">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                            {sprint}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-center text-gray-700">
+                            {data.total}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-center text-green-600 font-semibold">
+                            {data.done}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-center text-blue-600 font-semibold">
+                            {data.inProgress}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-center text-gray-600">
+                            {data.todo}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-center font-semibold text-gray-900">
+                            {data.totalSP.toFixed(1)}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-center text-green-600 font-semibold">
+                            {data.completedSP.toFixed(1)}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-center text-orange-600 font-semibold">
+                            {data.remainingSP.toFixed(1)}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-center">
+                            <div className="flex items-center justify-center gap-2">
+                              <div className="w-24 bg-gray-200 rounded-full h-2">
+                                <div
+                                  className="bg-green-600 h-2 rounded-full"
+                                  style={{ width: `${completion}%` }}
+                                />
+                              </div>
+                              <span className="text-xs font-medium">
+                                {completion}%
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ASSIGNEE PROJECT PROGRESS BAR GRAPH */}
+        {selectedAssignee !== 'all' && stats[selectedAssignee] && (
+          <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-slate-900">
+                Project Progress for {selectedAssignee}
+              </h2>
+            </div>
+            {(() => {
+              const items = stats[selectedAssignee]?.items || [];
+              // Group items by project
+              const projectStats = {};
+              items.forEach((item) => {
+                const project = item['Project'] || item['E'] || 'No Project';
+                if (!projectStats[project]) {
+                  projectStats[project] = {
+                    total: 0,
+                    done: 0,
+                    inProgress: 0,
+                    todo: 0,
+                    totalSP: 0,
+                    doneSP: 0,
+                  };
+                }
+                const status = (item['Status'] || '').toLowerCase();
+                const sp = parseFloat(item['Story Points'] || item['SP'] || '0') || 0;
+                projectStats[project].total++;
+                projectStats[project].totalSP += sp;
+                if (status === 'done') {
+                  projectStats[project].done++;
+                  projectStats[project].doneSP += sp;
+                } else if (status.includes('progress') || status === 'in development' || status === 'in review') {
+                  projectStats[project].inProgress++;
+                } else {
+                  projectStats[project].todo++;
+                }
+              });
+
+              const projects = Object.entries(projectStats).sort((a, b) => b[1].total - a[1].total);
+              const maxItems = Math.max(...projects.map(([, s]) => s.total), 1);
+
+              if (projects.length === 0) {
+                return <p className="text-slate-500 text-sm">No project data available for this assignee.</p>;
+              }
+
+              return (
+                <div className="space-y-4">
+                  {projects.map(([project, pStats]) => {
+                    const donePercent = pStats.total > 0 ? (pStats.done / pStats.total) * 100 : 0;
+                    const inProgressPercent = pStats.total > 0 ? (pStats.inProgress / pStats.total) * 100 : 0;
+                    const todoPercent = pStats.total > 0 ? (pStats.todo / pStats.total) * 100 : 0;
+                    const barWidth = (pStats.total / maxItems) * 100;
+
+                    return (
+                      <div key={project} className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-slate-700 truncate max-w-[200px]" title={project}>
+                            {project}
+                          </span>
+                          <div className="flex items-center gap-3 text-xs text-slate-500">
+                            <span>{pStats.total} items</span>
+                            <span>{pStats.totalSP.toFixed(1)} SP</span>
+                            <span className="font-semibold text-green-600">{donePercent.toFixed(0)}% done</span>
+                          </div>
+                        </div>
+                        <div className="relative h-6 bg-slate-100 rounded-full overflow-hidden" style={{ width: `${barWidth}%`, minWidth: '100px' }}>
+                          <div
+                            className="absolute left-0 top-0 h-full bg-green-500 transition-all duration-300"
+                            style={{ width: `${donePercent}%` }}
+                            title={`Done: ${pStats.done} (${donePercent.toFixed(1)}%)`}
+                          />
+                          <div
+                            className="absolute top-0 h-full bg-blue-500 transition-all duration-300"
+                            style={{ left: `${donePercent}%`, width: `${inProgressPercent}%` }}
+                            title={`In Progress: ${pStats.inProgress} (${inProgressPercent.toFixed(1)}%)`}
+                          />
+                          <div
+                            className="absolute top-0 h-full bg-slate-300 transition-all duration-300"
+                            style={{ left: `${donePercent + inProgressPercent}%`, width: `${todoPercent}%` }}
+                            title={`To Do: ${pStats.todo} (${todoPercent.toFixed(1)}%)`}
+                          />
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="text-xs font-semibold text-slate-700 drop-shadow-sm">
+                              {pStats.done}/{pStats.total}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className="flex items-center gap-4 mt-4 pt-4 border-t border-slate-200">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                      <span className="text-xs text-slate-600">Done</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+                      <span className="text-xs text-slate-600">In Progress</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 rounded-full bg-slate-300"></div>
+                      <span className="text-xs text-slate-600">To Do</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+
+        {/* Project Progress per project */}
+        {/* Azure DevOps Sprint Progress Summary */}
+        
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-slate-900">Project Progress</h2>
+            <div>
+              <button
+                onClick={() => exportProjectProgressCSV(projectProgressData, 'project-progress.csv')}
+                className="px-3 py-1 bg-slate-700 text-white rounded-md text-xs hover:bg-slate-600"
+              >
+                Export Project Progress
+              </button>
+            </div>
+          </div>
+          {projectProgressData.length === 0 ? (
+            <div className="text-sm text-slate-600">No project data available</div>
+          ) : (
+            <div className="space-y-4">
+              {projectProgressData.map((p) => (
+                <div key={p.project}>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: getProjectColor(p.project) }} />
+                      <div className="font-medium text-slate-900 flex items-center gap-2">
+                        <span>{p.project}</span>
+                        {isBuiltinProject(p.project) && (
+                          <span title="Authoritative built-in mapping — uploaded mappings are ignored for this project" className="text-[11px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded">Built-in</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-xs text-slate-600">
+                      {p.doneItems}/{p.totalItems} items · {p.completedSP.toFixed(1)}/{p.totalSP.toFixed(1)} SP
+                    </div>
+                  </div>
+                  <div className="w-full bg-slate-200 rounded h-3 overflow-hidden">
+                    <div
+                      className="h-3"
+                      style={{
+                        width: `${p.percentSP !== null ? p.percentSP : p.percentCount}%`,
+                        backgroundColor: getProjectColor(p.project),
+                      }}
+                    />
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    {p.percentSP !== null ? `${p.percentSP.toFixed(1)}% complete (SP)` : `${p.percentCount.toFixed(1)}% complete (by items)`}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Milestone Tracking & Forecasting */}
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-slate-900">
+              <span className="bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">
+                Milestone Tracking & Forecasting
+              </span>
+            </h2>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-full bg-emerald-500"></div>
+                <span className="text-xs text-slate-600">Complete</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                <span className="text-xs text-slate-600">On Track</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+                <span className="text-xs text-slate-600">At Risk</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded-full bg-red-500"></div>
+                <span className="text-xs text-slate-600">Delayed/Behind</span>
+              </div>
+            </div>
+          </div>
+          
+          {milestoneTracking.length === 0 ? (
+            <div className="text-sm text-slate-600">No milestone data available</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200">
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Project</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Sprint/Milestone</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Target End</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Days Left</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Total SP</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Done SP</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Progress</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {milestoneTracking.map((m, idx) => {
+                    const statusColors = {
+                      'Complete': 'bg-emerald-100 text-emerald-800 border-emerald-300',
+                      'On Track': 'bg-green-100 text-green-800 border-green-300',
+                      'At Risk': 'bg-amber-100 text-amber-800 border-amber-300',
+                      'Behind': 'bg-red-100 text-red-800 border-red-300',
+                      'Delayed': 'bg-red-100 text-red-800 border-red-300',
+                      'Unknown': 'bg-gray-100 text-gray-800 border-gray-300',
+                    };
+                    const progressBarColor = {
+                      'Complete': 'bg-emerald-500',
+                      'On Track': 'bg-green-500',
+                      'At Risk': 'bg-amber-500',
+                      'Behind': 'bg-red-500',
+                      'Delayed': 'bg-red-500',
+                      'Unknown': 'bg-gray-400',
+                    };
+                    return (
+                      <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50">
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: getProjectColor(m.project) }} />
+                            <span className="font-medium text-slate-800">{m.project}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-slate-700 max-w-[200px] truncate" title={m.sprint}>
+                          {m.sprint.length > 35 ? m.sprint.substring(0, 35) + '...' : m.sprint}
+                        </td>
+                        <td className="py-3 px-3 text-center text-slate-600 font-mono text-xs">{m.targetEnd}</td>
+                        <td className="py-3 px-3 text-center">
+                          {m.daysRemaining !== null ? (
+                            <span className={`font-medium ${m.daysRemaining < 0 ? 'text-red-600' : m.daysRemaining <= 3 ? 'text-amber-600' : 'text-slate-700'}`}>
+                              {m.daysRemaining < 0 ? `${Math.abs(m.daysRemaining)}d overdue` : `${m.daysRemaining}d`}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-center font-medium text-slate-700">{m.totalSP || '-'}</td>
+                        <td className="py-3 px-3 text-center font-medium text-emerald-600">{m.completedSP || '-'}</td>
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-2.5 bg-slate-200 rounded-full overflow-hidden min-w-[80px]">
+                              <div 
+                                className={`h-full ${progressBarColor[m.status]} transition-all duration-300`}
+                                style={{ width: `${m.percentComplete}%` }}
+                              />
+                            </div>
+                            <span className="text-xs font-semibold text-slate-700 w-10 text-right">{m.percentComplete}%</span>
+                          </div>
+                          {m.timeProgress !== null && (
+                            <div className="text-[10px] text-slate-500 mt-0.5">
+                              Time: {m.timeProgress}% elapsed
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${statusColors[m.status]}`}>
+                            {m.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+
+        {/* ============================================ */}
+        {/* WORKLOAD & CAPACITY DASHBOARD */}
+        {/* ============================================ */}
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-xl font-bold text-slate-900">
+              <span className="bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                Workload & Capacity Dashboard
+              </span>
+            </h2>
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-600">Sprint:</span>
+                <select
+                  value={workloadSprintFilter}
+                  onChange={(e) => setWorkloadSprintFilter(e.target.value)}
+                  className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:min-w-[260px]"
+                >
+                  <option value="all">All Sprints</option>
+                  {workloadCapacityData.allSprints && workloadCapacityData.allSprints.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-600">Assignee:</span>
+                <select
+                  value={workloadAssigneeFilter}
+                  onChange={(e) => setWorkloadAssigneeFilter(e.target.value)}
+                  className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:min-w-[220px]"
+                >
+                  <option value="all">All Assignees</option>
+                  {workloadCapacityData.allAssignees && workloadCapacityData.allAssignees.map((a) => (
+                    <option key={a} value={a}>{a}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-600">Show:</span>
+                <select
+                  value={workloadShowOnly}
+                  onChange={(e) => setWorkloadShowOnly(e.target.value)}
+                  className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-indigo-500 w-full sm:w-auto sm:min-w-[200px]"
+                >
+                  <option value="all">All Resources</option>
+                  <option value="overloaded">Overloaded Only (&gt;100%)</option>
+                  <option value="near-limit">Near Limit (80-100%)</option>
+                  <option value="underutilized">Underutilized (&lt;60%)</option>
+                </select>
+              </div>
+
+              <div className="flex items-center">
+                <button
+                  type="button"
+                  onClick={handleClearWorkloadFilters}
+                  className="ml-2 px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-700 bg-white hover:bg-slate-50 focus:ring-2 focus:ring-indigo-500"
+                  title="Clear filters"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Summary Cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
+            <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl p-4 border border-indigo-100">
+              <div className="text-2xl font-bold text-indigo-700">{workloadCapacityData.summary.overallUtilization}%</div>
+              <div className="text-xs text-indigo-600">Overall Utilization</div>
+            </div>
+            <div className="bg-gradient-to-br from-slate-50 to-gray-50 rounded-xl p-4 border border-slate-200">
+              <div className="text-2xl font-bold text-slate-700">{workloadCapacityData.summary.totalActiveSP}</div>
+              <div className="text-xs text-slate-600">Active SP</div>
+            </div>
+            <div className="bg-gradient-to-br from-slate-50 to-gray-50 rounded-xl p-4 border border-slate-200">
+              <div className="text-2xl font-bold text-slate-700">{workloadCapacityData.summary.totalCapacity}</div>
+              <div className="text-xs text-slate-600">Total Capacity</div>
+            </div>
+            <div className="bg-gradient-to-br from-red-50 to-orange-50 rounded-xl p-4 border border-red-100">
+              <div className="text-2xl font-bold text-red-600">{workloadCapacityData.summary.overloadedCount}</div>
+              <div className="text-xs text-red-600">Overloaded</div>
+            </div>
+            <div className="bg-gradient-to-br from-amber-50 to-yellow-50 rounded-xl p-4 border border-amber-100">
+              <div className="text-2xl font-bold text-amber-600">{workloadCapacityData.summary.nearLimitCount}</div>
+              <div className="text-xs text-amber-600">Near Limit</div>
+            </div>
+            <div className="bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-4 border border-blue-100">
+              <div className="text-2xl font-bold text-blue-600">{workloadCapacityData.summary.underutilizedCount}</div>
+              <div className="text-xs text-blue-600">Underutilized</div>
+            </div>
+          </div>
+
+          {/* Workload by Assignee - Bar Chart Style */}
+          <div className="mb-6">
+            <h3 className="text-sm font-semibold text-slate-700 mb-3">Workload by Assignee (Assigned SP vs Capacity)</h3>
+            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+              {workloadCapacityData.assignees
+                .filter((a) => {
+                  if (workloadShowOnly === 'all') return true;
+                  return a.utilizationStatus === workloadShowOnly;
+                })
+                .map((a) => {
+                  const barWidth = Math.min(100, a.utilization);
+                  const overflowWidth = a.utilization > 100 ? Math.min(50, a.utilization - 100) : 0;
+                  const barColor = a.utilizationColor === 'red' ? 'bg-red-500' : 
+                                   a.utilizationColor === 'amber' ? 'bg-amber-500' : 
+                                   a.utilizationColor === 'blue' ? 'bg-blue-400' : 'bg-green-500';
+                  return (
+                    <div key={a.assignee} className="flex items-center gap-3 py-1">
+                      <div className="w-32 text-sm text-slate-700 truncate font-medium" title={a.assignee}>
+                        {a.assignee}
+                      </div>
+                      <div className="flex-1 relative">
+                        <div className="h-6 bg-slate-100 rounded-full overflow-hidden relative">
+                          <div 
+                            className={`h-full ${barColor} transition-all duration-300 rounded-full`}
+                            style={{ width: `${barWidth}%` }}
+                          />
+                          {overflowWidth > 0 && (
+                            <div 
+                              className="absolute top-0 h-full bg-red-700 opacity-70"
+                              style={{ left: '100%', width: `${overflowWidth}%`, marginLeft: '-2px' }}
+                            />
+                          )}
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="text-xs font-semibold text-slate-700 drop-shadow-sm">
+                              {a.activeSP} / {a.capacity} SP ({a.utilization}%)
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="w-20 text-right">
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                          a.utilizationStatus === 'overloaded' ? 'bg-red-100 text-red-700' :
+                          a.utilizationStatus === 'near-limit' ? 'bg-amber-100 text-amber-700' :
+                          a.utilizationStatus === 'underutilized' ? 'bg-blue-100 text-blue-700' :
+                          'bg-green-100 text-green-700'
+                        }`}>
+                          {a.utilizationStatus === 'overloaded' ? 'Overloaded' :
+                           a.utilizationStatus === 'near-limit' ? 'Near Limit' :
+                           a.utilizationStatus === 'underutilized' ? 'Available' : 'Healthy'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+
+          {/* Utilization Summary Table */}
+          <div className="mb-6">
+            <h3 className="text-sm font-semibold text-slate-700 mb-3">Utilization Details</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left py-2 px-3 font-semibold text-slate-700">Assignee</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Active SP</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Capacity</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Utilization</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">In Progress</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">To Do</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Done</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">High Priority</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Projects</th>
+                    <th className="text-center py-2 px-3 font-semibold text-slate-700">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {workloadCapacityData.assignees
+                    .filter((a) => {
+                      if (workloadShowOnly === 'all') return true;
+                      return a.utilizationStatus === workloadShowOnly;
+                    })
+                    .map((a, idx) => (
+                      <tr key={a.assignee} className={`border-b border-slate-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} ${
+                        a.utilizationStatus === 'overloaded' ? 'bg-red-50/50' : ''
+                      }`}>
+                        <td className="py-2 px-3 font-medium text-slate-800">{a.assignee}</td>
+                        <td className="py-2 px-3 text-center font-semibold text-slate-700">{a.activeSP}</td>
+                        <td className="py-2 px-3 text-center text-slate-600">{a.capacity}</td>
+                        <td className="py-2 px-3 text-center">
+                          <span className={`font-bold ${
+                            a.utilization > 100 ? 'text-red-600' :
+                            a.utilization >= 80 ? 'text-amber-600' :
+                            a.utilization < 60 ? 'text-blue-600' : 'text-green-600'
+                          }`}>
+                            {a.utilization}%
+                          </span>
+                        </td>
+                        <td className="py-2 px-3 text-center text-blue-600">{a.inProgressItems}</td>
+                        <td className="py-2 px-3 text-center text-slate-600">{a.toDoItems}</td>
+                        <td className="py-2 px-3 text-center text-green-600">{a.completedItems}</td>
+                        <td className="py-2 px-3 text-center">
+                          {a.highPriorityItems > 0 ? (
+                            <span className="text-red-600 font-semibold">{a.highPriorityItems}</span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-center text-slate-600">{a.projectCount}</td>
+                        <td className="py-2 px-3 text-center">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                            a.utilizationStatus === 'overloaded' ? 'bg-red-100 text-red-700 border border-red-200' :
+                            a.utilizationStatus === 'near-limit' ? 'bg-amber-100 text-amber-700 border border-amber-200' :
+                            a.utilizationStatus === 'underutilized' ? 'bg-blue-100 text-blue-700 border border-blue-200' :
+                            'bg-green-100 text-green-700 border border-green-200'
+                          }`}>
+                            {a.utilizationStatus === 'overloaded' ? ' Overloaded' :
+                             a.utilizationStatus === 'near-limit' ? ' Near Limit' :
+                             a.utilizationStatus === 'underutilized' ? ' Available' : ' Healthy'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Workload by Team/Project */}
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700 mb-3">Workload by Project/Team</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {workloadCapacityData.teams.slice(0, 9).map((t) => {
+                const barWidth = Math.min(100, t.utilization);
+                return (
+                  <div key={t.project} className={`rounded-xl p-4 border ${
+                    t.utilizationStatus === 'overloaded' ? 'bg-red-50 border-red-200' :
+                    t.utilizationStatus === 'near-limit' ? 'bg-amber-50 border-amber-200' :
+                    t.utilizationStatus === 'underutilized' ? 'bg-blue-50 border-blue-200' :
+                    'bg-green-50 border-green-200'
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-semibold text-slate-800 truncate" title={t.project}>{t.project}</span>
+                      <span className={`text-sm font-bold ${
+                        t.utilization > 100 ? 'text-red-600' :
+                        t.utilization >= 80 ? 'text-amber-600' :
+                        t.utilization < 60 ? 'text-blue-600' : 'text-green-600'
+                      }`}>
+                        {t.utilization}%
+                      </span>
+                    </div>
+                    <div className="h-3 bg-slate-200 rounded-full overflow-hidden mb-2">
+                      <div 
+                        className={`h-full rounded-full ${
+                          t.utilization > 100 ? 'bg-red-500' :
+                          t.utilization >= 80 ? 'bg-amber-500' :
+                          t.utilization < 60 ? 'bg-blue-400' : 'bg-green-500'
+                        }`}
+                        style={{ width: `${barWidth}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-xs text-slate-600">
+                      <span>{t.activeSP} / {t.capacity} SP</span>
+                      <span>{t.assigneeCount} assignees</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Legend */}
+          <div className="flex items-center gap-6 mt-6 pt-4 border-t border-slate-200">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <span className="text-xs text-slate-600">Overloaded (&gt;100%)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+              <span className="text-xs text-slate-600">Near Limit (80-100%)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-green-500"></div>
+              <span className="text-xs text-slate-600">Healthy (60-80%)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-blue-400"></div>
+              <span className="text-xs text-slate-600">Underutilized (&lt;60%)</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Risk Register */}
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold text-slate-900">
+              <span className="bg-gradient-to-r from-red-600 to-orange-500 bg-clip-text text-transparent">
+                Risk Register
+              </span>
+              {riskRegister.length > 0 && (
+                <span className="ml-2 text-sm font-normal text-slate-500">
+                  ({riskRegister.filter(r => r.riskLevel === 'High').length} High, {riskRegister.filter(r => r.riskLevel === 'Medium').length} Medium, {riskRegister.filter(r => r.riskLevel === 'Low').length} Low)
+                </span>
+              )}
+            </h2>
+            <div className="w-full">
+              <div className="grid grid-cols-2 md:grid-cols-7 gap-3 items-end">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Level</label>
+                  <select
+                    value={riskLevelFilter}
+                    onChange={(e) => setRiskLevelFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    <option value="all">All Levels</option>
+                    <option value="High">High Risk</option>
+                    <option value="Medium">Medium Risk</option>
+                    <option value="Low">Low Risk</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Project</label>
+                  <select
+                    value={riskProjectFilter}
+                    onChange={(e) => setRiskProjectFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    {riskProjects.map((p) => (
+                      <option key={p} value={p}>{p === 'all' ? 'All Projects' : p}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Sprint</label>
+                  <select
+                    value={riskSprintFilter}
+                    onChange={(e) => setRiskSprintFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    {riskSprints.map((s) => (
+                      <option key={s} value={s}>{s === 'all' ? 'All Sprints' : (s.length > 25 ? s.substring(0, 25) + '...' : s)}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Assignee</label>
+                  <select
+                    value={riskAssigneeFilter}
+                    onChange={(e) => setRiskAssigneeFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    {riskAssignees.map((a) => (
+                      <option key={a} value={a}>{a === 'all' ? 'All Assignees' : a}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Status</label>
+                  <select
+                    value={riskStatusFilter}
+                    onChange={(e) => setRiskStatusFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  >
+                    {riskStatusOptions.map((s) => (
+                      <option key={s} value={s}>{s === 'all' ? 'All Statuses' : s}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Sort By</label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={riskSortBy}
+                      onChange={(e) => setRiskSortBy(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-900 bg-white focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                    >
+                      <option value="level">Risk Level</option>
+                      <option value="project">Project</option>
+                      <option value="assignee">Assignee</option>
+                      <option value="daysLate">Days Late</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="md:col-span-1 flex md:justify-end">
+                  <button
+                    onClick={() => {
+                      setRiskLevelFilter('all');
+                      setRiskProjectFilter('all');
+                      setRiskSprintFilter('all');
+                      setRiskAssigneeFilter('all');
+                      setRiskStatusFilter('all');
+                      setRiskSortBy('level');
+                    }}
+                    className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-sm"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          {filteredRiskRegister.length === 0 ? (
+            <div className="text-sm text-slate-600 py-8 text-center">
+              <div className="text-4xl mb-2">{'\u2705'}</div>
+              <div className="font-medium text-green-600">No risks detected!</div>
+              <div className="text-slate-500 mt-1">All items appear to be on track.</div>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200">
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Issue Key</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Project</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Assignee</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Status</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">SP</th>
+                    <th className="text-center py-3 px-3 font-semibold text-slate-700">Risk Level</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Reason</th>
+                    <th className="text-left py-3 px-3 font-semibold text-slate-700">Due Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRiskRegister.map((r, idx) => {
+                    const levelColors = {
+                      'High': 'bg-red-50 border-l-4 border-l-red-500',
+                      'Medium': 'bg-amber-50 border-l-4 border-l-amber-500',
+                      'Low': 'bg-yellow-50 border-l-4 border-l-yellow-400',
+                    };
+                    const badgeColors = {
+                      'High': 'bg-red-100 text-red-800 border-red-300',
+                      'Medium': 'bg-amber-100 text-amber-800 border-amber-300',
+                      'Low': 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                    };
+                    return (
+                      <tr key={idx} className={`border-b border-slate-100 hover:bg-slate-50 ${levelColors[r.riskLevel]}`}>
+                        <td className="py-3 px-3">
+                          <span className="font-mono text-xs font-semibold text-blue-600">{r.issueKey}</span>
+                        </td>
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: getProjectColor(r.project) }} />
+                            <span className="text-slate-700">{r.project}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-slate-700">{r.assignee}</td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700">{r.status}</span>
+                        </td>
+                        <td className="py-3 px-3 text-center font-medium text-slate-600">{r.sp || '-'}</td>
+                        <td className="py-3 px-3 text-center">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${badgeColors[r.riskLevel]}`}>
+                            {r.riskLevel === 'High' ? '\u{1F534}' : r.riskLevel === 'Medium' ? '\u{1F7E0}' : '\u{1F7E1}'} {r.riskLevel}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-slate-600 text-xs">{r.reason}</td>
+                        <td className="py-3 px-3 text-slate-600 text-xs">{r.dueDate || '-'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          
+          <div className="flex items-center gap-4 mt-4 pt-4 border-t border-slate-200">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <span className="text-xs text-slate-600">High - Immediate attention required</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-amber-500"></div>
+              <span className="text-xs text-slate-600">Medium - Monitor closely</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
+              <span className="text-xs text-slate-600">Low - Awareness</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default SprintDashboard;
