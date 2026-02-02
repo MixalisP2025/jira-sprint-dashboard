@@ -9,9 +9,7 @@ export default function SignUpPage() {
           <p className="text-slate-600">Create your account</p>
         </div>
         <SignUp 
-          routing="path" 
-          path="/sign-up"
-          signInUrl="/sign-in"
+          afterSignInUrl="/"
           afterSignUpUrl="/"
         />
       </div>

@@ -9,10 +9,8 @@ export default function SignInPage() {
           <p className="text-slate-600">Sign in to access your dashboard</p>
         </div>
         <SignIn 
-          routing="path" 
-          path="/sign-in"
-          signUpUrl="/sign-up"
           afterSignInUrl="/"
+          afterSignUpUrl="/"
         />
       </div>
     </div>
