@@ -1,6 +1,9 @@
 import { JIRA_CONFIG, buildJQL, getFieldsString } from '../config/jiraConfig.js';
 
-const API_BASE = 'http://localhost:4001/api';
+// Use local Express only during DEV; use Vercel Functions in production
+const API_BASE = import.meta.env.DEV
+  ? 'http://localhost:4001/api'
+  : '/api';
 
 export const jiraService = {
   // Helper: dedupe issues by key
@@ -62,7 +65,7 @@ export const jiraService = {
   // Get sprints for a board
   async getSprints(boardId, state = 'active,future') {
     try {
-      const response = await fetch(`${API_BASE}/jira/sprints/${boardId}?state=${state}`);
+      const response = await fetch(`${API_BASE}/jira/sprints?boardId=${boardId}&state=${encodeURIComponent(state)}`);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
