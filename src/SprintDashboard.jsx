@@ -1642,7 +1642,7 @@ const OverviewSection = ({
             <div className="text-3xl font-bold text-green-600 mb-1">
               {Object.values(stats).filter(s => s.remainingCapacity > 2).length}
             </div>
-            <div className="text-sm text-slate-600">Can take new work (>2 SP available)</div>
+            <div className="text-sm text-slate-600">Can take new work (&gt;2 SP available)</div>
           </div>
           
           <div className="bg-white rounded-lg p-4 shadow-sm">
