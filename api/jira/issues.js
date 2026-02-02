@@ -1,78 +1,63 @@
-function must(name) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
-}
+export default async function handler(req, res) {
+  try {
+    if (req.method !== "GET") {
+      return res.status(405).json({ error: "Method Not Allowed" });
+    }
 
-function authHeader() {
-  const email = must("JIRA_EMAIL");
-  const token = must("JIRA_API_TOKEN");
-  const auth = Buffer.from(`${email}:${token}`).toString("base64");
-  return `Basic ${auth}`;
-}
+    const baseUrl = process.env.JIRA_BASE_URL;
+    const email = process.env.JIRA_EMAIL;
+    const token = process.env.JIRA_API_TOKEN;
 
-export async function GET(request) {
-  const baseUrl = must("JIRA_BASE_URL");
-  const { searchParams } = new URL(request.url);
+    if (!baseUrl || !email || !token) {
+      return res.status(500).json({
+        error: "Missing Jira environment variables",
+        hasBaseUrl: Boolean(baseUrl),
+        hasEmail: Boolean(email),
+        hasToken: Boolean(token),
+      });
+    }
 
-  const jql = searchParams.get("jql") || "";
-  const fieldsStr = searchParams.get("fields") || "";
-  const maxResults = Number(searchParams.get("maxResults") || "100");
+    // Read query params
+    const {
+      jql = "ORDER BY updated DESC",
+      fields = "summary",
+      maxResults = "50",
+      startAt = "0",
+      nextPageToken,
+    } = req.query;
 
-  // Frontend uses nextPageToken OR startAt. We emulate nextPageToken using startAt offsets.
-  const nextPageToken = searchParams.get("nextPageToken");
-  const startAtParam = searchParams.get("startAt");
+    const auth = Buffer.from(`${email}:${token}`).toString("base64");
 
-  const startAt = nextPageToken
-    ? Number(nextPageToken)
-    : Number(startAtParam || "0");
+    // NEW Jira endpoint (old search endpoint was removed)
+    // Docs / migration message says to use /rest/api/3/search/jql
+    const url = new URL(`${baseUrl}/rest/api/3/search/jql`);
+    url.searchParams.set("jql", jql);
+    url.searchParams.set("fields", fields);
+    url.searchParams.set("maxResults", String(maxResults));
 
-  const fields = fieldsStr
-    ? fieldsStr.split(",").map(s => s.trim()).filter(Boolean)
-    : undefined;
+    // If nextPageToken exists, use it; otherwise use startAt for older-style pagination
+    if (nextPageToken) url.searchParams.set("nextPageToken", nextPageToken);
+    else url.searchParams.set("startAt", String(startAt));
 
-  const payload = {
-    jql,
-    startAt,
-    maxResults,
-    fields,
-  };
+    const jiraResp = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: "application/json",
+      },
+    });
 
-  const r = await fetch(`${baseUrl}/rest/api/3/search`, {
-    method: "POST",
-    headers: {
-      Authorization: authHeader(),
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+    const bodyText = await jiraResp.text();
 
-  if (!r.ok) {
-    const text = await r.text();
-    return new Response(text, {
-      status: r.status,
-      headers: { "content-type": r.headers.get("content-type") || "text/plain" },
+    // Return Jira response verbatim so frontend can read fields like issues/isLast/nextPageToken
+    res.status(jiraResp.status);
+    res.setHeader("Content-Type", "application/json");
+    return res.send(bodyText);
+  } catch (err) {
+    console.error("Jira issues function error:", err);
+    return res.status(500).json({
+      error: "Internal Server Error",
+      message: err?.message || String(err),
     });
   }
-
-  const data = await r.json();
-
-  const issues = data.issues || [];
-  const total = Number.isFinite(data.total) ? data.total : issues.length;
-
-  const newStartAt = startAt + issues.length;
-  const isLast = newStartAt >= total;
-
-  // Emulate nextPageToken so your existing frontend pagination loop continues
-  const responseBody = {
-    ...data,
-    issues,
-    isLast,
-    nextPageToken: isLast ? null : String(newStartAt),
-  };
-
-  return new Response(JSON.stringify(responseBody), {
-    headers: { "content-type": "application/json" },
-  });
 }
