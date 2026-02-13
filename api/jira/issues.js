@@ -34,25 +34,25 @@ export default async function handler(req, res) {
 
     const auth = Buffer.from(`${email}:${token}`).toString("base64");
 
-    // Use standard Jira search API endpoint
-    const url = new URL(`${baseUrl}/rest/api/3/search`);
+    // Use new Jira search/jql API endpoint (GET with query params)
+    const url = new URL(`${baseUrl}/rest/api/3/search/jql`);
+    url.searchParams.set("jql", jql);
+    url.searchParams.set("fields", fields);
+    url.searchParams.set("maxResults", String(maxResults));
     
-    // Build request body for POST
-    const requestBody = {
-      jql: jql,
-      fields: fields.split(','),
-      maxResults: parseInt(maxResults),
-      startAt: nextPageToken ? parseInt(nextPageToken) : parseInt(startAt)
-    };
+    // Use nextPageToken if provided, otherwise use startAt
+    if (nextPageToken) {
+      url.searchParams.set("nextPageToken", nextPageToken);
+    } else {
+      url.searchParams.set("startAt", String(startAt));
+    }
 
     const jiraResp = await fetch(url.toString(), {
-      method: "POST",
+      method: "GET",
       headers: {
         Authorization: `Basic ${auth}`,
         Accept: "application/json",
-        "Content-Type": "application/json",
       },
-      body: JSON.stringify(requestBody)
     });
 
     if (!jiraResp.ok) {
@@ -63,20 +63,18 @@ export default async function handler(req, res) {
 
     const data = await jiraResp.json();
     
-    // Transform response to include pagination info
+    // The new API uses isLast and nextPageToken for pagination
     const issues = data.issues || [];
-    const total = data.total || 0;
-    const currentStartAt = data.startAt || 0;
-    const newStartAt = currentStartAt + issues.length;
-    const isLast = newStartAt >= total;
+    const isLast = data.isLast === true;
+    const nextToken = data.nextPageToken || null;
     
     const responseBody = {
-      ...data,
       issues,
-      total,
-      startAt: currentStartAt,
+      total: issues.length, // New API doesn't provide total count
+      startAt: parseInt(startAt),
+      maxResults: parseInt(maxResults),
       isLast,
-      nextPageToken: isLast ? null : String(newStartAt)
+      nextPageToken: nextToken
     };
 
     res.status(200);
