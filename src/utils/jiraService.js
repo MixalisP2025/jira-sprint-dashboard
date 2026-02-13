@@ -212,19 +212,30 @@ export const jiraService = {
     let nextPageToken = null;
     const maxResults = JIRA_CONFIG.pagination.maxResults;
     let iter = 0;
+    const MAX_ITERATIONS = 500; // Increased from 200 to handle more data
 
-    while (iter < 200) { // Safety limit
+    console.log(`Starting pagination for JQL: ${jql.substring(0, 100)}...`);
+
+    while (iter < MAX_ITERATIONS) {
       iter++;
+      
+      console.log(`Pagination iteration ${iter}, fetched so far: ${all.length} issues`);
       
       const data = await this.getIssues(jql, fields, 0, maxResults, nextPageToken);
       const issues = data.issues || [];
 
-      if (issues.length === 0) break;
+      console.log(`Iteration ${iter}: received ${issues.length} issues, isLast: ${data.isLast}, nextPageToken: ${data.nextPageToken ? 'present' : 'null'}`);
+
+      if (issues.length === 0) {
+        console.log('No more issues returned, stopping pagination');
+        break;
+      }
 
       all.push(...issues);
 
       // Check if we have more pages using new API format
       if (data.isLast === true) {
+        console.log('Reached last page (isLast=true), stopping pagination');
         break;
       }
       
@@ -233,15 +244,18 @@ export const jiraService = {
       
       // If no nextPageToken and not explicitly not last, we're done
       if (!nextPageToken) {
+        console.log('No nextPageToken, stopping pagination');
         break;
       }
 
-      // Safety: if we've fetched a lot, stop
-      if (all.length >= 10000) {
+      // Increased safety limit to 50k issues
+      if (all.length >= 50000) {
         console.warn(`Stopping pagination at ${all.length} issues for safety`);
         break;
       }
     }
+
+    console.log(`Pagination complete: fetched ${all.length} total issues in ${iter} iterations`);
 
     return { issues: all, jiraTotal: all.length };
   },
