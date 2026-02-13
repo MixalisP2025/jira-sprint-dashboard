@@ -81,49 +81,48 @@ app.get('/api/jira/issues', async (req, res) => {
 
     console.log('Making request to Jira API...');
 
-    const jiraUrl = `${JIRA_CONFIG.baseUrl}/rest/api/3/search/jql`;
+    // Use standard Jira search API endpoint (POST method)
+    const jiraUrl = `${JIRA_CONFIG.baseUrl}/rest/api/3/search`;
     console.log('URL:', jiraUrl);
 
-    const requestParams = {
+    // Build request body for POST
+    const requestBody = {
       jql: jql,
-      fields: fields,
-      maxResults: parseInt(maxResults)
+      fields: fields.split(','),
+      maxResults: parseInt(maxResults),
+      startAt: nextPageToken ? parseInt(nextPageToken) : parseInt(startAt)
     };
 
-    // Use nextPageToken if provided, otherwise use startAt
-    if (nextPageToken) {
-      requestParams.nextPageToken = nextPageToken;
-    } else {
-      requestParams.startAt = parseInt(startAt);
-    }
-
-    const response = await axios.get(jiraUrl, {
+    const response = await axios.post(jiraUrl, requestBody, {
       headers: {
         'Authorization': `Basic ${auth}`,
         'Accept': 'application/json',
         'Content-Type': 'application/json'
       },
-      params: requestParams,
       timeout: 30000 // 30 second timeout
     });
 
     console.log('✓ Jira API Response:', {
-      total: response.data.total || 'N/A (new API format)',
+      total: response.data.total,
       issuesReturned: response.data.issues?.length || 0,
-      startAt: response.data.startAt || 'N/A (new API format)',
-      maxResults: response.data.maxResults || 'N/A (new API format)',
-      nextPageToken: response.data.nextPageToken ? 'Present' : 'None',
-      isLast: response.data.isLast
+      startAt: response.data.startAt,
+      maxResults: response.data.maxResults
     });
 
-    // Convert new API format to old format for compatibility
+    // Transform response to include pagination info
+    const issues = response.data.issues || [];
+    const total = response.data.total || 0;
+    const currentStartAt = response.data.startAt || 0;
+    const newStartAt = currentStartAt + issues.length;
+    const isLast = newStartAt >= total;
+    
     const compatibleResponse = {
-      issues: response.data.issues || [],
-      total: response.data.issues?.length || 0, // We don't get total count in new API
-      startAt: parseInt(startAt),
-      maxResults: parseInt(maxResults),
-      isLast: response.data.isLast,
-      nextPageToken: response.data.nextPageToken
+      ...response.data,
+      issues,
+      total,
+      startAt: currentStartAt,
+      isLast,
+      nextPageToken: isLast ? null : String(newStartAt)
     };
 
     res.json(compatibleResponse);
