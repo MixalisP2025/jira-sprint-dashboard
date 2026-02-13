@@ -27,38 +27,61 @@ export default async function handler(req, res) {
     const {
       jql = "ORDER BY updated DESC",
       fields = "summary",
-      maxResults = "50",
+      maxResults = "100",
       startAt = "0",
       nextPageToken,
     } = req.query;
 
     const auth = Buffer.from(`${email}:${token}`).toString("base64");
 
-    // NEW Jira endpoint (old search endpoint was removed)
-    // Docs / migration message says to use /rest/api/3/search/jql
-    const url = new URL(`${baseUrl}/rest/api/3/search/jql`);
-    url.searchParams.set("jql", jql);
-    url.searchParams.set("fields", fields);
-    url.searchParams.set("maxResults", String(maxResults));
-
-    // If nextPageToken exists, use it; otherwise use startAt for older-style pagination
-    if (nextPageToken) url.searchParams.set("nextPageToken", nextPageToken);
-    else url.searchParams.set("startAt", String(startAt));
+    // Use standard Jira search API endpoint
+    const url = new URL(`${baseUrl}/rest/api/3/search`);
+    
+    // Build request body for POST
+    const requestBody = {
+      jql: jql,
+      fields: fields.split(','),
+      maxResults: parseInt(maxResults),
+      startAt: nextPageToken ? parseInt(nextPageToken) : parseInt(startAt)
+    };
 
     const jiraResp = await fetch(url.toString(), {
-      method: "GET",
+      method: "POST",
       headers: {
         Authorization: `Basic ${auth}`,
         Accept: "application/json",
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify(requestBody)
     });
 
-    const bodyText = await jiraResp.text();
+    if (!jiraResp.ok) {
+      const errorText = await jiraResp.text();
+      console.error('Jira API error:', errorText);
+      return res.status(jiraResp.status).send(errorText);
+    }
 
-    // Return Jira response verbatim so frontend can read fields like issues/isLast/nextPageToken
-    res.status(jiraResp.status);
+    const data = await jiraResp.json();
+    
+    // Transform response to include pagination info
+    const issues = data.issues || [];
+    const total = data.total || 0;
+    const currentStartAt = data.startAt || 0;
+    const newStartAt = currentStartAt + issues.length;
+    const isLast = newStartAt >= total;
+    
+    const responseBody = {
+      ...data,
+      issues,
+      total,
+      startAt: currentStartAt,
+      isLast,
+      nextPageToken: isLast ? null : String(newStartAt)
+    };
+
+    res.status(200);
     res.setHeader("Content-Type", "application/json");
-    return res.send(bodyText);
+    return res.json(responseBody);
   } catch (err) {
     console.error("Jira issues function error:", err);
     return res.status(500).json({
