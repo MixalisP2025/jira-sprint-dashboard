@@ -150,7 +150,20 @@ export default function ServerStatus() {
         </div>
       )}
 
-      {/* Restart Button */}
+      {/* Start Button - shows when backend is offline */}
+      {backendStatus === 'offline' && (
+        <button
+          onClick={handleStart}
+          disabled={isRestarting}
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-400 rounded transition-colors shadow-sm"
+          title="Start both servers"
+        >
+          <RefreshCw className={`w-4 h-4 ${isRestarting ? 'animate-spin' : ''}`} />
+          {isRestarting ? 'Starting...' : 'Start Servers'}
+        </button>
+      )}
+
+      {/* Restart Button - shows when backend is online */}
       {pm2Status && pm2Status.success && backendStatus === 'online' && (
         <button
           onClick={handleRestart}
@@ -160,19 +173,6 @@ export default function ServerStatus() {
         >
           <RefreshCw className={`w-3 h-3 ${isRestarting ? 'animate-spin' : ''}`} />
           {isRestarting ? 'Restarting...' : 'Restart'}
-        </button>
-      )}
-
-      {/* Start Button - shows when backend is offline */}
-      {backendStatus === 'offline' && (
-        <button
-          onClick={handleStart}
-          disabled={isRestarting}
-          className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-400 rounded transition-colors"
-          title="Start both servers"
-        >
-          <RefreshCw className={`w-3 h-3 ${isRestarting ? 'animate-spin' : ''}`} />
-          {isRestarting ? 'Starting...' : 'Start Servers'}
         </button>
       )}
 
