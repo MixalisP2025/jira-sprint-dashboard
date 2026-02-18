@@ -31,6 +31,12 @@ export default function ServerStatus() {
   };
 
   const checkPM2Status = async () => {
+    // Skip PM2 status check on Windows to prevent CMD flashing
+    // Backend health check is sufficient
+    if (navigator.platform.includes('Win')) {
+      return;
+    }
+    
     try {
       const response = await fetch(`${API_BASE}/pm2-status`, {
         method: 'GET',
@@ -100,11 +106,11 @@ export default function ServerStatus() {
     checkBackendHealth();
     checkPM2Status();
 
-    // Check every 30 seconds
+    // Check every 2 minutes instead of 30 seconds to reduce CMD flashing
     const interval = setInterval(() => {
       checkBackendHealth();
       checkPM2Status();
-    }, 30000);
+    }, 120000); // 2 minutes
 
     return () => clearInterval(interval);
   }, []);
