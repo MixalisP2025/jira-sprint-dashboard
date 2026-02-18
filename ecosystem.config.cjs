@@ -3,8 +3,8 @@ module.exports = {
     {
       name: 'jira-backend',
       cwd: './server',
-      script: 'npm',
-      args: 'start',
+      script: 'server.js',
+      interpreter: 'node',
       watch: false,
       autorestart: true,
       max_restarts: 10,
@@ -14,8 +14,8 @@ module.exports = {
     },
     {
       name: 'jira-frontend',
-      script: 'npm',
-      args: 'run dev',
+      script: './node_modules/vite/bin/vite.js',
+      interpreter: 'node',
       watch: false,
       autorestart: true,
       max_restarts: 10,
