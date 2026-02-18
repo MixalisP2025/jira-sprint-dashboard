@@ -1170,6 +1170,11 @@ const SprintDashboard = () => {
               Upload your Jira export to analyze sprint progress, capacity, and risks
             </p>
             
+            {/* Server Status on Home Screen */}
+            <div className="flex justify-center mb-6">
+              <ServerStatus />
+            </div>
+            
             <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-6">
               <JiraRefreshButton 
                 onRefresh={handleJiraRefresh}

@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react';
 import { RefreshCw, Server, Activity } from 'lucide-react';
 
+// Use same API base as jiraService
+const API_BASE = import.meta.env.DEV
+  ? 'http://localhost:4001/api'
+  : '/api';
+
 export default function ServerStatus() {
   const [backendStatus, setBackendStatus] = useState('checking');
   const [pm2Status, setPm2Status] = useState(null);
@@ -9,7 +14,7 @@ export default function ServerStatus() {
 
   const checkBackendHealth = async () => {
     try {
-      const response = await fetch('/api/health', { 
+      const response = await fetch(`${API_BASE.replace('/api', '')}/health`, { 
         method: 'GET',
         signal: AbortSignal.timeout(5000)
       });
@@ -27,7 +32,7 @@ export default function ServerStatus() {
 
   const checkPM2Status = async () => {
     try {
-      const response = await fetch('/api/pm2-status', {
+      const response = await fetch(`${API_BASE}/pm2-status`, {
         method: 'GET',
         signal: AbortSignal.timeout(5000)
       });
@@ -44,12 +49,34 @@ export default function ServerStatus() {
     }
   };
 
+  const handleStart = async () => {
+    setIsRestarting(true);
+    try {
+      const response = await fetch(`${API_BASE}/pm2-start`, {
+        method: 'POST'
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        alert('Servers started successfully! Page will reload in 3 seconds...');
+        setTimeout(() => window.location.reload(), 3000);
+      } else {
+        alert('Failed to start servers: ' + data.message);
+      }
+    } catch (error) {
+      alert('Error starting servers: ' + error.message);
+    } finally {
+      setIsRestarting(false);
+    }
+  };
+
   const handleRestart = async () => {
     if (!confirm('Restart both frontend and backend servers?')) return;
     
     setIsRestarting(true);
     try {
-      const response = await fetch('/api/pm2-restart', {
+      const response = await fetch(`${API_BASE}/pm2-restart`, {
         method: 'POST'
       });
       
@@ -124,7 +151,7 @@ export default function ServerStatus() {
       )}
 
       {/* Restart Button */}
-      {pm2Status && pm2Status.success && (
+      {pm2Status && pm2Status.success && backendStatus === 'online' && (
         <button
           onClick={handleRestart}
           disabled={isRestarting}
@@ -133,6 +160,19 @@ export default function ServerStatus() {
         >
           <RefreshCw className={`w-3 h-3 ${isRestarting ? 'animate-spin' : ''}`} />
           {isRestarting ? 'Restarting...' : 'Restart'}
+        </button>
+      )}
+
+      {/* Start Button - shows when backend is offline */}
+      {backendStatus === 'offline' && (
+        <button
+          onClick={handleStart}
+          disabled={isRestarting}
+          className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-400 rounded transition-colors"
+          title="Start both servers"
+        >
+          <RefreshCw className={`w-3 h-3 ${isRestarting ? 'animate-spin' : ''}`} />
+          {isRestarting ? 'Starting...' : 'Start Servers'}
         </button>
       )}
 
