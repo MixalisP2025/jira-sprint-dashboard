@@ -7,6 +7,7 @@ import {
 import KPICard from './components/KPICard';
 import FilterPanel from './components/FilterPanel';
 import JiraRefreshButton from './components/JiraRefreshButton';
+import ServerStatus from './components/ServerStatus';
 
 // Tooltip Component
 const Tooltip = ({ children, content }) => {
@@ -1308,6 +1309,7 @@ const SprintDashboard = () => {
               )}
             </div>
             <div className="flex flex-col items-end gap-2">
+              <ServerStatus />
               <div className="text-right">
                 <div className="text-lg font-mono font-semibold text-blue-400">
                   {currentTime.toLocaleTimeString('en-GB', { hour12: false })}
