@@ -45,6 +45,89 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK' });
 });
 
+// PM2 Status endpoint
+app.get('/api/pm2-status', async (req, res) => {
+  const { exec } = require('child_process');
+  const { promisify } = require('util');
+  const execAsync = promisify(exec);
+  
+  try {
+    const { stdout } = await execAsync('pm2 jlist');
+    const processes = JSON.parse(stdout);
+    
+    const backend = processes.find(p => p.name === 'jira-backend');
+    const frontend = processes.find(p => p.name === 'jira-frontend');
+    
+    res.json({ 
+      success: true,
+      backend: {
+        status: backend?.pm2_env?.status || 'offline',
+        uptime: backend?.pm2_env?.pm_uptime || null,
+        restarts: backend?.pm2_env?.restart_time || 0,
+        memory: backend?.monit?.memory || 0,
+        cpu: backend?.monit?.cpu || 0
+      },
+      frontend: {
+        status: frontend?.pm2_env?.status || 'offline',
+        uptime: frontend?.pm2_env?.pm_uptime || null,
+        restarts: frontend?.pm2_env?.restart_time || 0,
+        memory: frontend?.monit?.memory || 0,
+        cpu: frontend?.monit?.cpu || 0
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false,
+      message: 'PM2 not available or no processes running',
+      error: error.message 
+    });
+  }
+});
+
+// PM2 Start endpoint
+app.post('/api/pm2-start', async (req, res) => {
+  const { exec } = require('child_process');
+  const { promisify } = require('util');
+  const execAsync = promisify(exec);
+  
+  try {
+    const { stdout } = await execAsync('npm run start:pm2');
+    res.json({ 
+      success: true, 
+      message: 'Servers started successfully',
+      output: stdout 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to start servers',
+      error: error.message 
+    });
+  }
+});
+
+// PM2 Restart endpoint
+app.post('/api/pm2-restart', async (req, res) => {
+  const { exec } = require('child_process');
+  const { promisify } = require('util');
+  const execAsync = promisify(exec);
+  
+  try {
+    const { stdout } = await execAsync('pm2 restart all');
+    res.json({ 
+      success: true, 
+      message: 'Servers restarted successfully',
+      output: stdout 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to restart servers',
+      error: error.message 
+    });
+  }
+});
+
 // Check Jira configuration
 app.get('/api/jira-config', (req, res) => {
   console.log('Config check requested');
