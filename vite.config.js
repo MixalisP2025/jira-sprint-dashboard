@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5174,        // Sprint Dashboard on 5174
-    strictPort: false, // allow fallback if 5174 is in use
+    strictPort: true,  // fail if 5174 is in use (don't use other ports)
     proxy: {
       '/api': {
         target: process.env.VITE_PROXY_URL || 'http://localhost:4001',
