@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   Upload, Users, TrendingUp, CheckCircle, Clock, AlertCircle,
   Calendar, Home, LayoutDashboard, Shield, Briefcase, Database,
-  Target, BarChart3, Edit3, X, Save, Filter, PieChart
+  Target, BarChart3, Edit3, X, Save, Filter, PieChart, Download
 } from 'lucide-react';
 import KPICard from './components/KPICard';
 import FilterPanel from './components/FilterPanel';
@@ -2597,6 +2597,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
   const [showNoStoryPoints, setShowNoStoryPoints] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
   const [hideDone, setHideDone] = useState(false);
+  const [storiesOnly, setStoriesOnly] = useState(false);
   
   // NEW: Use ALL data, not just filteredData
   const allData = useMemo(() => {
@@ -2616,8 +2617,54 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
     if (hideDone) {
       result = result.filter(item => item['Status'] !== 'Done');
     }
+    if (storiesOnly) {
+      result = result.filter(item => item['Issue Type'] === 'Story');
+    }
     return result;
-  }, [allData, showNoStoryPoints, statusFilter, hideDone]);
+  }, [allData, showNoStoryPoints, statusFilter, hideDone, storiesOnly]);
+
+  const exportToExcel = () => {
+    // Prepare data for export
+    const exportData = displayData.map(ticket => ({
+      'Key': ticket['Issue key'] || ticket['Key'],
+      'Type': ticket['Issue Type'],
+      'Summary': ticket['Summary'],
+      'Project': ticket['Project'] || ticket['B'],
+      'Assignee': ticket['Assignee'] || ticket['D'] || 'Unassigned',
+      'Status': ticket['Status'],
+      'Story Points': parseFloat(ticket['Story Points']) || parseFloat(ticket['Story points']) || parseFloat(ticket['Custom field (Story Points)']) || 0,
+      'Sprint': ticket['Sprint'] || ticket['G'] || '',
+      'Priority': ticket['Priority'] || '',
+      'Created': ticket['Created'] || '',
+      'Updated': ticket['Updated'] || '',
+      'Due Date': ticket['Due Date'] || ticket['Due date'] || ''
+    }));
+
+    // Convert to CSV
+    const headers = Object.keys(exportData[0] || {});
+    const csvContent = [
+      headers.join(','),
+      ...exportData.map(row => 
+        headers.map(header => {
+          const value = row[header] || '';
+          // Escape quotes and wrap in quotes if contains comma
+          const escaped = String(value).replace(/"/g, '""');
+          return escaped.includes(',') || escaped.includes('\n') ? `"${escaped}"` : escaped;
+        }).join(',')
+      )
+    ].join('\n');
+
+    // Download file
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `jira-export-${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const statusCounts = useMemo(() => {
     const counts = { 'Done': 0, 'In Progress': 0, 'To Do': 0, 'Awaiting Testing': 0, 'Awaiting Versioning': 0, 'Other': 0 };
@@ -2670,7 +2717,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
         </button>
       </div>
 
-      {(statusFilter !== 'all' || showNoStoryPoints || hideDone) && (
+      {(statusFilter !== 'all' || showNoStoryPoints || hideDone || storiesOnly) && (
         <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-lg">
           <div className="flex items-center justify-between">
             <div className="text-sm text-blue-800">
@@ -2678,8 +2725,9 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
               {statusFilter !== 'all' && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">{statusFilter}</span>}
               {showNoStoryPoints && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">No Story Points</span>}
               {hideDone && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">Hide Done</span>}
+              {storiesOnly && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">Stories Only</span>}
             </div>
-            <button onClick={() => { setStatusFilter('all'); setShowNoStoryPoints(false); setHideDone(false); }} className="text-sm text-blue-600 hover:text-blue-800 font-semibold underline">
+            <button onClick={() => { setStatusFilter('all'); setShowNoStoryPoints(false); setHideDone(false); setStoriesOnly(false); }} className="text-sm text-blue-600 hover:text-blue-800 font-semibold underline">
               Clear All
             </button>
           </div>
@@ -2696,6 +2744,25 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
           </div>
           
           <div className="flex flex-wrap gap-3">
+            <button
+              onClick={exportToExcel}
+              disabled={displayData.length === 0}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium"
+            >
+              <Download className="w-4 h-4" />
+              Export to Excel
+            </button>
+            
+            <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={storiesOnly} 
+                onChange={() => setStoriesOnly(!storiesOnly)}
+                className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+              />
+              <span className="text-slate-700 text-sm font-medium select-none">Stories Only</span>
+            </label>
+            
             <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
               <input 
                 type="checkbox" 
