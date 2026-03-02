@@ -4,6 +4,11 @@ import {
   Calendar, Home, LayoutDashboard, Shield, Briefcase, Database,
   Target, BarChart3, Edit3, X, Save, Filter, PieChart, Download
 } from 'lucide-react';
+import {
+  PieChart as RechartsPieChart, Pie, Cell,
+  BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip,
+  ResponsiveContainer, Legend
+} from 'recharts';
 import KPICard from './components/KPICard';
 import FilterPanel from './components/FilterPanel';
 import JiraRefreshButton from './components/JiraRefreshButton';
@@ -481,7 +486,9 @@ const SprintDashboard = () => {
       const project = item['Project'] || item['B'] || '';
       if (project) set.add(project);
     });
-    return ['all', ...Array.from(set).sort()];
+    const projectList = ['all', ...Array.from(set).sort()];
+    console.log('📊 Projects extracted from data:', projectList);
+    return projectList;
   }, [data]);
 
   const filteredData = useMemo(() => {
@@ -550,12 +557,8 @@ const SprintDashboard = () => {
       }
     });
     
-    // Update state if needed
-    if (needsUpdate) {
-      console.log('🔄 Updating capacity configuration with new assignees...');
-      setTimeout(() => setAssigneeCaps(updatedCaps), 0);
-    }
-    
+    // Update state if needed (handled by useEffect outside this useMemo)
+
     // Use updated caps for this calculation
     const capsToUse = { ...assigneeCaps, ...updatedCaps };
     
@@ -813,6 +816,30 @@ const SprintDashboard = () => {
 
     return byAssignee;
   }, [filteredData, assigneeCaps]);
+
+  // Auto-add new assignees from Jira with default capacity
+  useEffect(() => {
+    const jiraAssigneeNames = new Set();
+    data.forEach(item => {
+      const assignee = item['Assignee'] || item['D'];
+      if (assignee && assignee !== 'Unassigned') {
+        jiraAssigneeNames.add(assignee);
+      }
+    });
+
+    const newCaps = {};
+    let hasNew = false;
+    jiraAssigneeNames.forEach(name => {
+      if (!assigneeCaps[name]) {
+        newCaps[name] = 16;
+        hasNew = true;
+      }
+    });
+
+    if (hasNew) {
+      setAssigneeCaps(prev => ({ ...prev, ...newCaps }));
+    }
+  }, [data]);
 
   const sprintTimeline = useMemo(() => {
     if (selectedSprint === 'all') return null;
@@ -2587,6 +2614,401 @@ const AssigneesSection = ({ stats }) => {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  );
+};
+
+// Theme Analysis Section - Sprint composition and strategic focus visualization
+const ThemeAnalysisSection = ({ filteredData, selectedSprint, selectedAssignee, selectedProject }) => {
+  // Compute all visualization data using useMemo
+  const themeAnalysisData = useMemo(() => {
+    if (!filteredData || filteredData.length === 0) {
+      return null;
+    }
+
+    console.log('🎨 Theme Analysis - Processing', filteredData.length, 'items');
+    console.log('🎨 First item sample:', filteredData[0]);
+
+    // Initialize counters
+    const workTypeCounts = { 'Story': 0, 'Bug': 0, 'Task': 0, 'Sub-task': 0 };
+    const epicCounts = {};
+    const epicStoryPoints = {};
+    const projectCounts = {};
+    const projectStoryPoints = {};
+    const priorityCounts = { 'High': 0, 'Medium': 0, 'Low': 0, 'Unassigned': 0 };
+    const categoryCounts = {};
+    
+    let totalStoryPoints = 0;
+    const uniqueEpics = new Set();
+    const uniqueProjects = new Set();
+
+    // Process each issue
+    filteredData.forEach(item => {
+      const type = item['Issue Type'];
+      const epicName = item['Epic Name'] || 'No Epic';
+      const project = item['Project'] || item['B'];
+      const priority = item['Priority'] || 'Unassigned';
+      const sp = parseFloat(item['Story Points']) || 0;
+      const labels = item['Labels'] || [];
+      const components = item['Components'] || [];
+
+      // Work type distribution (exclude Epics)
+      if (workTypeCounts.hasOwnProperty(type)) {
+        workTypeCounts[type]++;
+      }
+
+      // Epic distribution
+      epicCounts[epicName] = (epicCounts[epicName] || 0) + 1;
+      epicStoryPoints[epicName] = (epicStoryPoints[epicName] || 0) + sp;
+      if (epicName !== 'No Epic') uniqueEpics.add(epicName);
+
+      // Project distribution
+      if (project) {
+        projectCounts[project] = (projectCounts[project] || 0) + 1;
+        projectStoryPoints[project] = (projectStoryPoints[project] || 0) + sp;
+        uniqueProjects.add(project);
+      }
+
+      // Priority distribution
+      if (priorityCounts.hasOwnProperty(priority)) {
+        priorityCounts[priority]++;
+      } else {
+        priorityCounts['Unassigned']++;
+      }
+
+      // Feature categories (labels and components)
+      const categories = [...labels, ...components];
+      if (categories.length === 0) {
+        categoryCounts['Uncategorized'] = (categoryCounts['Uncategorized'] || 0) + 1;
+      } else {
+        categories.forEach(cat => {
+          if (cat) {
+            categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+          }
+        });
+      }
+
+      // Total story points
+      totalStoryPoints += sp;
+    });
+
+    // Convert to chart data formats
+    const total = Object.values(workTypeCounts).reduce((a, b) => a + b, 0);
+    const workTypeData = Object.entries(workTypeCounts)
+      .filter(([_, count]) => count > 0)
+      .map(([name, value]) => ({
+        name,
+        value,
+        percentage: ((value / total) * 100).toFixed(1)
+      }));
+
+    const epicData = Object.entries(epicCounts)
+      .map(([name, count]) => ({
+        name,
+        count,
+        storyPoints: epicStoryPoints[name]
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    const projectData = Object.entries(projectCounts)
+      .map(([name, count]) => ({
+        name,
+        count,
+        storyPoints: projectStoryPoints[name]
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    const priorityData = Object.entries(priorityCounts)
+      .filter(([_, count]) => count > 0)
+      .map(([name, value]) => ({
+        name,
+        value
+      }));
+
+    const categoryData = Object.entries(categoryCounts)
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    console.log('🎨 Theme Analysis Data:', {
+      workTypeData,
+      epicData: epicData.length,
+      projectData: projectData.length,
+      priorityData,
+      categoryData: categoryData.length
+    });
+
+    return {
+      totalIssues: filteredData.length,
+      totalStoryPoints,
+      uniqueEpics: uniqueEpics.size,
+      uniqueProjects: uniqueProjects.size,
+      workTypeData,
+      epicData,
+      projectData,
+      priorityData,
+      categoryData
+    };
+  }, [filteredData]);
+
+  // Empty data state
+  if (!themeAnalysisData) {
+    console.log('⚠️ Theme Analysis: No data available', { 
+      filteredDataLength: filteredData?.length,
+      filteredDataSample: filteredData?.[0] 
+    });
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <PieChart className="w-16 h-16 mx-auto text-gray-400 mb-4" />
+          <p className="text-gray-500 text-lg">No sprint data available for the selected filters</p>
+        </div>
+      </div>
+    );
+  }
+
+  // TODO: Add visualizations
+  return (
+    <div className="space-y-6">
+      {/* Summary Metrics Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-600">Total Issues</p>
+              <p className="text-3xl font-bold text-blue-600">{themeAnalysisData.totalIssues}</p>
+            </div>
+            <CheckCircle className="w-12 h-12 text-blue-500 opacity-20" />
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-600">Total Story Points</p>
+              <p className="text-3xl font-bold text-purple-600">{themeAnalysisData.totalStoryPoints.toFixed(1)}</p>
+            </div>
+            <Target className="w-12 h-12 text-purple-500 opacity-20" />
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-600">Unique Epics</p>
+              <p className="text-3xl font-bold text-green-600">{themeAnalysisData.uniqueEpics}</p>
+            </div>
+            <Briefcase className="w-12 h-12 text-green-500 opacity-20" />
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-600">Unique Projects</p>
+              <p className="text-3xl font-bold text-orange-600">{themeAnalysisData.uniqueProjects}</p>
+            </div>
+            <LayoutDashboard className="w-12 h-12 text-orange-500 opacity-20" />
+          </div>
+        </div>
+      </div>
+
+      {/* TODO: Add charts */}
+      
+      {/* Work Type Distribution & Priority Mix */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Work Type Pie Chart */}
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Work Type Distribution</h3>
+          {themeAnalysisData.workTypeData.length > 0 ? (
+            <div style={{ width: '100%', height: 300 }}>
+              <ResponsiveContainer width="100%" height="100%" key="work-type-chart">
+                <RechartsPieChart key={`work-type-${themeAnalysisData.workTypeData.length}`}>
+                  <Pie
+                    data={themeAnalysisData.workTypeData}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    label={({ name, percentage }) => `${name}: ${percentage}%`}
+                    outerRadius={80}
+                    fill="#8884d8"
+                    dataKey="value"
+                  >
+                    {themeAnalysisData.workTypeData.map((entry, index) => {
+                      const colors = {
+                        'Story': '#3b82f6',
+                        'Bug': '#ef4444',
+                        'Task': '#eab308',
+                        'Sub-task': '#a855f7'
+                      };
+                      return <Cell key={`cell-${index}`} fill={colors[entry.name] || '#64748b'} />;
+                    })}
+                  </Pie>
+                  <RechartsTooltip 
+                    formatter={(value, name, props) => [
+                      `${value} issues (${props.payload.percentage}%)`,
+                      props.payload.name
+                    ]}
+                  />
+                  <Legend />
+                </RechartsPieChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-[300px] text-gray-400">
+              No work type data available
+            </div>
+          )}
+        </div>
+
+        {/* Priority Mix Pie Chart */}
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Priority Mix</h3>
+          {themeAnalysisData.priorityData.length > 0 ? (
+            <div style={{ width: '100%', height: 300 }}>
+              <ResponsiveContainer width="100%" height="100%" key="priority-chart">
+                <RechartsPieChart key={`priority-${themeAnalysisData.priorityData.length}`}>
+                  <Pie
+                    data={themeAnalysisData.priorityData}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    label={({ name, value }) => {
+                      const total = themeAnalysisData.priorityData.reduce((sum, item) => sum + item.value, 0);
+                      const percentage = ((value / total) * 100).toFixed(1);
+                      return `${name}: ${percentage}%`;
+                    }}
+                    outerRadius={80}
+                    fill="#8884d8"
+                    dataKey="value"
+                  >
+                    {themeAnalysisData.priorityData.map((entry, index) => {
+                      const colors = {
+                        'High': '#ef4444',
+                        'Medium': '#eab308',
+                        'Low': '#22c55e',
+                        'Unassigned': '#64748b'
+                      };
+                      return <Cell key={`cell-${index}`} fill={colors[entry.name] || '#64748b'} />;
+                    })}
+                  </Pie>
+                  <RechartsTooltip 
+                    formatter={(value, name, props) => {
+                      const total = themeAnalysisData.priorityData.reduce((sum, item) => sum + item.value, 0);
+                      const percentage = ((value / total) * 100).toFixed(1);
+                      return [`${value} issues (${percentage}%)`, props.payload.name];
+                    }}
+                  />
+                  <Legend />
+                </RechartsPieChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-[300px] text-gray-400">
+              No priority data available
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Epic Distribution Bar Chart */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h3 className="text-lg font-semibold text-gray-800 mb-4">Epic Distribution</h3>
+        {themeAnalysisData.epicData.length > 0 ? (
+          <div style={{ width: '100%', height: 400 }}>
+            <ResponsiveContainer width="100%" height="100%" key="epic-chart">
+              <BarChart data={themeAnalysisData.epicData} layout="horizontal" key={`epic-${themeAnalysisData.epicData.length}`}>
+                <XAxis 
+                  type="category" 
+                  dataKey="name" 
+                  angle={-45}
+                  textAnchor="end"
+                  height={100}
+                  interval={0}
+                />
+                <YAxis type="number" />
+                <RechartsTooltip 
+                  formatter={(value, name) => {
+                    if (name === 'count') return [value, 'Issues'];
+                    if (name === 'storyPoints') return [value.toFixed(1), 'Story Points'];
+                    return [value, name];
+                  }}
+                />
+                <Legend />
+                <Bar dataKey="count" fill="#3b82f6" name="Issue Count" />
+                <Bar dataKey="storyPoints" fill="#a855f7" name="Story Points" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-[400px] text-gray-400">
+            No epic data available
+          </div>
+        )}
+      </div>
+
+      {/* Project Focus Bar Chart */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h3 className="text-lg font-semibold text-gray-800 mb-4">Project Focus</h3>
+        {themeAnalysisData.projectData.length > 0 ? (
+          <div style={{ width: '100%', height: 400 }}>
+            <ResponsiveContainer width="100%" height="100%" key="project-chart">
+              <BarChart data={themeAnalysisData.projectData} layout="vertical" key={`project-${themeAnalysisData.projectData.length}`}>
+                <XAxis type="number" />
+                <YAxis 
+                  type="category" 
+                  dataKey="name" 
+                  width={150}
+                />
+                <RechartsTooltip 
+                  formatter={(value, name) => {
+                    if (name === 'count') return [value, 'Issues'];
+                    if (name === 'storyPoints') return [value.toFixed(1), 'Story Points'];
+                    return [value, name];
+                  }}
+                />
+                <Legend />
+                <Bar dataKey="count" fill="#10b981" name="Issue Count" />
+                <Bar dataKey="storyPoints" fill="#f59e0b" name="Story Points" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-[400px] text-gray-400">
+            No project data available
+          </div>
+        )}
+      </div>
+
+      {/* Feature Categories Bar Chart */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h3 className="text-lg font-semibold text-gray-800 mb-4">Feature Categories (Top 10)</h3>
+        {themeAnalysisData.categoryData.length > 0 ? (
+          <div style={{ width: '100%', height: 400 }}>
+            <ResponsiveContainer width="100%" height="100%" key="category-chart">
+              <BarChart data={themeAnalysisData.categoryData} layout="horizontal" key={`category-${themeAnalysisData.categoryData.length}`}>
+                <XAxis 
+                  type="category" 
+                  dataKey="name" 
+                  angle={-45}
+                  textAnchor="end"
+                  height={100}
+                  interval={0}
+                />
+                <YAxis type="number" />
+                <RechartsTooltip 
+                  formatter={(value) => [value, 'Issues']}
+                />
+                <Bar dataKey="count" fill="#8b5cf6" name="Issue Count" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-[400px] text-gray-400">
+            No category data available
+          </div>
+        )}
       </div>
     </div>
   );

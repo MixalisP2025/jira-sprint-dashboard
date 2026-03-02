@@ -12,8 +12,8 @@ export const JIRA_CONFIG = {
   
   // Date range for data fetching
   dateRange: {
-    // Fetch data from last 365 days (1 year) to capture all active work
-    daysBack: 365,
+    // Fetch data from last 60 days (2 months) to capture recent work
+    daysBack: 60,
     
     // You can also use specific dates:
     // fromDate: '2024-01-01',
