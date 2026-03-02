@@ -24,13 +24,13 @@ const JiraConfigPanel = ({ isOpen, onClose, onConfigChange }) => {
     onClose();
   };
 
-  const availableProjects = ['CSFR', 'AISITS', 'ACI', 'CSR', 'AFMS', 'BMS', 'CTONGO', 'CPM', 'CS00398A', 'CS00398B', 'CNBIL408', 'CSB', 'CS00429', 'CS00434', 'CBAHESF', 'CS441SAPD', 'COGP', 'TRFCSPRM', 'CCPI', 'DRM', 'DWHP', 'FAA', 'FSM', 'ISE', 'MOS', 'MDP', 'MCA', 'OGSN', 'PEWS', 'PS', 'RB', 'SRFCSS', 'SETINPFILE', 'SSLM', 'SRDUAT', 'STLU', 'T0ORS', 'UP', 'UPB', 'WFNDS', 'WBILL', 'XPONGO', 'QO00443'];
+  const availableProjects = ['DND', 'CSFR', 'AISITS', 'ACI', 'CSR', 'AFMS', 'AFSDWAM', 'BROAD', 'BMS', 'CADEP', 'CCTA', 'CTONGO', 'CABO', 'CPM', 'CS000344', 'CFT', 'CS00300', 'CS00304', 'CS00332', 'INSETT', 'CSAU', 'IRROA', 'SMSI', 'CS00386', 'CSDRECONC', 'CS00398A', 'CS00398B', 'CNBIL408', 'CS00415PT', 'CSB', 'CS00429', 'CS00434', 'CBAHESF', 'CS441SAPD', 'COGP', 'TRFCSPRM', 'CCPI', 'DRM', 'DWHP', 'NXCLR', 'ECBS', 'FAA', 'FSM', 'BSWAP21', 'ISE', 'INTTAX', 'MOS', 'MDP', 'MCA', 'OGSN', 'OTPCA', 'PIR', 'PIRSOW', 'PEWS', 'PS', 'RC', 'RF', 'RB', 'SSP', 'SRFCSS', 'SETINPFILE', 'SSLM', 'SD', 'SIR', 'SPROJ', 'SRDUAT', 'STLU', 'SI', 'T2S', 'TT', 'TP', 'T0ORS', 'UP', 'UPB', 'UPNTOLD', 'WFNDS', 'WBILL', 'XPRES', 'XPONGO', 'QO00443'];
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-slate-800 rounded-lg p-6 w-full max-w-md border border-slate-700">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+      <div className="bg-slate-800 rounded-lg p-6 w-full max-w-2xl border border-slate-700 my-8">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2">
             <Settings className="w-5 h-5 text-blue-400" />
@@ -73,11 +73,11 @@ const JiraConfigPanel = ({ isOpen, onClose, onConfigChange }) => {
           <div>
             <label className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
               <Database className="w-4 h-4" />
-              Projects
+              Projects ({config.projects.length} selected)
             </label>
-            <div className="space-y-2 max-h-40 overflow-y-auto">
+            <div className="space-y-2 max-h-60 overflow-y-auto bg-slate-900 border border-slate-700 rounded-lg p-3">
               {availableProjects.map(project => (
-                <label key={project} className="flex items-center gap-2 text-sm">
+                <label key={project} className="flex items-center gap-2 text-sm hover:bg-slate-800 p-1 rounded cursor-pointer">
                   <input
                     type="checkbox"
                     checked={config.projects.includes(project)}
@@ -104,7 +104,7 @@ const JiraConfigPanel = ({ isOpen, onClose, onConfigChange }) => {
             <label className="text-sm font-medium text-slate-300 mb-2 block">
               Current JQL Query
             </label>
-            <div className="bg-slate-900 border border-slate-700 rounded-lg p-3">
+            <div className="bg-slate-900 border border-slate-700 rounded-lg p-3 max-h-32 overflow-y-auto">
               <code className="text-xs text-green-400 break-all">
                 {buildJQL({ ...JIRA_CONFIG, dateRange: { daysBack: config.daysBack }, projects: config.projects })}
               </code>
