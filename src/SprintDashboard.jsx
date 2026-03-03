@@ -13,6 +13,7 @@ import KPICard from './components/KPICard';
 import FilterPanel from './components/FilterPanel';
 import JiraRefreshButton from './components/JiraRefreshButton';
 import ServerStatus from './components/ServerStatus';
+import SprintHealthTab from './components/SprintHealthTab';
 
 // Tooltip Component
 const Tooltip = ({ children, content }) => {
@@ -1180,6 +1181,7 @@ const SprintDashboard = () => {
     assignees: { icon: Users, label: 'Assignees' },
     risks: { icon: Shield, label: 'Risk Register' },
     capacity: { icon: Users, label: 'Capacity' },
+    health: { icon: TrendingUp, label: 'Health' },
     sprints: { icon: Target, label: 'Sprints' },
     projects: { icon: Briefcase, label: 'Projects' },
     timeline: { icon: BarChart3, label: 'Timeline' },
@@ -1517,6 +1519,16 @@ const SprintDashboard = () => {
           <DataSection 
             stats={stats} 
             filteredData={filteredData}
+            selectedSprint={selectedSprint}
+            selectedAssignee={selectedAssignee}
+            selectedProject={selectedProject}
+          />
+        )}
+
+        {activeTab === 'health' && (
+          <SprintHealthTab
+            tickets={filteredData}
+            sprints={sprints}
             selectedSprint={selectedSprint}
             selectedAssignee={selectedAssignee}
             selectedProject={selectedProject}
