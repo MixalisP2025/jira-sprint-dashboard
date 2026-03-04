@@ -2,7 +2,7 @@
 export const JIRA_CONFIG = {
   // Projects to fetch data from - ALL ACTIVE PROJECTS
   // Format: 'KEY' or { key: 'KEY', name: 'Project Name' }
-  projects: ['CC', 'DND', 'CSFR', 'AISITS', 'ACI', 'CSR', 'AFMS', 'AFSDWAM', 'BROAD', 'BMS', 'CADEP', 'CCTA', 'CTONGO', 'CABO', 'CPM', 'CS000344', 'CFT', 'CS00300', 'CS00304', 'CS00332', 'INSETT', 'CSAU', 'IRROA', 'SMSI', 'CS00386', 'CSDRECONC', 'CS00398A', 'CS00398B', 'CNBIL408', 'CS00415PT', 'CSB', 'CS00429', 'CS00434', 'CBAHESF', 'CS441SAPD', 'COGP', 'TRFCSPRM', 'CCPI', 'DRM', 'DWHP', 'NXCLR', 'ECBS', 'FAA', 'FSM', 'BSWAP21', 'ISE', 'INTTAX', 'MOS', 'MDP', 'MCA', 'OGSN', 'OTPCA', 'PIR', 'PIRSOW', 'PEWS', 'PS', 'RC', 'RF', 'RB', 'SSP', 'SRFCSS', 'SETINPFILE', 'SSLM', 'SD', 'SIR', 'SPROJ', 'SRDUAT', 'STLU', 'SI', 'T2S', 'TT', 'TP', 'T0ORS', 'UP', 'UPB', 'UPNTOLD', 'WFNDS', 'WBILL', 'XPRES', 'XPONGO', 'QO00443'],
+  projects: ['CC', 'WTR1', 'DND', 'CSFR', 'AISITS', 'ACI', 'CSR', 'AFMS', 'AFSDWAM', 'BROAD', 'BMS', 'CADEP', 'CCTA', 'CTONGO', 'CABO', 'CPM', 'CS000344', 'CFT', 'CS00300', 'CS00304', 'CS00332', 'INSETT', 'CSAU', 'IRROA', 'SMSI', 'CS00386', 'CSDRECONC', 'CS00398A', 'CS00398B', 'CNBIL408', 'CS00415PT', 'CSB', 'CS00429', 'CS00434', 'CBAHESF', 'CS441SAPD', 'COGP', 'TRFCSPRM', 'CCPI', 'DRM', 'DWHP', 'NXCLR', 'ECBS', 'FAA', 'FSM', 'BSWAP21', 'ISE', 'INTTAX', 'MOS', 'MDP', 'MCA', 'OGSN', 'OTPCA', 'PIR', 'PIRSOW', 'PEWS', 'PS', 'RC', 'RF', 'RB', 'SSP', 'SRFCSS', 'SETINPFILE', 'SSLM', 'SD', 'SIR', 'SPROJ', 'SRDUAT', 'STLU', 'SI', 'T2S', 'TT', 'TP', 'T0ORS', 'UP', 'UPB', 'UPNTOLD', 'WFNDS', 'WBILL', 'XPRES', 'XPONGO', 'QO00443'],
   
   // Project names mapping (optional - will be fetched from Jira if not provided)
   projectNames: {
