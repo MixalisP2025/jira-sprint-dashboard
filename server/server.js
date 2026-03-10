@@ -1,12 +1,18 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const path = require('path');
+const fs = require('fs');
 
 // Load environment variables
 require('dotenv').config();
 
 const app = express();
 const PORT = 4001;
+
+// Serve built frontend from dist/ if it exists
+const distPath = path.join(__dirname, '..', 'dist');
+const hasDist = fs.existsSync(distPath);
 
 // Jira Configuration - Use environment variables for security
 const JIRA_CONFIG = {
@@ -27,6 +33,14 @@ if (!JIRA_CONFIG.email || !JIRA_CONFIG.apiToken) {
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Serve built frontend (production)
+if (hasDist) {
+  app.use(express.static(distPath));
+  console.log('✅ Serving built frontend from dist/');
+} else {
+  console.log('⚠️  No dist/ folder found — frontend not served. Run: npm run build');
+}
 
 // Root endpoint - test if server is running
 app.get('/', (req, res) => {
@@ -329,6 +343,13 @@ app.get('/api/jira/sprints/:boardId', async (req, res) => {
     });
   }
 });
+
+// Serve React app for all non-API routes (must be after all API routes)
+if (hasDist) {
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 // 404 handler
 app.use((req, res) => {
