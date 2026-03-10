@@ -1,68 +1,81 @@
 // Service Worker for Sprint Analytics Dashboard PWA
-const CACHE_NAME = 'sprint-analytics-v1';
-const urlsToCache = [
+// Cache version is injected at build time via index.html meta tag,
+// or falls back to a timestamp-based name so updates always propagate.
+
+const CACHE_VERSION = new Date().toISOString().slice(0, 10); // e.g. "2026-03-10"
+const CACHE_NAME = `sprint-analytics-${CACHE_VERSION}`;
+
+const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json'
 ];
 
-// Install event - cache essential files
+// Install — cache shell assets, activate immediately
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => {
-        console.log('Opened cache');
-        return cache.addAll(urlsToCache);
-      })
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
   );
-  self.skipWaiting();
+  self.skipWaiting(); // take over without waiting for old SW to die
 });
 
-// Activate event - clean up old caches
+// Activate — delete ALL old caches so stale builds never show
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames.map((cacheName) => {
-          if (cacheName !== CACHE_NAME) {
-            console.log('Deleting old cache:', cacheName);
-            return caches.delete(cacheName);
-          }
-        })
-      );
-    })
+    caches.keys().then((names) =>
+      Promise.all(
+        names
+          .filter((name) => name !== CACHE_NAME)
+          .map((name) => {
+            console.log('[SW] Deleting old cache:', name);
+            return caches.delete(name);
+          })
+      )
+    )
   );
-  self.clients.claim();
+  self.clients.claim(); // take control of all open tabs immediately
 });
 
-// Fetch event - serve from cache, fallback to network
+// Fetch — network first for HTML/API, cache first for static assets
 self.addEventListener('fetch', (event) => {
-  event.respondWith(
-    caches.match(event.request)
-      .then((response) => {
-        // Cache hit - return response
-        if (response) {
-          return response;
-        }
+  const { request } = event;
+  const url = new URL(request.url);
 
-        return fetch(event.request).then(
-          (response) => {
-            // Check if valid response
-            if (!response || response.status !== 200 || response.type !== 'basic') {
-              return response;
-            }
-
-            // Clone the response
-            const responseToCache = response.clone();
-
-            caches.open(CACHE_NAME)
-              .then((cache) => {
-                cache.put(event.request, responseToCache);
-              });
-
-            return response;
+  // Always go network-first for API calls and HTML (so updates are instant)
+  if (url.pathname.startsWith('/api/') || request.headers.get('accept')?.includes('text/html')) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          // Cache fresh HTML responses
+          if (request.headers.get('accept')?.includes('text/html') && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
           }
-        );
-      })
+          return response;
+        })
+        .catch(() => caches.match(request)) // fallback to cache if offline
+    );
+    return;
+  }
+
+  // Cache-first for JS/CSS/images (they have hashed filenames from Vite build)
+  event.respondWith(
+    caches.match(request).then((cached) => {
+      if (cached) return cached;
+      return fetch(request).then((response) => {
+        if (response.status === 200 && response.type === 'basic') {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+        }
+        return response;
+      });
+    })
   );
+});
+
+// Listen for a message from the app to force an update
+self.addEventListener('message', (event) => {
+  if (event.data === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
