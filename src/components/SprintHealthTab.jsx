@@ -608,6 +608,276 @@ function DailyStandupExport({ tickets = [], selectedSprint = 'all', selectedProj
   );
 }
 
+// ─── Report Generator ────────────────────────────────────────────────────────
+function generateSprintReport({ tickets, sprints, selectedSprint, selectedAssignee, selectedProject, metrics }) {
+  const today = new Date();
+  const dateStr = today.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const sprintLabel  = selectedSprint  === 'all' ? 'All Sprints'  : (selectedSprint  || 'All Sprints');
+  const projectLabel = selectedProject === 'all' ? 'All Projects' : (selectedProject || 'All Projects');
+  const assigneeLabel= selectedAssignee=== 'all' ? 'All Assignees': (selectedAssignee|| 'All Assignees');
+
+  // ── Velocity data ──
+  const bySprintMap = {};
+  for (const t of tickets) {
+    if (!isDone(getStatus(t))) continue;
+    const key = getSprint(t) || 'Unknown';
+    if (!bySprintMap[key]) bySprintMap[key] = { sprint: key, doneSP: 0, count: 0 };
+    bySprintMap[key].doneSP += getSP(t);
+    bySprintMap[key].count  += 1;
+  }
+  const velocityRows = Object.values(bySprintMap)
+    .sort((a, b) => a.sprint.localeCompare(b.sprint))
+    .slice(-8);
+
+  // ── Stale tickets ──
+  const staleTickets = tickets
+    .filter(t => isInP(getStatus(t)) && getTicketAge(t, today) >= 14)
+    .sort((a, b) => getTicketAge(b, today) - getTicketAge(a, today));
+
+  // ── Blocked tickets ──
+  const blockedTickets = tickets
+    .filter(t => !isDone(getStatus(t)))
+    .map(t => ({ t, daysSince: daysBetween(getUpdated(t) || getCreated(t), today) }))
+    .filter(({ daysSince }) => daysSince >= 5)
+    .sort((a, b) => b.daysSince - a.daysSince);
+
+  // ── Assignee workload ──
+  const assigneeMap = {};
+  for (const t of tickets) {
+    const name = getAssignee(t);
+    if (!assigneeMap[name]) assigneeMap[name] = { name, todo: 0, inprog: 0, done: 0, awaiting: 0, totalSP: 0 };
+    const s = normStatus(getStatus(t));
+    const sp = getSP(t);
+    assigneeMap[name].totalSP += sp;
+    if (isDone(s)) assigneeMap[name].done += sp;
+    else if (isInP(s)) assigneeMap[name].inprog += sp;
+    else if (s.includes('awaiting') || s.includes('testing') || s.includes('review')) assigneeMap[name].awaiting += sp;
+    else assigneeMap[name].todo += sp;
+  }
+  const assigneeRows = Object.values(assigneeMap)
+    .filter(a => a.name !== 'Unassigned')
+    .sort((a, b) => b.totalSP - a.totalSP);
+
+  const scoreColor = metrics.score >= 75 ? '#22c55e' : metrics.score >= 50 ? '#f59e0b' : '#ef4444';
+  const scoreLabel = metrics.score >= 75 ? 'Healthy' : metrics.score >= 50 ? 'Needs Attention' : 'At Risk';
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>Sprint Health Report — ${dateStr}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f8fafc; color: #1e293b; font-size: 13px; }
+  .page { max-width: 1100px; margin: 0 auto; padding: 32px 28px; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; padding-bottom: 20px; border-bottom: 2px solid #e2e8f0; }
+  .header h1 { font-size: 22px; font-weight: 700; color: #0f172a; }
+  .header .meta { font-size: 12px; color: #64748b; margin-top: 4px; }
+  .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
+  .kpi { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; }
+  .kpi .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+  .kpi .value { font-size: 26px; font-weight: 700; color: #0f172a; }
+  .kpi .sub { font-size: 11px; color: #94a3b8; margin-top: 3px; }
+  section { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 20px; margin-bottom: 18px; }
+  section h2 { font-size: 14px; font-weight: 600; color: #0f172a; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid #f1f5f9; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { background: #f8fafc; text-align: left; padding: 8px 10px; font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #e2e8f0; }
+  td { padding: 8px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f8fafc; }
+  .bar-wrap { background: #f1f5f9; border-radius: 4px; height: 8px; width: 100%; min-width: 80px; }
+  .bar-fill { height: 8px; border-radius: 4px; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+  .tag-red    { background: #fee2e2; color: #dc2626; }
+  .tag-orange { background: #ffedd5; color: #ea580c; }
+  .tag-yellow { background: #fef9c3; color: #ca8a04; }
+  .tag-green  { background: #dcfce7; color: #16a34a; }
+  .tag-blue   { background: #dbeafe; color: #2563eb; }
+  .focus-item { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid #f1f5f9; font-size: 12px; color: #374151; }
+  .focus-item:last-child { border-bottom: none; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px; }
+  .footer { text-align: center; font-size: 11px; color: #94a3b8; margin-top: 28px; padding-top: 16px; border-top: 1px solid #e2e8f0; }
+  @media print {
+    body { background: #fff; }
+    .page { padding: 16px; }
+    .no-print { display: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <h1>Sprint Health Report</h1>
+      <div class="meta">${dateStr}</div>
+      <div class="meta" style="margin-top:6px;">
+        Sprint: <strong>${sprintLabel}</strong> &nbsp;·&nbsp;
+        Project: <strong>${projectLabel}</strong> &nbsp;·&nbsp;
+        Assignee: <strong>${assigneeLabel}</strong>
+      </div>
+    </div>
+    <div style="text-align:right;">
+      <div class="badge" style="background:${scoreColor}20; color:${scoreColor}; border:1px solid ${scoreColor}40; font-size:15px; padding:8px 18px;">
+        Health Score: ${metrics.score}/100 — ${scoreLabel}
+      </div>
+      <div class="meta" style="margin-top:8px;">${metrics.total} tickets · ${metrics.totalSP.toFixed(0)} total SP</div>
+    </div>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpi-grid">
+    <div class="kpi">
+      <div class="label">Completion Rate</div>
+      <div class="value">${metrics.completionRate}%</div>
+      <div class="sub">${metrics.done} / ${metrics.total} tickets done</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Story Points Done</div>
+      <div class="value">${metrics.doneSP.toFixed(0)} SP</div>
+      <div class="sub">of ${metrics.totalSP.toFixed(0)} total SP</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Bug Rate</div>
+      <div class="value">${metrics.bugRate}%</div>
+      <div class="sub">${metrics.bugs} bugs in scope</div>
+    </div>
+    <div class="kpi">
+      <div class="label">In Progress</div>
+      <div class="value">${metrics.inProgress}</div>
+      <div class="sub">${metrics.toDo} to do · ${metrics.unassigned} unassigned</div>
+    </div>
+  </div>
+
+  <!-- Focus Actions + Project Health -->
+  <div class="two-col">
+    <section style="margin-bottom:0">
+      <h2>⚡ Focus Actions</h2>
+      ${metrics.focusActions.length === 0
+        ? '<div class="focus-item" style="color:#16a34a;">✅ No critical actions — sprint looks healthy</div>'
+        : metrics.focusActions.map(a => `<div class="focus-item"><span style="color:#f97316;font-size:15px;">⚠</span>${a}</div>`).join('')
+      }
+    </section>
+    <section style="margin-bottom:0">
+      <h2>📊 Project Health</h2>
+      <table>
+        <thead><tr><th>Project</th><th>Done</th><th>Bugs</th><th>Progress</th></tr></thead>
+        <tbody>
+          ${metrics.projectHealth.slice(0, 8).map(p => `
+            <tr>
+              <td style="font-weight:500;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.name}</td>
+              <td>${p.done}/${p.total}</td>
+              <td>${p.bugs > 0 ? `<span class="tag tag-red">${p.bugs}</span>` : '<span class="tag tag-green">0</span>'}</td>
+              <td style="min-width:100px">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <div class="bar-wrap"><div class="bar-fill" style="width:${p.rate}%;background:${p.rate>=70?'#22c55e':p.rate>=40?'#f59e0b':'#ef4444'}"></div></div>
+                  <span style="font-size:11px;color:#64748b;white-space:nowrap">${p.rate}%</span>
+                </div>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <!-- Assignee Workload -->
+  <section>
+    <h2>👥 Assignee Workload</h2>
+    <table>
+      <thead><tr><th>Assignee</th><th>Total SP</th><th>Done SP</th><th>In Progress SP</th><th>To Do SP</th><th>Awaiting SP</th><th>Status</th></tr></thead>
+      <tbody>
+        ${assigneeRows.map(a => {
+          const active = a.inprog + a.todo;
+          const overloaded = active > 16;
+          return `<tr>
+            <td style="font-weight:500">${a.name}</td>
+            <td>${a.totalSP.toFixed(1)}</td>
+            <td><span class="tag tag-green">${a.done.toFixed(1)}</span></td>
+            <td>${a.inprog.toFixed(1)}</td>
+            <td>${a.todo.toFixed(1)}</td>
+            <td>${a.awaiting.toFixed(1)}</td>
+            <td>${overloaded ? `<span class="tag tag-red">Overloaded (${active.toFixed(1)} SP active)</span>` : `<span class="tag tag-green">OK</span>`}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </section>
+
+  <!-- Sprint Velocity -->
+  ${velocityRows.length > 0 ? `
+  <section>
+    <h2>📈 Sprint Velocity</h2>
+    <table>
+      <thead><tr><th>Sprint</th><th>Completed SP</th><th>Tickets Done</th></tr></thead>
+      <tbody>
+        ${velocityRows.map(v => `
+          <tr>
+            <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.sprint}</td>
+            <td><strong>${v.doneSP.toFixed(0)}</strong></td>
+            <td>${v.count}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  </section>` : ''}
+
+  <!-- Stale Tickets -->
+  ${staleTickets.length > 0 ? `
+  <section>
+    <h2>🕐 Stale In-Progress Tickets (14+ days)</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Summary</th><th>Assignee</th><th>Project</th><th>Days In Progress</th></tr></thead>
+      <tbody>
+        ${staleTickets.map(t => {
+          const days = getTicketAge(t, today);
+          return `<tr>
+            <td style="color:#2563eb;font-weight:500">${getKey(t)}</td>
+            <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${getSummary(t)}</td>
+            <td>${getAssignee(t)}</td>
+            <td>${getProject(t)}</td>
+            <td><span class="tag ${days>=21?'tag-red':'tag-orange'}">${days}d</span></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </section>` : ''}
+
+  <!-- Blocked Tickets -->
+  ${blockedTickets.length > 0 ? `
+  <section>
+    <h2>🚨 Blocked / No Activity (5+ days)</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Summary</th><th>Assignee</th><th>Status</th><th>No Update</th></tr></thead>
+      <tbody>
+        ${blockedTickets.map(({ t, daysSince }) => `
+          <tr style="${daysSince>=10?'background:#fff5f5':''}">
+            <td style="color:#2563eb;font-weight:500">${getKey(t)}</td>
+            <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${getSummary(t)}</td>
+            <td>${getAssignee(t)}</td>
+            <td><span class="tag tag-blue">${getStatus(t)}</span></td>
+            <td><span class="tag ${daysSince>=10?'tag-red':'tag-orange'}">${daysSince}d</span></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  </section>` : ''}
+
+  <div class="footer">
+    Generated by Sprint Analytics Dashboard &nbsp;·&nbsp; ${dateStr}
+    <br/><span class="no-print" style="margin-top:8px;display:inline-block;">
+      <button onclick="window.print()" style="margin-top:10px;padding:8px 20px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">🖨 Print / Save as PDF</button>
+    </span>
+  </div>
+
+</div>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: 'text/html' });
+  const url  = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+}
+
 // ─── Main SprintHealthTab ─────────────────────────────────────────────────────
 const SprintHealthTab = ({ tickets = [], sprints = [], selectedSprint, selectedAssignee, selectedProject }) => {
   const metrics = useMemo(() => {
@@ -669,6 +939,16 @@ const SprintHealthTab = ({ tickets = [], sprints = [], selectedSprint, selectedA
 
   return (
     <div className="space-y-6">
+      {/* Generate Report Button */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => generateSprintReport({ tickets, sprints, selectedSprint, selectedAssignee, selectedProject, metrics })}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px', background: 'linear-gradient(135deg, #3b82f6, #2563eb)', border: 'none', borderRadius: 9, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#fff', boxShadow: '0 2px 8px rgba(59,130,246,0.35)' }}
+        >
+          <span style={{ fontSize: 16 }}>📄</span> Generate Report
+        </button>
+      </div>
+
       {/* KPI Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
