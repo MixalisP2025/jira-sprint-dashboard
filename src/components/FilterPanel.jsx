@@ -15,7 +15,7 @@ const FilterPanel = ({
 
   return (
     <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700">
-      <div className="flex flex-wrap items-center gap-4">
+      <div className="flex flex-wrap items-center justify-center gap-4">
         <div className="flex items-center gap-2">
           <Filter className="w-4 h-4 text-slate-400" />
           <span className="text-sm font-medium text-slate-300">Filters:</span>
