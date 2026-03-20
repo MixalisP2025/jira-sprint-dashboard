@@ -14,6 +14,7 @@ import FilterPanel from './components/FilterPanel';
 import JiraRefreshButton from './components/JiraRefreshButton';
 import ServerStatus from './components/ServerStatus';
 import SprintHealthTab from './components/SprintHealthTab';
+import AllocationTab from './components/AllocationTab';
 
 // Tooltip Component
 const Tooltip = ({ children, content }) => {
@@ -1188,6 +1189,7 @@ const SprintDashboard = () => {
     projects: { icon: Briefcase, label: 'Projects' },
     timeline: { icon: BarChart3, label: 'Timeline' },
     data: { icon: Database, label: 'Raw Data' },
+    allocation: { icon: Target, label: 'Allocation' },
   };
 
   if (data.length === 0) {
@@ -1536,6 +1538,15 @@ const SprintDashboard = () => {
             selectedSprint={selectedSprint}
             selectedAssignee={selectedAssignee}
             selectedProject={selectedProject}
+          />
+        )}
+
+        {activeTab === 'allocation' && (
+          <AllocationTab
+            filteredData={filteredData}
+            selectedSprint={selectedSprint}
+            assigneeCaps={assigneeCaps}
+            stats={stats}
           />
         )}
       </div>
