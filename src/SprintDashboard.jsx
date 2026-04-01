@@ -961,13 +961,12 @@ const SprintDashboard = () => {
     const startDate = new Date(parseInt(startYear), parseInt(startMonth) - 1, parseInt(startDay));
     const endDate = new Date(parseInt(endYear), parseInt(endMonth) - 1, parseInt(endDay));
 
-    const defaultDays = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+    const defaultDays = workingDaysBetween(startDate, endDate);
     const configuredDays = sprintDaysConfig[selectedSprint] || defaultDays;
 
-    const daysSinceStart = Math.ceil((today - startDate) / (1000 * 60 * 60 * 24));
-    const elapsedDays = Math.max(1, Math.min(daysSinceStart + 1, configuredDays));
-    const daysRemaining = Math.max(0, configuredDays - elapsedDays + 1);
-    const percentTimeElapsed = Math.min(100, Math.max(0, Math.round((elapsedDays / configuredDays) * 100)));
+    const elapsedDays = Math.max(0, Math.min(workingDaysBetween(startDate, today), configuredDays));
+    const daysRemaining = Math.max(0, configuredDays - elapsedDays);
+    const percentTimeElapsed = Math.min(100, Math.max(0, configuredDays > 0 ? Math.round((elapsedDays / configuredDays) * 100) : 0));
 
     return {
       startDate: dates.start,
