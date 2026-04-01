@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   Upload, Users, TrendingUp, CheckCircle, Clock, AlertCircle,
   Calendar, Home, LayoutDashboard, Shield, Briefcase, Database,
-  Target, BarChart3, Edit3, X, Save, Filter, PieChart, Download
+  Target, BarChart3, Edit3, X, Save, Filter, PieChart, Download, Mail, Copy, Check
 } from 'lucide-react';
 import {
   PieChart as RechartsPieChart, Pie, Cell,
@@ -15,6 +15,45 @@ import JiraRefreshButton from './components/JiraRefreshButton';
 import ServerStatus from './components/ServerStatus';
 import SprintHealthTab from './components/SprintHealthTab';
 import AllocationTab from './components/AllocationTab';
+import {
+  pingDB, saveIssuesToDB, loadIssuesFromDB,
+  saveCapacityToDB, loadCapacityFromDB,
+  saveSettingsToDB, loadSettingsFromDB,
+} from './utils/dbSync';
+
+// ─── Greek public holidays (fixed + Orthodox Easter) ─────────────────────────
+function getGreekHolidays(year) {
+  const fixed = [
+    `${year}-01-01`, `${year}-01-06`, `${year}-03-25`, `${year}-05-01`,
+    `${year}-08-15`, `${year}-10-28`, `${year}-12-25`, `${year}-12-26`,
+  ];
+  // Orthodox Easter via Meeus/Jones/Butcher (Julian → Gregorian +13 days)
+  const a = year % 4, b = year % 7, c = year % 19;
+  const d = (19 * c + 15) % 30, e = (2 * a + 4 * b - d + 34) % 7;
+  const month = Math.floor((d + e + 114) / 31), day = ((d + e + 114) % 31) + 1;
+  const easter = new Date(year, month - 1, day + 13);
+  const add = (dt, n) => { const x = new Date(dt); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
+  const es = easter.toISOString().slice(0, 10);
+  return new Set([...fixed, add(easter, -48), add(easter, -2), es, add(easter, 1), add(easter, 50)]);
+}
+
+function workingDaysBetween(startDate, endDate) {
+  if (!startDate || !endDate) return 0;
+  const start = new Date(startDate); start.setHours(0, 0, 0, 0);
+  const end   = new Date(endDate);   end.setHours(0, 0, 0, 0);
+  if (end <= start) return 0;
+  const holidays = new Set();
+  for (let y = start.getFullYear(); y <= end.getFullYear(); y++)
+    getGreekHolidays(y).forEach(h => holidays.add(h));
+  let count = 0;
+  const cur = new Date(start); cur.setDate(cur.getDate() + 1);
+  while (cur <= end) {
+    const dow = cur.getDay(), iso = cur.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !holidays.has(iso)) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
 
 // Tooltip Component
 const Tooltip = ({ children, content }) => {
@@ -60,30 +99,69 @@ const SprintDashboard = () => {
   const [selectedAssignees, setSelectedAssignees] = useState(new Set());
   const [bulkCapacityValue, setBulkCapacityValue] = useState('');
   
+  // DB status: 'checking' | 'online' | 'offline'
+  const [dbStatus, setDbStatus] = useState('checking');
+  
   // ============== PERSIST SETTINGS ==============
   useEffect(() => {
-    try {
-      const savedCaps = localStorage.getItem('assigneeCaps');
-      if (savedCaps) setAssigneeCaps(JSON.parse(savedCaps));
-      const savedDays = localStorage.getItem('sprintDaysConfig');
-      if (savedDays) setSprintDaysConfig(JSON.parse(savedDays));
-      const savedProgramEnd = localStorage.getItem('programEndDate');
-      if (savedProgramEnd) setProgramEndDate(savedProgramEnd);
-      const savedProjectTargets = localStorage.getItem('projectTargets');
-      if (savedProjectTargets) setProjectTargets(JSON.parse(savedProjectTargets));
-      
-      // Load cached data and last updated timestamp — auto-restore on page load
-      const savedData = localStorage.getItem('cachedDashboardData');
-      const savedTimestamp = localStorage.getItem('lastUpdatedTimestamp');
-      if (savedData) {
-        const parsed = JSON.parse(savedData);
-        setCachedData(parsed);
-        setData(parsed); // ← auto-load so dashboard opens with last data
+    async function init() {
+      // 1. Check DB connectivity
+      const online = await pingDB();
+      setDbStatus(online ? 'online' : 'offline');
+
+      if (online) {
+        // ── Load from Oracle ──────────────────────────────────────
+        try {
+          const [caps, settings, issues] = await Promise.all([
+            loadCapacityFromDB(),
+            loadSettingsFromDB(),
+            loadIssuesFromDB(),
+          ]);
+
+          if (caps && Object.keys(caps).length > 0) setAssigneeCaps(caps);
+          if (settings) {
+            if (settings.sprintDaysConfig) setSprintDaysConfig(settings.sprintDaysConfig);
+            if (settings.programEndDate)   setProgramEndDate(settings.programEndDate);
+            if (settings.projectTargets)   setProjectTargets(settings.projectTargets);
+          }
+          if (Array.isArray(issues) && issues.length > 0) {
+            setCachedData(issues);
+            setData(issues);
+          }
+          // Timestamp from settings if stored
+          if (settings?.lastUpdated) setLastUpdated(new Date(settings.lastUpdated));
+        } catch (e) {
+          console.warn('DB load failed, falling back to localStorage:', e);
+          loadFromLocalStorage();
+        }
+      } else {
+        // ── Fallback: localStorage ────────────────────────────────
+        loadFromLocalStorage();
       }
-      if (savedTimestamp) {
-        setLastUpdated(new Date(savedTimestamp));
-      }
-    } catch (e) {}
+    }
+
+    function loadFromLocalStorage() {
+      try {
+        const savedCaps = localStorage.getItem('assigneeCaps');
+        if (savedCaps) setAssigneeCaps(JSON.parse(savedCaps));
+        const savedDays = localStorage.getItem('sprintDaysConfig');
+        if (savedDays) setSprintDaysConfig(JSON.parse(savedDays));
+        const savedProgramEnd = localStorage.getItem('programEndDate');
+        if (savedProgramEnd) setProgramEndDate(savedProgramEnd);
+        const savedProjectTargets = localStorage.getItem('projectTargets');
+        if (savedProjectTargets) setProjectTargets(JSON.parse(savedProjectTargets));
+        const savedData = localStorage.getItem('cachedDashboardData');
+        const savedTimestamp = localStorage.getItem('lastUpdatedTimestamp');
+        if (savedData) {
+          const parsed = JSON.parse(savedData);
+          setCachedData(parsed);
+          setData(parsed);
+        }
+        if (savedTimestamp) setLastUpdated(new Date(savedTimestamp));
+      } catch (e) {}
+    }
+
+    init();
   }, []);
   
   // Update clock every second
@@ -96,11 +174,17 @@ const SprintDashboard = () => {
 
   useEffect(() => {
     localStorage.setItem('assigneeCaps', JSON.stringify(assigneeCaps));
-  }, [assigneeCaps]);
+    if (dbStatus === 'online' && Object.keys(assigneeCaps).length > 0) {
+      saveCapacityToDB(assigneeCaps).catch(() => {});
+    }
+  }, [assigneeCaps, dbStatus]);
 
   useEffect(() => {
     localStorage.setItem('sprintDaysConfig', JSON.stringify(sprintDaysConfig));
-  }, [sprintDaysConfig]);
+    if (dbStatus === 'online' && Object.keys(sprintDaysConfig).length > 0) {
+      saveSettingsToDB({ sprintDaysConfig: JSON.parse(JSON.stringify(sprintDaysConfig)) }).catch(() => {});
+    }
+  }, [sprintDaysConfig, dbStatus]);
 
   useEffect(() => {
     if (programEndDate) {
@@ -108,11 +192,17 @@ const SprintDashboard = () => {
     } else {
       localStorage.removeItem('programEndDate');
     }
-  }, [programEndDate]);
+    if (dbStatus === 'online' && programEndDate) {
+      saveSettingsToDB({ programEndDate }).catch(() => {});
+    }
+  }, [programEndDate, dbStatus]);
 
   useEffect(() => {
     localStorage.setItem('projectTargets', JSON.stringify(projectTargets));
-  }, [projectTargets]);
+    if (dbStatus === 'online' && Object.keys(projectTargets).length > 0) {
+      saveSettingsToDB({ projectTargets: JSON.parse(JSON.stringify(projectTargets)) }).catch(() => {});
+    }
+  }, [projectTargets, dbStatus]);
 
   // ============== JIRA REFRESH HANDLER ==============
   const handleJiraRefresh = async (jiraData) => {
@@ -182,6 +272,12 @@ const SprintDashboard = () => {
       // Save to localStorage
       localStorage.setItem('cachedDashboardData', JSON.stringify(jiraData));
       localStorage.setItem('lastUpdatedTimestamp', timestamp.toISOString());
+      
+      // Save to Oracle DB (fire-and-forget, don't block UI)
+      if (dbStatus === 'online') {
+        saveIssuesToDB(jiraData).catch(e => console.warn('DB save issues failed:', e));
+        saveSettingsToDB({ lastUpdated: timestamp.toISOString() }).catch(() => {});
+      }
       
       console.log('✅ Data state updated with', jiraData.length, 'items');
       console.log('=== HANDLE JIRA REFRESH END ===');
@@ -371,6 +467,12 @@ const SprintDashboard = () => {
       // Save to localStorage
       localStorage.setItem('cachedDashboardData', JSON.stringify(parsedData));
       localStorage.setItem('lastUpdatedTimestamp', timestamp.toISOString());
+      
+      // Save to Oracle DB
+      if (dbStatus === 'online') {
+        saveIssuesToDB(parsedData).catch(e => console.warn('DB save issues failed:', e));
+        saveSettingsToDB({ lastUpdated: timestamp.toISOString() }).catch(() => {});
+      }
       
       console.log(`✅ Loaded ${parsedData.length} items with ${successfulEncoding}`);
       alert(`Loaded ${parsedData.length} items\n${successfulEncoding}`);
@@ -1010,7 +1112,8 @@ const SprintDashboard = () => {
       if (dates) {
         const [endMonth, endDay, endYear] = dates.end.split('/');
         const targetEnd = new Date(parseInt(endYear), parseInt(endMonth) - 1, parseInt(endDay));
-        daysRemaining = Math.ceil((targetEnd - today) / (1000 * 60 * 60 * 24));
+        daysRemaining = workingDaysBetween(today, targetEnd);
+        if (targetEnd < today) daysRemaining = -Math.abs(workingDaysBetween(targetEnd, today));
       }
 
       let status = 'On Track';
@@ -1347,7 +1450,16 @@ const SprintDashboard = () => {
               )}
             </div>
             <div className="flex flex-col items-end gap-2">
-              <ServerStatus />
+              <div className="flex items-center gap-3">
+                <ServerStatus />
+                {/* Oracle DB status indicator */}
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className={`w-2 h-2 rounded-full ${dbStatus === 'online' ? 'bg-green-400' : dbStatus === 'offline' ? 'bg-slate-500' : 'bg-yellow-400 animate-pulse'}`} />
+                  <span className={dbStatus === 'online' ? 'text-green-400' : 'text-slate-500'}>
+                    {dbStatus === 'online' ? 'Oracle' : dbStatus === 'offline' ? 'Oracle offline' : 'DB…'}
+                  </span>
+                </div>
+              </div>
               <div className="text-right">
                 <div className="text-lg font-mono font-semibold text-blue-400">
                   {currentTime.toLocaleTimeString('en-GB', { hour12: false })}
@@ -1470,6 +1582,7 @@ const SprintDashboard = () => {
             handleSelectAllAssignees={handleSelectAllAssignees}
             handleToggleAssignee={handleToggleAssignee}
             setShowBulkCapacityEdit={setShowBulkCapacityEdit}
+            filteredData={filteredData}
           />
         )}
 
@@ -2230,9 +2343,286 @@ const RiskSection = ({ riskRegister, selectedSprint, selectedAssignee, selectedP
   );
 };
 
+// ─── TeamOverviewModal ────────────────────────────────────────────────────────
+function TeamOverviewModal({ assigneeList, stats, filteredData, overviewTab, setOverviewTab, onClose }) {
+  const [showEmailPanel, setShowEmailPanel] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
+
+  const statusBadge = s => {
+    const sl = (s || '').toLowerCase();
+    if (sl === 'to do')       return { label: 'To Do',       cls: 'bg-slate-100 text-slate-700' };
+    if (sl === 'in progress') return { label: 'In Progress', cls: 'bg-blue-100 text-blue-700' };
+    if (sl === 'done')        return { label: 'Done',        cls: 'bg-green-100 text-green-700' };
+    if (sl.includes('awaiting') || sl.includes('testing') || sl.includes('versioning'))
+                              return { label: s,             cls: 'bg-amber-100 text-amber-700' };
+    return { label: s, cls: 'bg-slate-100 text-slate-600' };
+  };
+
+  const buildReportText = () => {
+    const pad = (s, n) => String(s).padEnd(n);
+    const lines = [
+      'TEAM OVERVIEW REPORT',
+      'Generated: ' + new Date().toLocaleString(),
+      '',
+      '=== CAPACITY OVERVIEW ===',
+      '',
+      pad('Assignee', 28) + pad('Sprint Cap', 12) + pad('Active SP', 12) + pad('Remaining', 12) + 'Status',
+      '-'.repeat(80),
+    ];
+    assigneeList.forEach(assignee => {
+      const d = stats[assignee];
+      lines.push(
+        pad(assignee, 28) +
+        pad(d.sprintCapacity + ' SP', 12) +
+        pad(d.activeWorkload.toFixed(1) + ' SP', 12) +
+        pad((d.remainingCapacity > 0 ? '+' : '') + d.remainingCapacity.toFixed(1) + ' SP', 12) +
+        d.capacityStatus
+      );
+    });
+    lines.push('');
+    lines.push('=== SPRINT TICKETS BY ASSIGNEE ===');
+    lines.push('');
+    assigneeList.forEach(assignee => {
+      const d = stats[assignee];
+      const myTickets = (filteredData || []).filter(t => (t['Assignee'] || t['D'] || '') === assignee);
+      if (!myTickets.length) return;
+      const toDo     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'to do').length;
+      const inProg   = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'in progress').length;
+      const done     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'done').length;
+      const awaiting = myTickets.filter(t => { const s=(t['Status']||'').toLowerCase(); return s.includes('awaiting')||s.includes('testing')||s.includes('versioning'); }).length;
+      lines.push(assignee + ' [' + d.capacityStatus + ' - ' + d.activeWorkload.toFixed(1) + '/' + d.sprintCapacity + ' SP]');
+      lines.push('  To Do: ' + toDo + '  In Progress: ' + inProg + '  Done: ' + done + '  Awaiting: ' + awaiting);
+      const order = { 'in progress': 0, 'to do': 1 };
+      const sorted = [...myTickets].sort((a, b) => (order[(a['Status']||'').toLowerCase()]??2) - (order[(b['Status']||'').toLowerCase()]??2));
+      sorted.forEach(t => {
+        const key  = t['Issue key'] || t['Key'] || '';
+        const sp   = t['Story Points'] ? '[' + t['Story Points'] + 'sp]' : '     ';
+        const proj = t['Project'] || t['B'] || '';
+        lines.push('  - ' + pad(key, 14) + ' ' + sp + '  ' + pad(t['Status']||'', 20) + ' ' + (proj ? '['+proj+'] ' : '') + (t['Summary']||''));
+      });
+      lines.push('');
+    });
+    return lines.join('\r\n');
+  };
+
+  const handleCopyForEmail = async () => {
+    const text = buildReportText();
+    try { await navigator.clipboard.writeText(text); }
+    catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
+
+  const handleOpenEmail = () => {
+    const subject = encodeURIComponent('Team Overview - ' + new Date().toLocaleDateString());
+    const a = document.createElement('a');
+    a.href = 'mailto:?subject=' + subject;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handlePrint = () => {
+    const printWin = window.open('', '_blank');
+    const rows = assigneeList.map(assignee => {
+      const d = stats[assignee];
+      const myTickets = (filteredData || []).filter(t => (t['Assignee'] || t['D'] || '') === assignee);
+      const toDo     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'to do').length;
+      const inProg   = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'in progress').length;
+      const done     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'done').length;
+      const awaiting = myTickets.filter(t => { const s=(t['Status']||'').toLowerCase(); return s.includes('awaiting')||s.includes('testing')||s.includes('versioning'); }).length;
+      const statusColor = d.capacityStatus === 'Has Capacity' ? '#d1fae5' : d.capacityStatus === 'Fully Allocated' ? '#fef3c7' : '#fee2e2';
+      const ticketRows = myTickets.map(t => '<tr><td style="padding:4px 8px;font-family:monospace;font-size:11px;color:#2563eb">' + (t['Issue key']||t['Key']||'') + '</td><td style="padding:4px 8px;font-size:11px">' + (t['Summary']||'') + '</td><td style="padding:4px 8px;font-size:11px">' + (t['Project']||t['B']||'') + '</td><td style="padding:4px 8px;font-size:11px;text-align:center">' + (t['Story Points']||'') + '</td><td style="padding:4px 8px;font-size:11px">' + (t['Status']||'') + '</td></tr>').join('');
+      return '<div style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;page-break-inside:avoid"><div style="background:' + statusColor + ';padding:10px 14px;display:flex;justify-content:space-between;align-items:center"><div><strong style="font-size:13px">' + assignee + '</strong><span style="margin-left:10px;font-size:11px;color:#475569">' + d.capacityStatus + '</span></div><div style="font-size:12px">Active: <strong>' + d.activeWorkload.toFixed(1) + '</strong> / ' + d.sprintCapacity + ' SP | To Do: ' + toDo + ' In Prog: ' + inProg + ' Done: ' + done + ' Awaiting: ' + awaiting + '</div></div>' + (myTickets.length > 0 ? '<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0"><th style="padding:4px 8px;text-align:left;font-size:11px">Key</th><th style="padding:4px 8px;text-align:left;font-size:11px">Summary</th><th style="padding:4px 8px;text-align:left;font-size:11px">Project</th><th style="padding:4px 8px;text-align:center;font-size:11px">SP</th><th style="padding:4px 8px;text-align:left;font-size:11px">Status</th></tr></thead><tbody>' + ticketRows + '</tbody></table>' : '<p style="padding:8px 14px;font-size:11px;color:#94a3b8">No tickets</p>') + '</div>';
+    }).join('');
+    printWin.document.write('<!DOCTYPE html><html><head><title>Team Overview</title><style>body{font-family:sans-serif;padding:24px;color:#1e293b}h1{font-size:18px;margin-bottom:4px}p.sub{color:#64748b;font-size:12px;margin-bottom:20px}@media print{body{padding:12px}}</style></head><body><h1>Team Overview</h1><p class="sub">Generated: ' + new Date().toLocaleString() + '</p>' + rows + '</body></html>');
+    printWin.document.close();
+    printWin.focus();
+    setTimeout(() => printWin.print(), 400);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[99999] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900">Team Overview</h2>
+            <p className="text-sm text-slate-500 mt-0.5">Capacity vs workload for all team members</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={handlePrint} className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+              <Download className="w-4 h-4" /> Print / PDF
+            </button>
+            <button onClick={() => setShowEmailPanel(s => !s)} className="flex items-center gap-1.5 bg-slate-700 hover:bg-slate-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+              <Mail className="w-4 h-4" /> Email
+            </button>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-700 transition-colors ml-2">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Email helper panel */}
+        {showEmailPanel && (
+          <div className="bg-blue-50 border-b border-blue-200 px-6 py-4">
+            <p className="text-sm text-blue-800 mb-3">
+              The report is too large to fit in a mailto link. Use these two steps:
+            </p>
+            <div className="flex items-center gap-3">
+              <button onClick={handleCopyForEmail}
+                className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                {copied ? 'Copied!' : '1. Copy Report Text'}
+              </button>
+              <button onClick={handleOpenEmail}
+                className="flex items-center gap-1.5 bg-slate-700 hover:bg-slate-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                <Mail className="w-4 h-4" /> 2. Open Email Client
+              </button>
+              <span className="text-xs text-blue-600">Then paste (Ctrl+V) into the email body</span>
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-1 px-6 pt-3 pb-0 border-b border-slate-200 bg-white">
+          {['capacity', 'tickets'].map(tab => (
+            <button key={tab} onClick={() => setOverviewTab(tab)}
+              className={'px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors ' + (overviewTab === tab ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700')}>
+              {tab === 'capacity' ? 'Capacity Overview' : 'Sprint Tickets'}
+            </button>
+          ))}
+        </div>
+        <div className="overflow-y-auto flex-1 p-6">
+          {overviewTab === 'capacity' && (
+            <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+              {assigneeList.map(assignee => {
+                const d = stats[assignee];
+                const active = d.activeWorkload, cap = d.sprintCapacity, remaining = d.remainingCapacity;
+                const pct = cap > 0 ? Math.min(100, (active / cap) * 100) : 0;
+                const statusColor = d.capacityStatus === 'Has Capacity' ? 'border-green-300 bg-green-50' : d.capacityStatus === 'Fully Allocated' ? 'border-amber-300 bg-amber-50' : 'border-red-300 bg-red-50';
+                const barColor    = d.capacityStatus === 'Has Capacity' ? 'bg-green-500' : d.capacityStatus === 'Fully Allocated' ? 'bg-amber-500' : 'bg-red-500';
+                const myTickets   = (filteredData || []).filter(t => (t['Assignee']||t['D']||'') === assignee);
+                const toDo     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'to do').length;
+                const inProg   = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'in progress').length;
+                const done     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'done').length;
+                const awaiting = myTickets.filter(t => { const s=(t['Status']||'').toLowerCase(); return s.includes('awaiting')||s.includes('testing')||s.includes('versioning'); }).length;
+                return (
+                  <div key={assignee} className={'rounded-xl border-2 p-4 ' + statusColor}>
+                    <div className="flex items-start justify-between mb-3">
+                      <div>
+                        <div className="font-bold text-slate-900 text-sm">{assignee}</div>
+                        <div className={'text-xs font-semibold mt-0.5 ' + (d.capacityStatus === 'Has Capacity' ? 'text-green-700' : d.capacityStatus === 'Fully Allocated' ? 'text-amber-700' : 'text-red-700')}>{d.capacityStatus}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-bold text-slate-900">{active.toFixed(1)}<span className="text-xs font-normal text-slate-500"> / {cap} SP</span></div>
+                        <div className={'text-xs font-semibold ' + (remaining > 0 ? 'text-green-600' : remaining === 0 ? 'text-amber-600' : 'text-red-600')}>
+                          {remaining > 0 ? '+' + remaining.toFixed(1) + ' free' : remaining === 0 ? 'Full' : remaining.toFixed(1) + ' over'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="h-2 bg-white/70 rounded-full overflow-hidden mb-3">
+                      <div className={'h-full rounded-full ' + barColor} style={{ width: pct + '%' }} />
+                    </div>
+                    <div className="grid grid-cols-4 gap-1 text-center">
+                      <div className="bg-white/60 rounded-lg py-1.5"><div className="text-sm font-bold text-slate-700">{toDo}</div><div className="text-xs text-slate-500">To Do</div></div>
+                      <div className="bg-white/60 rounded-lg py-1.5"><div className="text-sm font-bold text-blue-700">{inProg}</div><div className="text-xs text-slate-500">In Prog</div></div>
+                      <div className="bg-white/60 rounded-lg py-1.5"><div className="text-sm font-bold text-green-700">{done}</div><div className="text-xs text-slate-500">Done</div></div>
+                      <div className="bg-white/60 rounded-lg py-1.5"><div className="text-sm font-bold text-amber-700">{awaiting}</div><div className="text-xs text-slate-500">Awaiting</div></div>
+                    </div>
+                    <div className="mt-2 text-xs text-slate-500 text-center">{myTickets.length} tickets total</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {overviewTab === 'tickets' && (
+            <div className="space-y-6">
+              {(filteredData||[]).filter(t=>{const a=t['Assignee']||t['D']||'';return !a||a==='Unassigned';}).length > 0 && (() => {
+                const unassigned = (filteredData||[]).filter(t=>{const a=t['Assignee']||t['D']||'';return !a||a==='Unassigned';});
+                return (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    <div className="bg-slate-100 px-4 py-3 flex items-center justify-between">
+                      <span className="font-bold text-slate-700">Unassigned</span>
+                      <span className="text-xs text-slate-500">{unassigned.length} tickets</span>
+                    </div>
+                    <TicketTable tickets={unassigned} statusBadge={statusBadge} />
+                  </div>
+                );
+              })()}
+              {assigneeList.map(assignee => {
+                const d = stats[assignee];
+                const myTickets = (filteredData||[]).filter(t => (t['Assignee']||t['D']||'') === assignee);
+                if (!myTickets.length) return null;
+                const headerBg = d.capacityStatus === 'Has Capacity' ? 'bg-green-50' : d.capacityStatus === 'Fully Allocated' ? 'bg-amber-50' : 'bg-red-50';
+                return (
+                  <div key={assignee} className="border border-slate-200 rounded-xl overflow-hidden">
+                    <div className={headerBg + ' px-4 py-3 flex items-center justify-between'}>
+                      <div className="flex items-center gap-3">
+                        <span className="font-bold text-slate-800">{assignee}</span>
+                        <span className={'text-xs font-semibold px-2 py-0.5 rounded-full ' + (d.capacityStatus === 'Has Capacity' ? 'bg-green-200 text-green-800' : d.capacityStatus === 'Fully Allocated' ? 'bg-amber-200 text-amber-800' : 'bg-red-200 text-red-800')}>{d.capacityStatus}</span>
+                      </div>
+                      <span className="text-xs text-slate-500">{d.activeWorkload.toFixed(1)} / {d.sprintCapacity} SP &nbsp;·&nbsp; {myTickets.length} tickets</span>
+                    </div>
+                    <TicketTable tickets={myTickets} statusBadge={statusBadge} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── TicketTable (used in Team Overview modal) ───────────────────────────────
+function TicketTable({ tickets, statusBadge }) {
+  const sorted = [...tickets].sort((a, b) => {
+    const order = { 'in progress': 0, 'to do': 1, 'awaiting testing': 2, 'awaiting versioning': 2, 'done': 3 };
+    const sa = order[(a['Status']||'').toLowerCase()] ?? 2;
+    const sb = order[(b['Status']||'').toLowerCase()] ?? 2;
+    return sa - sb;
+  });
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b border-slate-100 bg-slate-50">
+          <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 w-28">Key</th>
+          <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500">Summary</th>
+          <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 w-24">Project</th>
+          <th className="px-4 py-2 text-center text-xs font-semibold text-slate-500 w-14">SP</th>
+          <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 w-36">Status</th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-slate-100">
+        {sorted.map((t, i) => {
+          const key = t['Issue key'] || t['Key'] || '';
+          const sp  = parseFloat(t['Story Points']) || 0;
+          const { label, cls } = statusBadge(t['Status']);
+          return (
+            <tr key={key || i} className="hover:bg-slate-50">
+              <td className="px-4 py-2 font-mono text-xs text-blue-600 font-semibold">{key}</td>
+              <td className="px-4 py-2 text-xs text-slate-700 max-w-xs">{t['Summary'] || ''}</td>
+              <td className="px-4 py-2 text-xs text-slate-500">{t['Project'] || t['B'] || ''}</td>
+              <td className="px-4 py-2 text-center text-xs font-semibold text-slate-700">{sp > 0 ? sp : '—'}</td>
+              <td className="px-4 py-2"><span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>{label}</span></td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 // UPDATED: CRITICAL CHANGES - PM-First Capacity Section
-const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssignees, handleSelectAllAssignees, handleToggleAssignee, setShowBulkCapacityEdit }) => {
+const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssignees, handleSelectAllAssignees, handleToggleAssignee, setShowBulkCapacityEdit, filteredData }) => {
   const assigneeList = Object.keys(stats);
+  const [showTeamOverview, setShowTeamOverview] = React.useState(false);
+  const [overviewTab, setOverviewTab] = React.useState('capacity');
 
   // Move calculations outside IIFE to make variables accessible
   const totalPlannedSP = Object.values(stats).reduce((sum, s) => sum + s.totalStoryPoints, 0);
@@ -2355,18 +2745,27 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
       <div className="bg-white rounded-xl p-6">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-slate-900">Sprint Capacity Planning</h2>
-          <button 
-            onClick={() => setShowBulkCapacityEdit(true)}
-            disabled={selectedAssignees.size === 0}
-            className={`px-4 py-2 rounded-lg font-semibold flex items-center gap-2 ${
-              selectedAssignees.size > 0 
-                ? 'bg-blue-600 text-white hover:bg-blue-500' 
-                : 'bg-slate-300 text-slate-500 cursor-not-allowed'
-            }`}
-          >
-            <Edit3 className="w-4 h-4" />
-            Bulk Edit Capacity ({selectedAssignees.size})
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowTeamOverview(true)}
+              className="px-4 py-2 rounded-lg font-semibold flex items-center gap-2 bg-slate-700 text-white hover:bg-slate-600"
+            >
+              <Users className="w-4 h-4" />
+              Team Overview
+            </button>
+            <button 
+              onClick={() => setShowBulkCapacityEdit(true)}
+              disabled={selectedAssignees.size === 0}
+              className={`px-4 py-2 rounded-lg font-semibold flex items-center gap-2 ${
+                selectedAssignees.size > 0 
+                  ? 'bg-blue-600 text-white hover:bg-blue-500' 
+                  : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+              }`}
+            >
+              <Edit3 className="w-4 h-4" />
+              Bulk Edit Capacity ({selectedAssignees.size})
+            </button>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -2481,6 +2880,18 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
           </div>
         </div>
       </div>
+
+      {/* Team Overview Modal */}
+      {showTeamOverview && (
+        <TeamOverviewModal
+          assigneeList={assigneeList}
+          stats={stats}
+          filteredData={filteredData}
+          overviewTab={overviewTab}
+          setOverviewTab={setOverviewTab}
+          onClose={() => setShowTeamOverview(false)}
+        />
+      )}
     </div>
   );
 };

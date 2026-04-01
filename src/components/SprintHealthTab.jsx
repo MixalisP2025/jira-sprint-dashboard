@@ -29,6 +29,78 @@ function daysBetween(a, b) {
   return Math.max(0, Math.round((new Date(b) - new Date(a)) / 86400000));
 }
 
+// ─── Greek public holidays (fixed + Easter-based) ────────────────────────────
+function getGreekHolidays(year) {
+  // Fixed public holidays
+  const fixed = [
+    `${year}-01-01`, // New Year's Day
+    `${year}-01-06`, // Epiphany
+    `${year}-03-25`, // Independence Day
+    `${year}-05-01`, // Labour Day
+    `${year}-08-15`, // Assumption of Mary
+    `${year}-10-28`, // Ohi Day
+    `${year}-12-25`, // Christmas Day
+    `${year}-12-26`, // Second Day of Christmas
+  ];
+
+  // Easter (Orthodox) — Meeus/Jones/Butcher algorithm for Julian calendar
+  const a = year % 4;
+  const b = year % 7;
+  const c = year % 19;
+  const d = (19 * c + 15) % 30;
+  const e = (2 * a + 4 * b - d + 34) % 7;
+  const month = Math.floor((d + e + 114) / 31);
+  const day = ((d + e + 114) % 31) + 1;
+  // Convert Julian to Gregorian (add 13 days for 21st century)
+  const julianEaster = new Date(year, month - 1, day + 13);
+  const easterSunday = julianEaster;
+
+  const addDays = (date, n) => {
+    const d = new Date(date);
+    d.setDate(d.getDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+
+  const easterStr = easterSunday.toISOString().slice(0, 10);
+  const movable = [
+    addDays(easterSunday, -48), // Clean Monday (Kathari Deftera)
+    addDays(easterSunday, -2),  // Good Friday
+    easterStr,                   // Easter Sunday
+    addDays(easterSunday, 1),   // Easter Monday
+    addDays(easterSunday, 50),  // Whit Monday (Agiou Pneumatos)
+  ];
+
+  return new Set([...fixed, ...movable]);
+}
+
+// Count working days between two dates (exclusive of start, inclusive of end)
+// Skips weekends and Greek public holidays
+function workingDaysBetween(startDate, endDate) {
+  if (!startDate || !endDate) return 0;
+  const start = new Date(startDate);
+  const end   = new Date(endDate);
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+  if (end <= start) return 0;
+
+  // Pre-compute holidays for all years in range
+  const holidays = new Set();
+  for (let y = start.getFullYear(); y <= end.getFullYear(); y++) {
+    getGreekHolidays(y).forEach(h => holidays.add(h));
+  }
+
+  let count = 0;
+  const cur = new Date(start);
+  cur.setDate(cur.getDate() + 1); // start exclusive
+  while (cur <= end) {
+    const dow = cur.getDay();
+    const iso = cur.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !holidays.has(iso)) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
 function getTicketAge(t, today) {
   const dateStr = getUpdated(t) || getCreated(t);
   return dateStr ? daysBetween(dateStr, today) : 0;
@@ -193,8 +265,8 @@ function BurndownChart({ tickets = [], selectedSprint = 'all', sprints = [] }) {
     if (!dates) return { data: [], totalSP: 0, doneSP: 0, projShortfall: null, daysLeft: null };
     const { start, end } = dates;
     const today     = new Date();
-    const totalDays = Math.max(1, daysBetween(start, end));
-    const elapsed   = Math.min(totalDays, Math.max(0, daysBetween(start, today)));
+    const totalDays = Math.max(1, workingDaysBetween(start, end));
+    const elapsed   = Math.min(totalDays, Math.max(0, workingDaysBetween(start, today)));
     const totalSP   = tickets.reduce((s, t) => s + getSP(t), 0);
     const doneSP    = tickets.filter(t => isDone(getStatus(t))).reduce((s, t) => s + getSP(t), 0);
     const remainSP  = totalSP - doneSP;
