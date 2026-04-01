@@ -965,13 +965,14 @@ const SprintDashboard = () => {
     const configuredDays = sprintDaysConfig[selectedSprint] || defaultDays;
 
     const elapsedDays = Math.max(0, Math.min(workingDaysBetween(startDate, today), configuredDays));
+    const currentDay = Math.min(elapsedDays + 1, configuredDays); // Day 1 = sprint start day
     const daysRemaining = Math.max(0, configuredDays - elapsedDays);
     const percentTimeElapsed = Math.min(100, Math.max(0, configuredDays > 0 ? Math.round((elapsedDays / configuredDays) * 100) : 0));
 
     return {
       startDate: dates.start,
       endDate: dates.end,
-      elapsedDays,
+      elapsedDays: currentDay,
       totalDays: configuredDays,
       daysRemaining,
       percentTimeElapsed,
