@@ -667,6 +667,39 @@ const SprintDashboard = () => {
 
     // Use updated caps for this calculation
     const capsToUse = { ...assigneeCaps, ...updatedCaps };
+
+    // ── Holiday capacity reduction ────────────────────────────────────────────
+    // If a specific sprint is selected, reduce each person's capacity proportionally
+    // for any Greek public holidays that fall within the sprint's working days.
+    let holidayCapacityMultiplier = 1;
+    if (selectedSprint && selectedSprint !== 'all' && sprintDates[selectedSprint]) {
+      const sd = sprintDates[selectedSprint];
+      const [sm, sday, sy] = sd.start.split('/');
+      const [em, eday, ey] = sd.end.split('/');
+      const sprintStart = new Date(parseInt(sy), parseInt(sm) - 1, parseInt(sday));
+      const sprintEnd   = new Date(parseInt(ey), parseInt(em) - 1, parseInt(eday));
+      sprintStart.setHours(0, 0, 0, 0);
+      sprintEnd.setHours(0, 0, 0, 0);
+
+      const totalWorkingDays = workingDaysBetween(sprintStart, sprintEnd);
+
+      // Count holidays that fall on working days within the sprint
+      let holidaysInSprint = 0;
+      const allHolidays = new Set();
+      for (let y = sprintStart.getFullYear(); y <= sprintEnd.getFullYear(); y++)
+        getGreekHolidays(y).forEach(h => allHolidays.add(h));
+
+      const cur = new Date(sprintStart); cur.setDate(cur.getDate() + 1);
+      while (cur <= sprintEnd) {
+        const dow = cur.getDay(), iso = cur.toISOString().slice(0, 10);
+        if (dow !== 0 && dow !== 6 && allHolidays.has(iso)) holidaysInSprint++;
+        cur.setDate(cur.getDate() + 1);
+      }
+
+      if (totalWorkingDays > 0 && holidaysInSprint > 0) {
+        holidayCapacityMultiplier = (totalWorkingDays - holidaysInSprint) / totalWorkingDays;
+      }
+    }
     
     // DEBUG: Show first 10 items to see what we're working with
     if (filteredData.length > 0) {
@@ -712,7 +745,7 @@ const SprintDashboard = () => {
       if (!byAssignee[assignee]) {
         byAssignee[assignee] = {
           // Capacity relevant metrics
-          sprintCapacity: capsToUse[assignee] || 16,
+          sprintCapacity: Math.round((capsToUse[assignee] || 16) * holidayCapacityMultiplier * 10) / 10,
           activeWorkload: 0,  // NEW: Only To Do + In Progress
           remainingCapacity: 0,
           
@@ -921,7 +954,7 @@ const SprintDashboard = () => {
     console.log('===== END CAPACITY SUMMARY =====\n');
 
     return byAssignee;
-  }, [filteredData, assigneeCaps]);
+  }, [filteredData, assigneeCaps, selectedSprint, sprintDates]);
 
   // Auto-add new assignees from Jira with default capacity
   useEffect(() => {
