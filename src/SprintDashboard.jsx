@@ -568,7 +568,12 @@ const SprintDashboard = () => {
       if (na && nb) return Number(nb) - Number(na);
       return b.localeCompare(a);
     });
-    return ['all', ...arr];
+    // Add Backlog option if any items have no sprint
+    const hasBacklog = data.some(item => {
+      const s = item['Sprint'] || item['G'] || item['Custom field (Sprint)'] || item['Sprints'] || item['Sprint Name'] || '';
+      return !s.trim();
+    });
+    return ['all', ...(hasBacklog ? ['backlog'] : []), ...arr];
   }, [data]);
 
   const assignees = useMemo(() => {
@@ -618,7 +623,9 @@ const SprintDashboard = () => {
       }
       
       let sprintMatch = selectedSprint === 'all';
-      if (!sprintMatch && sprint) {
+      if (!sprintMatch && selectedSprint === 'backlog') {
+        sprintMatch = !sprint.trim(); // items with no sprint
+      } else if (!sprintMatch && sprint) {
         if (sprint.includes(',')) {
           sprintMatch = sprint.split(',').some(s => s.trim() === selectedSprint);
         } else {

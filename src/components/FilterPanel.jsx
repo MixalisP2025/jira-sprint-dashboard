@@ -28,7 +28,7 @@ const FilterPanel = ({
         >
           {sprints.map(s => (
             <option key={s} value={s}>
-              {s === 'all' ? 'All Sprints' : s}
+              {s === 'all' ? 'All Sprints' : s === 'backlog' ? '📋 Backlog (No Sprint)' : s}
             </option>
           ))}
         </select>
