@@ -3559,6 +3559,7 @@ const ThemeAnalysisSection = ({ filteredData, selectedSprint, selectedAssignee, 
 const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, selectedProject }) => {
   const [showNoStoryPoints, setShowNoStoryPoints] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
   const [hideDone, setHideDone] = useState(false);
   const [storiesOnly, setStoriesOnly] = useState(false);
   const [hideAwaitingTesting, setHideAwaitingTesting] = useState(false);
@@ -3590,6 +3591,9 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
   
   const displayData = useMemo(() => {
     let result = allData;
+    if (typeFilter !== 'all') {
+      result = result.filter(item => (item['Issue Type'] || 'Other') === typeFilter);
+    }
     if (showNoStoryPoints) {
       result = result.filter(item => (parseFloat(item['Story Points']) || 0) === 0);
     }
@@ -3609,7 +3613,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
       result = result.filter(item => item['Status'] !== 'Awaiting Versioning');
     }
     return result;
-  }, [allData, showNoStoryPoints, statusFilter, hideDone, storiesOnly, hideAwaitingTesting, hideAwaitingVersioning]);
+  }, [allData, showNoStoryPoints, statusFilter, typeFilter, hideDone, storiesOnly, hideAwaitingTesting, hideAwaitingVersioning]);
 
   const exportToExcel = () => {
     // Prepare data for export
@@ -3669,18 +3673,36 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
       {/* Issue Type KPI Row */}
       {issueTypeCounts.length > 0 && (
         <div className="bg-white rounded-xl p-4 shadow-sm">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Issue Types</p>
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Issue Types — click to filter</p>
           <div className="flex flex-wrap gap-3">
             {issueTypeCounts.map(([type, count]) => {
               const style = TYPE_STYLES[type] || { bg: 'bg-slate-50', border: 'border-slate-300', text: 'text-slate-700', icon: '🔷' };
+              const isActive = typeFilter === type;
               return (
-                <div key={type} className={`flex items-center gap-2 px-4 py-2 rounded-lg border ${style.bg} ${style.border}`}>
+                <button
+                  key={type}
+                  onClick={() => setTypeFilter(isActive ? 'all' : type)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-all hover:shadow-md ${
+                    isActive
+                      ? `${style.bg} ${style.border} ring-2 ring-offset-1 shadow-lg`
+                      : `${style.bg} ${style.border} hover:opacity-80`
+                  }`}
+                >
                   <span>{style.icon}</span>
                   <span className={`text-2xl font-bold ${style.text}`}>{count}</span>
                   <span className={`text-sm font-medium ${style.text}`}>{type}</span>
-                </div>
+                  {isActive && <span className={`text-xs ${style.text} ml-1`}>✓</span>}
+                </button>
               );
             })}
+            {typeFilter !== 'all' && (
+              <button
+                onClick={() => setTypeFilter('all')}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-300 bg-slate-100 text-slate-600 text-sm font-medium hover:bg-slate-200 transition-all"
+              >
+                ✕ Clear
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -3724,17 +3746,18 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
         </button>
       </div>
 
-      {(statusFilter !== 'all' || showNoStoryPoints || hideDone || storiesOnly) && (
+      {(statusFilter !== 'all' || showNoStoryPoints || hideDone || storiesOnly || typeFilter !== 'all') && (
         <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-lg">
           <div className="flex items-center justify-between">
             <div className="text-sm text-blue-800">
               <span className="font-semibold">Active Filters:</span>
               {statusFilter !== 'all' && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">{statusFilter}</span>}
+              {typeFilter !== 'all' && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">Type: {typeFilter}</span>}
               {showNoStoryPoints && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">No Story Points</span>}
               {hideDone && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">Hide Done</span>}
               {storiesOnly && <span className="inline-block bg-blue-200 px-3 py-1 rounded ml-2 text-xs font-medium">Stories Only</span>}
             </div>
-            <button onClick={() => { setStatusFilter('all'); setShowNoStoryPoints(false); setHideDone(false); setStoriesOnly(false); }} className="text-sm text-blue-600 hover:text-blue-800 font-semibold underline">
+            <button onClick={() => { setStatusFilter('all'); setTypeFilter('all'); setShowNoStoryPoints(false); setHideDone(false); setStoriesOnly(false); }} className="text-sm text-blue-600 hover:text-blue-800 font-semibold underline">
               Clear All
             </button>
           </div>
