@@ -677,10 +677,8 @@ const SprintDashboard = () => {
       const sd = sprintDates[selectedSprint];
       const [sm, sday, sy] = sd.start.split('/');
       const [em, eday, ey] = sd.end.split('/');
-      const sprintStart = new Date(parseInt(sy), parseInt(sm) - 1, parseInt(sday));
-      const sprintEnd   = new Date(parseInt(ey), parseInt(em) - 1, parseInt(eday));
-      sprintStart.setHours(0, 0, 0, 0);
-      sprintEnd.setHours(0, 0, 0, 0);
+      const sprintStart = new Date(`${sy}-${sm.padStart(2,'0')}-${sday.padStart(2,'0')}T00:00:00Z`);
+      const sprintEnd   = new Date(`${ey}-${em.padStart(2,'0')}-${eday.padStart(2,'0')}T00:00:00Z`);
       const totalWorkingDays = workingDaysBetween(sprintStart, sprintEnd);
       if (totalWorkingDays > 0) {
         const allHolidays = new Set();
@@ -988,8 +986,8 @@ const SprintDashboard = () => {
     const [startMonth, startDay, startYear] = dates.start.split('/');
     const [endMonth, endDay, endYear] = dates.end.split('/');
 
-    const startDate = new Date(parseInt(startYear), parseInt(startMonth) - 1, parseInt(startDay));
-    const endDate = new Date(parseInt(endYear), parseInt(endMonth) - 1, parseInt(endDay));
+    const startDate = new Date(`${startYear}-${startMonth.padStart(2,'0')}-${startDay.padStart(2,'0')}T00:00:00Z`);
+    const endDate   = new Date(`${endYear}-${endMonth.padStart(2,'0')}-${endDay.padStart(2,'0')}T00:00:00Z`);
 
     const defaultDays = workingDaysBetween(startDate, endDate);
     const configuredDays = sprintDaysConfig[selectedSprint] || defaultDays;
@@ -1016,10 +1014,8 @@ const SprintDashboard = () => {
     const sd = sprintDates[selectedSprint];
     const [sm, sday, sy] = sd.start.split('/');
     const [em, eday, ey] = sd.end.split('/');
-    const sprintStart = new Date(parseInt(sy), parseInt(sm) - 1, parseInt(sday));
-    const sprintEnd   = new Date(parseInt(ey), parseInt(em) - 1, parseInt(eday));
-    sprintStart.setHours(0, 0, 0, 0);
-    sprintEnd.setHours(0, 0, 0, 0);
+    const sprintStart = new Date(`${sy}-${sm.padStart(2,'0')}-${sday.padStart(2,'0')}T00:00:00Z`);
+    const sprintEnd   = new Date(`${ey}-${em.padStart(2,'0')}-${eday.padStart(2,'0')}T00:00:00Z`);
 
     const allHolidays = new Set();
     for (let y = sprintStart.getFullYear(); y <= sprintEnd.getFullYear(); y++)
@@ -1174,9 +1170,10 @@ const SprintDashboard = () => {
 
       if (dates) {
         const [endMonth, endDay, endYear] = dates.end.split('/');
-        const targetEnd = new Date(parseInt(endYear), parseInt(endMonth) - 1, parseInt(endDay));
-        daysRemaining = workingDaysBetween(today, targetEnd);
-        if (targetEnd < today) daysRemaining = -Math.abs(workingDaysBetween(targetEnd, today));
+        const targetEnd = new Date(`${endYear}-${endMonth.padStart(2,'0')}-${endDay.padStart(2,'0')}T00:00:00Z`);
+        const todayUTC  = new Date(today.toISOString().slice(0,10) + 'T00:00:00Z');
+        daysRemaining = workingDaysBetween(todayUTC, targetEnd);
+        if (targetEnd < todayUTC) daysRemaining = -Math.abs(workingDaysBetween(targetEnd, todayUTC));
       }
 
       let status = 'On Track';
