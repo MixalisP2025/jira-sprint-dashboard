@@ -668,38 +668,10 @@ const SprintDashboard = () => {
     // Use updated caps for this calculation
     const capsToUse = { ...assigneeCaps, ...updatedCaps };
 
-    // ── Holiday capacity reduction ────────────────────────────────────────────
-    // If a specific sprint is selected, reduce each person's capacity proportionally
-    // for any Greek public holidays that fall within the sprint's working days.
-    let holidayCapacityMultiplier = 1;
-    if (selectedSprint && selectedSprint !== 'all' && sprintDates[selectedSprint]) {
-      const sd = sprintDates[selectedSprint];
-      const [sm, sday, sy] = sd.start.split('/');
-      const [em, eday, ey] = sd.end.split('/');
-      const sprintStart = new Date(parseInt(sy), parseInt(sm) - 1, parseInt(sday));
-      const sprintEnd   = new Date(parseInt(ey), parseInt(em) - 1, parseInt(eday));
-      sprintStart.setHours(0, 0, 0, 0);
-      sprintEnd.setHours(0, 0, 0, 0);
-
-      const totalWorkingDays = workingDaysBetween(sprintStart, sprintEnd);
-
-      // Count holidays that fall on working days within the sprint
-      let holidaysInSprint = 0;
-      const allHolidays = new Set();
-      for (let y = sprintStart.getFullYear(); y <= sprintEnd.getFullYear(); y++)
-        getGreekHolidays(y).forEach(h => allHolidays.add(h));
-
-      const cur = new Date(sprintStart); cur.setDate(cur.getDate() + 1);
-      while (cur <= sprintEnd) {
-        const dow = cur.getDay(), iso = cur.toISOString().slice(0, 10);
-        if (dow !== 0 && dow !== 6 && allHolidays.has(iso)) holidaysInSprint++;
-        cur.setDate(cur.getDate() + 1);
-      }
-
-      if (totalWorkingDays > 0 && holidaysInSprint > 0) {
-        holidayCapacityMultiplier = (totalWorkingDays - holidaysInSprint) / totalWorkingDays;
-      }
-    }
+    // ── Holiday notice (no auto-reduction — user sets capacity manually) ──────
+    // Holiday awareness is reflected in sprint days/timeline calculations.
+    // Capacity values here are exactly what the user has configured.
+    const holidayCapacityMultiplier = 1;
     
     // DEBUG: Show first 10 items to see what we're working with
     if (filteredData.length > 0) {
@@ -745,7 +717,7 @@ const SprintDashboard = () => {
       if (!byAssignee[assignee]) {
         byAssignee[assignee] = {
           // Capacity relevant metrics
-          sprintCapacity: Math.round((capsToUse[assignee] || 16) * holidayCapacityMultiplier * 10) / 10,
+          sprintCapacity: capsToUse[assignee] || 16,
           activeWorkload: 0,  // NEW: Only To Do + In Progress
           remainingCapacity: 0,
           
@@ -1012,6 +984,39 @@ const SprintDashboard = () => {
       isConfigured: !!sprintDaysConfig[selectedSprint]
     };
   }, [selectedSprint, sprintDates, sprintDaysConfig]);
+
+  // Compute Greek public holidays within the selected sprint for capacity warning
+  const sprintHolidays = useMemo(() => {
+    if (!selectedSprint || selectedSprint === 'all' || !sprintDates[selectedSprint]) return [];
+    const sd = sprintDates[selectedSprint];
+    const [sm, sday, sy] = sd.start.split('/');
+    const [em, eday, ey] = sd.end.split('/');
+    const sprintStart = new Date(parseInt(sy), parseInt(sm) - 1, parseInt(sday));
+    const sprintEnd   = new Date(parseInt(ey), parseInt(em) - 1, parseInt(eday));
+    sprintStart.setHours(0, 0, 0, 0);
+    sprintEnd.setHours(0, 0, 0, 0);
+
+    const allHolidays = new Set();
+    for (let y = sprintStart.getFullYear(); y <= sprintEnd.getFullYear(); y++)
+      getGreekHolidays(y).forEach(h => allHolidays.add(h));
+
+    const names = {
+      '01-01': 'New Year\'s Day', '01-06': 'Epiphany', '03-25': 'Independence Day',
+      '05-01': 'Labour Day', '08-15': 'Assumption of Mary', '10-28': 'Ohi Day',
+      '12-25': 'Christmas Day', '12-26': 'Second Day of Christmas',
+    };
+    const found = [];
+    const cur = new Date(sprintStart); cur.setDate(cur.getDate() + 1);
+    while (cur <= sprintEnd) {
+      const dow = cur.getDay(), iso = cur.toISOString().slice(0, 10);
+      if (dow !== 0 && dow !== 6 && allHolidays.has(iso)) {
+        const mmdd = iso.slice(5);
+        found.push({ date: iso, name: names[mmdd] || 'Public Holiday' });
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+    return found;
+  }, [selectedSprint, sprintDates]);
 
   // Sprint Health Summary - UPDATED with new model
   const sprintHealthSummary = useMemo(() => {
@@ -1616,6 +1621,7 @@ const SprintDashboard = () => {
             handleToggleAssignee={handleToggleAssignee}
             setShowBulkCapacityEdit={setShowBulkCapacityEdit}
             filteredData={filteredData}
+            sprintHolidays={sprintHolidays}
           />
         )}
 
@@ -2652,10 +2658,27 @@ function TicketTable({ tickets, statusBadge }) {
 }
 
 // UPDATED: CRITICAL CHANGES - PM-First Capacity Section
-const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssignees, handleSelectAllAssignees, handleToggleAssignee, setShowBulkCapacityEdit, filteredData }) => {
+const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssignees, handleSelectAllAssignees, handleToggleAssignee, setShowBulkCapacityEdit, filteredData, sprintHolidays = [] }) => {
   const assigneeList = Object.keys(stats);
   const [showTeamOverview, setShowTeamOverview] = React.useState(false);
   const [overviewTab, setOverviewTab] = React.useState('capacity');
+  const [saving, setSaving] = React.useState(false);
+  const [saveMsg, setSaveMsg] = React.useState('');
+
+  const handleSaveCapacity = async () => {
+    setSaving(true);
+    setSaveMsg('');
+    try {
+      localStorage.setItem('assigneeCaps', JSON.stringify(assigneeCaps));
+      await saveCapacityToDB(assigneeCaps);
+      setSaveMsg('✅ Saved');
+    } catch (e) {
+      setSaveMsg('⚠️ Saved locally (DB unavailable)');
+    } finally {
+      setSaving(false);
+      setTimeout(() => setSaveMsg(''), 3000);
+    }
+  };
 
   // Move calculations outside IIFE to make variables accessible
   const totalPlannedSP = Object.values(stats).reduce((sum, s) => sum + s.totalStoryPoints, 0);
@@ -2779,6 +2802,15 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-slate-900">Sprint Capacity Planning</h2>
           <div className="flex items-center gap-2">
+            {saveMsg && <span className="text-sm font-medium text-green-700">{saveMsg}</span>}
+            <button
+              onClick={handleSaveCapacity}
+              disabled={saving}
+              className="px-4 py-2 rounded-lg font-semibold flex items-center gap-2 bg-green-600 text-white hover:bg-green-500 disabled:opacity-50"
+            >
+              <Save className="w-4 h-4" />
+              {saving ? 'Saving…' : 'Save Capacity'}
+            </button>
             <button
               onClick={() => setShowTeamOverview(true)}
               className="px-4 py-2 rounded-lg font-semibold flex items-center gap-2 bg-slate-700 text-white hover:bg-slate-600"
@@ -2800,6 +2832,16 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
             </button>
           </div>
         </div>
+        {sprintHolidays.length > 0 && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-300 rounded-lg flex items-start gap-2 text-sm text-amber-800">
+            <span className="text-lg flex-shrink-0">🗓️</span>
+            <div>
+              <strong>Public holiday{sprintHolidays.length > 1 ? 's' : ''} in this sprint:</strong>{' '}
+              {sprintHolidays.map(h => `${h.name} (${h.date})`).join(', ')}.
+              {' '}Consider reducing individual capacities to reflect the lost working day{sprintHolidays.length > 1 ? 's' : ''}, then click <strong>Save Capacity</strong>.
+            </div>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
