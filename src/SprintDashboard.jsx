@@ -3568,6 +3568,25 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
   const allData = useMemo(() => {
     return filteredData;
   }, [filteredData]);
+
+  // Issue type KPI counts
+  const issueTypeCounts = useMemo(() => {
+    const counts = {};
+    allData.forEach(item => {
+      const type = item['Issue Type'] || 'Other';
+      counts[type] = (counts[type] || 0) + 1;
+    });
+    // Sort by count descending
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  }, [allData]);
+
+  const TYPE_STYLES = {
+    'Story':    { bg: 'bg-blue-50',   border: 'border-blue-300',   text: 'text-blue-800',   icon: '📖' },
+    'Bug':      { bg: 'bg-red-50',    border: 'border-red-300',    text: 'text-red-800',    icon: '🐛' },
+    'Task':     { bg: 'bg-green-50',  border: 'border-green-300',  text: 'text-green-800',  icon: '✅' },
+    'Sub-task': { bg: 'bg-slate-50',  border: 'border-slate-300',  text: 'text-slate-700',  icon: '🔹' },
+    'Epic':     { bg: 'bg-purple-50', border: 'border-purple-300', text: 'text-purple-800', icon: '⚡' },
+  };
   
   const displayData = useMemo(() => {
     let result = allData;
@@ -3647,6 +3666,25 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
 
   return (
     <div className="space-y-6">
+      {/* Issue Type KPI Row */}
+      {issueTypeCounts.length > 0 && (
+        <div className="bg-white rounded-xl p-4 shadow-sm">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Issue Types</p>
+          <div className="flex flex-wrap gap-3">
+            {issueTypeCounts.map(([type, count]) => {
+              const style = TYPE_STYLES[type] || { bg: 'bg-slate-50', border: 'border-slate-300', text: 'text-slate-700', icon: '🔷' };
+              return (
+                <div key={type} className={`flex items-center gap-2 px-4 py-2 rounded-lg border ${style.bg} ${style.border}`}>
+                  <span>{style.icon}</span>
+                  <span className={`text-2xl font-bold ${style.text}`}>{count}</span>
+                  <span className={`text-sm font-medium ${style.text}`}>{type}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Status Filter Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <button onClick={() => setStatusFilter(statusFilter === 'Done' ? 'all' : 'Done')} className={`p-4 rounded-lg border-l-4 transition-all cursor-pointer hover:shadow-md ${statusFilter === 'Done' ? 'bg-green-100 border-green-600 ring-2 ring-green-500 shadow-lg' : 'bg-green-50 border-green-500 hover:bg-green-100'}`}>
