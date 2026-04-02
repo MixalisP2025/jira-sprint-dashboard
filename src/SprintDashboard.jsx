@@ -3571,6 +3571,25 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
   const [storiesOnly, setStoriesOnly] = useState(false);
   const [hideAwaitingTesting, setHideAwaitingTesting] = useState(false);
   const [hideAwaitingVersioning, setHideAwaitingVersioning] = useState(false);
+  const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
+  const [flaggedTickets, setFlaggedTickets] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('flaggedTickets') || '[]')); }
+    catch { return new Set(); }
+  });
+
+  const toggleFlag = (key) => {
+    setFlaggedTickets(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      localStorage.setItem('flaggedTickets', JSON.stringify([...next]));
+      return next;
+    });
+  };
+
+  const clearAllFlags = () => {
+    setFlaggedTickets(new Set());
+    localStorage.removeItem('flaggedTickets');
+  };
   
   // NEW: Use ALL data, not just filteredData
   const allData = useMemo(() => {
@@ -3619,8 +3638,11 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
     if (hideAwaitingVersioning) {
       result = result.filter(item => item['Status'] !== 'Awaiting Versioning');
     }
+    if (showFlaggedOnly) {
+      result = result.filter(item => flaggedTickets.has(item['Issue key'] || item['Key']));
+    }
     return result;
-  }, [allData, showNoStoryPoints, statusFilter, typeFilter, hideDone, storiesOnly, hideAwaitingTesting, hideAwaitingVersioning]);
+  }, [allData, showNoStoryPoints, statusFilter, typeFilter, hideDone, storiesOnly, hideAwaitingTesting, hideAwaitingVersioning, showFlaggedOnly, flaggedTickets]);
 
   const exportToExcel = () => {
     // Prepare data for export
@@ -3839,6 +3861,26 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
               />
               <span className="text-slate-700 text-sm font-medium select-none">No Story Points Only</span>
             </label>
+
+            <button
+              onClick={() => setShowFlaggedOnly(!showFlaggedOnly)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${
+                showFlaggedOnly
+                  ? 'bg-orange-500 border-orange-500 text-white'
+                  : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-orange-50 hover:border-orange-300'
+              }`}
+            >
+              🚩 Flagged{flaggedTickets.size > 0 && <span className={`px-1.5 py-0.5 rounded-full text-xs font-bold ${showFlaggedOnly ? 'bg-white text-orange-600' : 'bg-orange-500 text-white'}`}>{flaggedTickets.size}</span>}
+            </button>
+
+            {flaggedTickets.size > 0 && (
+              <button
+                onClick={clearAllFlags}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-100 text-slate-500 text-sm hover:bg-red-50 hover:text-red-600 hover:border-red-300 transition-colors"
+              >
+                ✕ Clear Flags
+              </button>
+            )}
           </div>
         </div>
 
@@ -3846,6 +3888,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
           <table className="w-full text-sm text-left text-slate-700">
             <thead className="text-xs text-slate-600 uppercase bg-slate-50 font-bold">
               <tr>
+                <th className="px-3 py-3 text-center w-10">🚩</th>
                 <th className="px-4 py-3">Key</th>
                 <th className="px-4 py-3">Type</th>
                 <th className="px-4 py-3 w-1/3">Summary</th>
@@ -3858,14 +3901,25 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
             <tbody className="divide-y divide-slate-200">
               {displayData.length > 0 ? (
                 displayData.slice(0, 200).map((ticket, idx) => {
+                  const key = ticket['Issue key'] || ticket['Key'];
+                  const isFlagged = flaggedTickets.has(key);
                   const sp = parseFloat(ticket['Story Points']) || 
                          parseFloat(ticket['Story points']) ||
                          parseFloat(ticket['Custom field (Story Points)']) ||
                          0;
                   return (
-                    <tr key={idx} className="bg-white hover:bg-slate-50 transition-colors">
+                    <tr key={idx} className={`transition-colors hover:bg-slate-50 ${isFlagged ? 'bg-orange-50' : 'bg-white'}`}>
+                      <td className="px-3 py-3 text-center">
+                        <button
+                          onClick={() => toggleFlag(key)}
+                          title={isFlagged ? 'Remove flag' : 'Flag for sprint planning'}
+                          className={`text-lg leading-none transition-all hover:scale-125 ${isFlagged ? 'opacity-100' : 'opacity-20 hover:opacity-60'}`}
+                        >
+                          🚩
+                        </button>
+                      </td>
                       <td className="px-4 py-3 font-mono font-medium text-blue-600 whitespace-nowrap">
-                        {ticket['Issue key'] || ticket['Key']}
+                        {key}
                       </td>
                       <td className="px-4 py-3 text-slate-600">
                         {ticket['Issue Type']}
@@ -3897,11 +3951,11 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                 })
               ) : (
                 <tr>
-                  <td colSpan="7" className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan="8" className="px-4 py-8 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center">
-                      <span className="text-3xl mb-2">🔍</span>
-                      <span className="font-medium">No tickets found</span>
-                      <span className="text-sm mt-1">Try adjusting the filters above</span>
+                      <span className="text-3xl mb-2">{showFlaggedOnly ? '🚩' : '🔍'}</span>
+                      <span className="font-medium">{showFlaggedOnly ? 'No flagged tickets' : 'No tickets found'}</span>
+                      <span className="text-sm mt-1">{showFlaggedOnly ? 'Flag tickets using the 🚩 button on each row' : 'Try adjusting the filters above'}</span>
                     </div>
                   </td>
                 </tr>
