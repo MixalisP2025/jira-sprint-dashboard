@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Edit3, Save, X, Printer } from 'lucide-react';
+import { saveRolesToDB, loadRolesFromDB, pingDB } from '../utils/dbSync';
 
 const ROLES_KEY = 'rolesTabData';
 
@@ -224,8 +225,30 @@ export default function RolesTab() {
     return DEFAULT_ROLES;
   });
 
+  // On mount: try to load from DB, fall back to localStorage
+  useEffect(() => {
+    async function load() {
+      try {
+        const online = await pingDB();
+        if (online) {
+          const dbRoles = await loadRolesFromDB();
+          if (Array.isArray(dbRoles) && dbRoles.length > 0) {
+            setRoles(dbRoles);
+            return;
+          }
+        }
+      } catch (_) {}
+      // localStorage already loaded via useState initialiser
+    }
+    load();
+  }, []);
+
   useEffect(() => {
     localStorage.setItem(ROLES_KEY, JSON.stringify(roles));
+    // Persist to DB (fire-and-forget)
+    pingDB().then(online => {
+      if (online) saveRolesToDB(roles).catch(() => {});
+    }).catch(() => {});
   }, [roles]);
 
   function handleSave(updated) {

@@ -32,7 +32,11 @@ if (!JIRA_CONFIG.email || !JIRA_CONFIG.apiToken) {
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+
+// Oracle DB routes
+const dbRoutes = require('./db/routes');
+app.use('/api/db', dbRoutes);
 
 // Serve built frontend (production)
 if (hasDist) {
@@ -398,6 +402,8 @@ process.on('unhandledRejection', (reason, promise) => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, closing server gracefully');
+  const { closePool } = require('./db/oracle');
+  closePool().catch(() => {});
   if (server) {
     server.close(() => {
       console.log('Server closed');
@@ -408,6 +414,8 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   console.log('SIGINT received, closing server gracefully');
+  const { closePool } = require('./db/oracle');
+  closePool().catch(() => {});
   if (server) {
     server.close(() => {
       console.log('Server closed');

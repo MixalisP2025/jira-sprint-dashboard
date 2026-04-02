@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Copy, Check, Zap, Users, LayoutGrid, RotateCcw, Download, Briefcase } from 'lucide-react';
 import { generateSuggestions } from '../utils/allocationSuggestions';
 import RolesTab from './RolesTab';
+import { saveEligibilityToDB, loadEligibilityFromDB, saveAllocationsToDB, pingDB } from '../utils/dbSync';
 
 // ─── Field accessors ──────────────────────────────────────────────────────────
 const getKey      = t => t['Issue key'] || t['Key'] || '';
@@ -469,7 +470,7 @@ export default function AllocationTab({ filteredData, selectedSprint, assigneeCa
   [filteredData]);
 
   // Seed eligibility from live data — always re-seed from actual ticket assignments
-  // localStorage is only used to persist manual changes made after seeding
+  // DB/localStorage is only used to persist manual changes made after seeding
   useEffect(() => {
     if (!filteredData.length) return;
 
@@ -484,32 +485,50 @@ export default function AllocationTab({ filteredData, selectedSprint, assigneeCa
       }
     });
 
-    // Check if localStorage has meaningful data (non-empty sets for known assignees)
-    const saved = localStorage.getItem(ELIGIBILITY_KEY);
-    if (saved) {
+    async function loadAndMerge() {
+      let savedData = null;
+
+      // Try DB first
       try {
-        const parsed = JSON.parse(saved);
-        const restored = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, new Set(v)]));
-        // Only use saved data if at least one assignee has projects configured
+        const online = await pingDB();
+        if (online) {
+          const dbData = await loadEligibilityFromDB();
+          if (dbData && Object.keys(dbData).length > 0) savedData = dbData;
+        }
+      } catch (_) {}
+
+      // Fallback to localStorage
+      if (!savedData) {
+        try {
+          const raw = localStorage.getItem(ELIGIBILITY_KEY);
+          if (raw) savedData = JSON.parse(raw);
+        } catch (_) {}
+      }
+
+      if (savedData) {
+        const restored = Object.fromEntries(Object.entries(savedData).map(([k, v]) => [k, new Set(v)]));
         const hasData = Object.values(restored).some(s => s.size > 0);
         if (hasData) {
-          // Merge: keep saved overrides but add any new assignees from fresh data
           assignees.forEach(a => { if (!restored[a]) restored[a] = fresh[a]; });
           setEligibility(restored);
           return;
         }
-      } catch (_) {}
+      }
+      setEligibility(fresh);
     }
-    setEligibility(fresh);
+
+    loadAndMerge();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredData]);
 
-  // Persist eligibility
+  // Persist eligibility to DB + localStorage
   useEffect(() => {
     if (Object.keys(eligibility).length === 0) return;
-    localStorage.setItem(ELIGIBILITY_KEY, JSON.stringify(
-      Object.fromEntries(Object.entries(eligibility).map(([k, v]) => [k, [...v]]))
-    ));
+    const plain = Object.fromEntries(Object.entries(eligibility).map(([k, v]) => [k, [...v]]));
+    localStorage.setItem(ELIGIBILITY_KEY, JSON.stringify(plain));
+    pingDB().then(online => {
+      if (online) saveEligibilityToDB(plain).catch(() => {});
+    }).catch(() => {});
   }, [eligibility]);
 
   const unassignedTickets = useMemo(() =>
