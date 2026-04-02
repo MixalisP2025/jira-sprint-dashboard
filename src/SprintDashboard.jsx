@@ -128,8 +128,8 @@ const SprintDashboard = () => {
             setCachedData(issues);
             setData(issues);
           }
-          // Timestamp from settings if stored
-          if (settings?.lastUpdated) setLastUpdated(new Date(settings.lastUpdated));
+          // Always show current session load time
+          setLastUpdated(new Date());
         } catch (e) {
           console.warn('DB load failed, falling back to localStorage:', e);
           loadFromLocalStorage();
@@ -156,8 +156,11 @@ const SprintDashboard = () => {
           const parsed = JSON.parse(savedData);
           setCachedData(parsed);
           setData(parsed);
+          // Always update to now when loading cached data — shows when data was last loaded into session
+          setLastUpdated(new Date());
+          localStorage.setItem('lastUpdatedTimestamp', new Date().toISOString());
         }
-        if (savedTimestamp) setLastUpdated(new Date(savedTimestamp));
+        if (!localStorage.getItem('cachedDashboardData') && savedTimestamp) setLastUpdated(new Date(savedTimestamp));
       } catch (e) {}
     }
 
