@@ -668,10 +668,35 @@ const SprintDashboard = () => {
     // Use updated caps for this calculation
     const capsToUse = { ...assigneeCaps, ...updatedCaps };
 
-    // ── Holiday notice (no auto-reduction — user sets capacity manually) ──────
-    // Holiday awareness is reflected in sprint days/timeline calculations.
-    // Capacity values here are exactly what the user has configured.
-    const holidayCapacityMultiplier = 1;
+    // ── Holiday capacity multiplier ───────────────────────────────────────────
+    // Base capacity (stored in DB) is for a full sprint with no holidays.
+    // When a sprint has public holidays, effective capacity is reduced proportionally.
+    // assigneeCaps stores the BASE — stats.sprintCapacity reflects the effective value.
+    let holidayCapacityMultiplier = 1;
+    if (selectedSprint && selectedSprint !== 'all' && sprintDates[selectedSprint]) {
+      const sd = sprintDates[selectedSprint];
+      const [sm, sday, sy] = sd.start.split('/');
+      const [em, eday, ey] = sd.end.split('/');
+      const sprintStart = new Date(parseInt(sy), parseInt(sm) - 1, parseInt(sday));
+      const sprintEnd   = new Date(parseInt(ey), parseInt(em) - 1, parseInt(eday));
+      sprintStart.setHours(0, 0, 0, 0);
+      sprintEnd.setHours(0, 0, 0, 0);
+      const totalWorkingDays = workingDaysBetween(sprintStart, sprintEnd);
+      if (totalWorkingDays > 0) {
+        const allHolidays = new Set();
+        for (let y = sprintStart.getFullYear(); y <= sprintEnd.getFullYear(); y++)
+          getGreekHolidays(y).forEach(h => allHolidays.add(h));
+        let holidaysInSprint = 0;
+        const cur = new Date(sprintStart); cur.setDate(cur.getDate() + 1);
+        while (cur <= sprintEnd) {
+          const dow = cur.getDay(), iso = cur.toISOString().slice(0, 10);
+          if (dow !== 0 && dow !== 6 && allHolidays.has(iso)) holidaysInSprint++;
+          cur.setDate(cur.getDate() + 1);
+        }
+        if (holidaysInSprint > 0)
+          holidayCapacityMultiplier = (totalWorkingDays - holidaysInSprint) / totalWorkingDays;
+      }
+    }
     
     // DEBUG: Show first 10 items to see what we're working with
     if (filteredData.length > 0) {
@@ -717,7 +742,7 @@ const SprintDashboard = () => {
       if (!byAssignee[assignee]) {
         byAssignee[assignee] = {
           // Capacity relevant metrics
-          sprintCapacity: capsToUse[assignee] || 16,
+          sprintCapacity: Math.round((capsToUse[assignee] || 16) * holidayCapacityMultiplier * 10) / 10,
           activeWorkload: 0,  // NEW: Only To Do + In Progress
           remainingCapacity: 0,
           
@@ -2854,7 +2879,7 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
                   />
                 </th>
                 <th className="px-4 py-4 text-left font-bold text-slate-700">Assignee</th>
-                <th className="px-4 py-4 text-center font-bold text-slate-700">Sprint<br/>Capacity</th>
+                <th className="px-4 py-4 text-center font-bold text-slate-700">Sprint<br/>Capacity<br/><span className="text-xs font-normal text-slate-500">(base / eff.)</span></th>
                 <th className="px-4 py-4 text-center font-bold text-slate-700 bg-red-50">Active<br/>Workload (SP)</th>
                 <th className="px-4 py-4 text-center font-bold text-slate-700 bg-green-50">Remaining<br/>Capacity</th>
                 <th className="px-4 py-4 text-center font-bold text-slate-700 min-w-[140px]">Capacity Status</th>
@@ -2878,10 +2903,16 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
                     <input
                       type="number"
                       min={0}
-                      value={assigneeCaps[assignee] ?? data.sprintCapacity}
+                      value={assigneeCaps[assignee] ?? 16}
                       onChange={(e) => setAssigneeCaps(prev => ({ ...prev, [assignee]: Number(e.target.value) || 0 }))}
                       className="w-16 px-2 py-1.5 rounded text-center border border-slate-300 text-slate-900 bg-white font-semibold"
+                      title="Base capacity (full sprint, no holidays)"
                     />
+                    {data.sprintCapacity !== (assigneeCaps[assignee] ?? 16) && (
+                      <div className="text-xs text-amber-600 mt-1 font-medium">
+                        eff. {data.sprintCapacity} SP
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-4 text-center bg-red-50">
                     <div className="font-bold text-red-700 text-lg">
