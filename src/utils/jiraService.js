@@ -162,8 +162,14 @@ export const jiraService = {
           allIssues.push(...issuesForProject.issues);
         }
 
+        // Also fetch backlog items (no sprint) — no date filter so we get everything
+        const backlogJql = `${projectFilter} AND sprint is EMPTY ORDER BY updated DESC`;
+        console.log("Fetching backlog for project:", p);
+        const backlogIssues = await this.getAllIssuesSingleJql(backlogJql, fields);
+        allIssues.push(...backlogIssues.issues);
+        console.log(`✓ Project ${p}: ${issuesForProject.issues.length} sprint issues + ${backlogIssues.issues.length} backlog items`);
+
         successfulProjects.push(p);
-        console.log(`✓ Project ${p}: ${issuesForProject.issues.length} issues`);
 
       } catch (error) {
         console.error(`✗ Failed to fetch project ${p}:`, error.message);
