@@ -751,7 +751,7 @@ function statusBadgeClass(status) {
 }
 
 function TicketTable({ filtered, selectedKeys, setSelectedKeys, onExportSelected }) {
-  const [sortCol, setSortCol] = useState('age');
+  const [sortCol, setSortCol] = useState('updated');
   const [sortDir, setSortDir] = useState('desc');
   const [expandedKey, setExpandedKey] = useState(null);
 
@@ -765,14 +765,30 @@ function TicketTable({ filtered, selectedKeys, setSelectedKeys, onExportSelected
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
       let cmp = 0;
-      if (sortCol === 'age') cmp = a.age - b.age;
-      else if (sortCol === 'sla') cmp = (slaOrder[a.slaRisk]||2) - (slaOrder[b.slaRisk]||2);
+      if (sortCol === 'age')        cmp = (a.age || 0) - (b.age || 0);
+      else if (sortCol === 'sla')   cmp = (slaOrder[a.slaRisk] ?? 2) - (slaOrder[b.slaRisk] ?? 2);
+      else if (sortCol === 'key')   cmp = (a.key || '').localeCompare(b.key || '');
+      else if (sortCol === 'summary') cmp = (a.summary || '').localeCompare(b.summary || '');
+      else if (sortCol === 'assignee') cmp = (a.assignee || '').localeCompare(b.assignee || '');
+      else if (sortCol === 'bank')  cmp = (a.bank || '').localeCompare(b.bank || '');
+      else if (sortCol === 'status') cmp = (a.status || '').localeCompare(b.status || '');
+      else if (sortCol === 'updated') cmp = (a.updated || '').localeCompare(b.updated || '');
+      else if (sortCol === 'created') cmp = (a.created || '').localeCompare(b.created || '');
       return sortDir === 'asc' ? cmp : -cmp;
     });
   }, [filtered, sortCol, sortDir]);
 
   const visible = sorted.slice(0, 200);
-  const sortIcon = (col) => sortCol === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+
+  /** Returns sort indicator arrow for a column header */
+  const sortIcon = (col) => {
+    if (sortCol !== col) return <span className="ml-1 text-slate-300">↕</span>;
+    return <span className="ml-1 text-indigo-500">{sortDir === 'asc' ? '↑' : '↓'}</span>;
+  };
+
+  /** Shared class for sortable header cells */
+  const thSort = 'px-4 py-3 text-left cursor-pointer hover:text-indigo-600 hover:bg-slate-100 select-none transition-colors';
+  const thFixed = 'px-4 py-3 text-left';
 
   const allVisibleKeys = visible.map(t => t.key);
   const allSelected = allVisibleKeys.length > 0 && allVisibleKeys.every(k => selectedKeys.has(k));
@@ -808,26 +824,28 @@ function TicketTable({ filtered, selectedKeys, setSelectedKeys, onExportSelected
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm" style={{ minWidth: '1100px' }}>
-          <thead className="bg-slate-50 text-xs text-slate-600 uppercase font-bold">
+        <table className="w-full text-sm" style={{ minWidth: '1300px' }}>
+          <thead className="bg-slate-50 text-xs text-slate-600 uppercase font-bold border-b border-slate-200">
             <tr>
               <th className="px-3 py-3 text-center w-10">
                 <input type="checkbox" checked={allSelected} onChange={toggleAll}
                   className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
               </th>
-              <th className="px-4 py-3 text-left">Key</th>
-              <th className="px-4 py-3 text-left">Summary / Bank</th>
-              <th className="px-4 py-3 text-left">Assignee</th>
-              <th className="px-4 py-3 text-left" style={{ minWidth: '120px' }}>Internal Ref</th>
-              <th className="px-4 py-3 text-left">Status</th>
-              <th className="px-4 py-3 text-center cursor-pointer hover:text-indigo-600 select-none" onClick={() => toggleSort('age')}>Age{sortIcon('age')}</th>
-              <th className="px-4 py-3 text-left cursor-pointer hover:text-indigo-600 select-none" onClick={() => toggleSort('sla')}>SLA{sortIcon('sla')}</th>
-              <th className="px-4 py-3 text-left">Progress</th>
+              <th className={thSort} onClick={() => toggleSort('key')}>Key{sortIcon('key')}</th>
+              <th className={thSort} onClick={() => toggleSort('summary')}>Summary / Bank{sortIcon('summary')}</th>
+              <th className={thSort} onClick={() => toggleSort('assignee')}>Assignee{sortIcon('assignee')}</th>
+              <th className={thFixed} style={{ minWidth: '120px' }}>Internal Ref</th>
+              <th className={thSort} onClick={() => toggleSort('status')}>Status{sortIcon('status')}</th>
+              <th className={`${thSort} text-center`} onClick={() => toggleSort('age')}>Age{sortIcon('age')}</th>
+              <th className={thSort} onClick={() => toggleSort('sla')}>SLA{sortIcon('sla')}</th>
+              <th className={thFixed}>Progress</th>
+              <th className={thSort} onClick={() => toggleSort('updated')}>Last Updated{sortIcon('updated')}</th>
+              <th className={thSort} onClick={() => toggleSort('created')}>Created{sortIcon('created')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {visible.length === 0 ? (
-              <tr><td colSpan="9" className="px-4 py-8 text-center text-slate-400">No tickets match the current filters.</td></tr>
+              <tr><td colSpan="11" className="px-4 py-8 text-center text-slate-400">No tickets match the current filters.</td></tr>
             ) : visible.map(t => {
               const slaStyle = SLA_RISK_STYLES[t.slaRisk] || SLA_RISK_STYLES['on-track'];
               const isSelected = selectedKeys.has(t.key);
@@ -877,10 +895,16 @@ function TicketTable({ filtered, selectedKeys, setSelectedKeys, onExportSelected
                       )}
                     </td>
                     <td className="px-4 py-2"><SLABar ticket={t} /></td>
+                    <td className="px-4 py-2 text-xs text-slate-500 whitespace-nowrap">
+                      {t.updated ? new Date(t.updated).toLocaleDateString('en-GB') : '—'}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-500 whitespace-nowrap">
+                      {t.created ? new Date(t.created).toLocaleDateString('en-GB') : '—'}
+                    </td>
                   </tr>
                   {isExpanded && (
                     <tr className="bg-slate-50">
-                      <td colSpan="9" className="px-6 py-4">
+                      <td colSpan="11" className="px-6 py-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                           <div>
                             <div className="font-semibold text-slate-700 mb-2">Ticket Details</div>
@@ -934,56 +958,111 @@ function TicketTable({ filtered, selectedKeys, setSelectedKeys, onExportSelected
   );
 }
 
+// ─── Module-level cache (survives tab switches / component unmount) ───────────
+
+const AUTO_REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
+const _csrCache = {
+  issues: [],
+  loading: false,
+  error: '',
+  lastFetch: null,
+};
+const _csrListeners = new Set();
+
+function _csrNotify() {
+  _csrListeners.forEach((fn) => fn({ ..._csrCache }));
+}
+
+let _csrAutoRefreshTimer = null;
+
+async function _csrDoFetch() {
+  if (_csrCache.loading) return;
+  _csrCache.loading = true;
+  _csrCache.error = '';
+  _csrNotify();
+  try {
+    const raw = await fetchCSRIssues();
+    const transformed = raw.map(transformCSRIssue);
+    const slaData = await fetchSLABreaches(transformed);
+    const withSLA = transformed.map(t => {
+      const sla = slaData[t.key];
+      if (!sla) return t;
+      const responseBreached   = sla.firstResponse?.breached === true;
+      const resolutionBreached = sla.resolution?.breached === true;
+      const jiraBreached = responseBreached || resolutionBreached;
+      const jiraAtRisk = !jiraBreached && (
+        sla.firstResponse?.remaining?.includes('h') ||
+        sla.resolution?.remaining?.includes('h')
+      );
+      return {
+        ...t,
+        jiraSLA: sla,
+        jiraBreached,
+        slaRisk: jiraBreached ? 'breaching' : (jiraAtRisk ? 'at-risk' : t.slaRisk),
+        isSLABreach: jiraBreached || t.isSLABreach,
+        slaRemaining: sla.resolution?.remaining || sla.firstResponse?.remaining || null,
+        slaBreachTime: sla.resolution?.breachTime || sla.firstResponse?.breachTime || null,
+      };
+    });
+    _csrCache.issues = withSLA;
+    _csrCache.lastFetch = new Date();
+  } catch (e) {
+    _csrCache.error = e.message || 'Failed to load CSR tickets';
+  } finally {
+    _csrCache.loading = false;
+    _csrNotify();
+  }
+}
+
+function _csrEnsureAutoRefresh() {
+  if (_csrAutoRefreshTimer) return;
+  _csrAutoRefreshTimer = setInterval(() => { _csrDoFetch(); }, AUTO_REFRESH_INTERVAL_MS);
+}
+
 // ─── Main export ─────────────────────────────────────────────────────────────
 
 export default function CSRTicketsTab() {
-  const [issues, setIssues]       = useState([]);
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState('');
-  const [lastFetch, setLastFetch] = useState(null);
-  const [filters, setFilters]     = useState(DEFAULT_FILTERS);
+  const [cacheSnapshot, setCacheSnapshot] = useState({ ..._csrCache });
+  const [filters, setFilters]             = useState(DEFAULT_FILTERS);
   const [excludeLegacy, setExcludeLegacy] = useState(true);
   const [selectedKeys, setSelectedKeys]   = useState(new Set());
+  const [nextRefreshIn, setNextRefreshIn] = useState(null);
 
-  const load = async () => {
-    setLoading(true); setError('');
-    try {
-      const raw = await fetchCSRIssues();
-      const transformed = raw.map(transformCSRIssue);
+  const issues    = cacheSnapshot.issues;
+  const loading   = cacheSnapshot.loading;
+  const error     = cacheSnapshot.error;
+  const lastFetch = cacheSnapshot.lastFetch;
 
-      // Fetch live SLA breach data from Jira Service Desk API for open tickets
-      const slaData = await fetchSLABreaches(transformed);
+  // Subscribe to cache; fetch once if empty; start auto-refresh timer
+  useEffect(() => {
+    const handler = (snapshot) => setCacheSnapshot(snapshot);
+    _csrListeners.add(handler);
+    if (_csrCache.issues.length === 0 && !_csrCache.loading) {
+      _csrDoFetch();
+    }
+    _csrEnsureAutoRefresh();
+    return () => { _csrListeners.delete(handler); };
+  }, []);
 
-      // Merge SLA breach data into tickets
-      const withSLA = transformed.map(t => {
-        const sla = slaData[t.key];
-        if (!sla) return t;
-        const responseBreached  = sla.firstResponse?.breached === true;
-        const resolutionBreached = sla.resolution?.breached === true;
-        const jiraBreached = responseBreached || resolutionBreached;
-        const jiraAtRisk = !jiraBreached && (
-          sla.firstResponse?.remaining?.includes('h') ||
-          sla.resolution?.remaining?.includes('h')
-        );
-        return {
-          ...t,
-          jiraSLA: sla,
-          jiraBreached,
-          // Override slaRisk with live Jira data if available
-          slaRisk: jiraBreached ? 'breaching' : (jiraAtRisk ? 'at-risk' : t.slaRisk),
-          isSLABreach: jiraBreached || t.isSLABreach,
-          slaRemaining: sla.resolution?.remaining || sla.firstResponse?.remaining || null,
-          slaBreachTime: sla.resolution?.breachTime || sla.firstResponse?.breachTime || null,
-        };
-      });
-
-      setIssues(withSLA);
-      setLastFetch(new Date());
-    } catch (e) { setError(e.message || 'Failed to load CSR tickets'); }
-    finally { setLoading(false); }
+  // Manual refresh
+  const load = () => {
+    _csrCache.loading = false; // allow re-entry
+    _csrDoFetch();
   };
 
-  useEffect(() => { load(); }, []);
+  // Countdown timer — updates every second
+  useEffect(() => {
+    const tick = () => {
+      if (!_csrCache.lastFetch) { setNextRefreshIn(null); return; }
+      const elapsed = Date.now() - _csrCache.lastFetch.getTime();
+      const remaining = Math.max(0, Math.ceil((AUTO_REFRESH_INTERVAL_MS - elapsed) / 1000));
+      setNextRefreshIn(remaining);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [cacheSnapshot.lastFetch]);
 
   const filtered = useMemo(() => applyFilters(issues, filters), [issues, filters]);
 
@@ -1002,6 +1081,11 @@ export default function CSRTicketsTab() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {lastFetch && <span className="text-xs text-slate-400">Updated {lastFetch.toLocaleTimeString('en-GB')}</span>}
+          {nextRefreshIn !== null && !loading && (
+            <span className="text-xs text-slate-400">
+              Auto-refresh in {Math.floor(nextRefreshIn / 60)}:{String(nextRefreshIn % 60).padStart(2, '0')}
+            </span>
+          )}
           <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer bg-white border border-slate-200 rounded-lg px-3 py-1.5">
             <input type="checkbox" checked={excludeLegacy} onChange={e => setExcludeLegacy(e.target.checked)} className="rounded" />
             Exclude legacy (&gt;2yr) from stats

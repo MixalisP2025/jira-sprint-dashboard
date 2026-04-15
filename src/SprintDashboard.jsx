@@ -16,7 +16,7 @@ import ServerStatus from './components/ServerStatus';
 import SprintHealthTab from './components/SprintHealthTab';
 import AllocationTab from './components/AllocationTab';
 import CSRTicketsTab from './components/CSRTicketsTab';
-import CSRAnalyticsTab from './components/CSRAnalyticsTab.jsx';
+import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
 import {
   pingDB, saveIssuesToDB, loadIssuesFromDB,
   saveCapacityToDB, loadCapacityFromDB,
@@ -1770,7 +1770,7 @@ const SprintDashboard = () => {
           <CSRTicketsTab />
         )}
 
-        {activeTab === 'csr-analytics' && <CSRAnalyticsTab />}
+        {activeTab === 'csr-analytics' && <CsrAnalyticsPage />}
       </div>
 
       <button
