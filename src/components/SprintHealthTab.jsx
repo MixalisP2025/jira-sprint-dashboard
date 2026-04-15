@@ -52,7 +52,7 @@ function getGreekHolidays(year) {
   const month = Math.floor((d + e + 114) / 31);
   const day = ((d + e + 114) % 31) + 1;
   // Convert Julian to Gregorian (add 13 days for 21st century)
-  const julianEaster = new Date(year, month - 1, day + 13);
+  const julianEaster = new Date(Date.UTC(year, month - 1, day + 13));
   const easterSunday = julianEaster;
 
   const addDays = (date, n) => {
@@ -79,24 +79,23 @@ function workingDaysBetween(startDate, endDate) {
   if (!startDate || !endDate) return 0;
   const start = new Date(startDate);
   const end   = new Date(endDate);
-  start.setHours(0, 0, 0, 0);
-  end.setHours(0, 0, 0, 0);
+  start.setUTCHours(0, 0, 0, 0);
+  end.setUTCHours(0, 0, 0, 0);
   if (end <= start) return 0;
 
-  // Pre-compute holidays for all years in range
   const holidays = new Set();
-  for (let y = start.getFullYear(); y <= end.getFullYear(); y++) {
+  for (let y = start.getUTCFullYear(); y <= end.getUTCFullYear(); y++) {
     getGreekHolidays(y).forEach(h => holidays.add(h));
   }
 
   let count = 0;
   const cur = new Date(start);
-  cur.setDate(cur.getDate() + 1); // start exclusive
+  cur.setUTCDate(cur.getUTCDate() + 1);
   while (cur <= end) {
-    const dow = cur.getDay();
+    const dow = cur.getUTCDay();
     const iso = cur.toISOString().slice(0, 10);
     if (dow !== 0 && dow !== 6 && !holidays.has(iso)) count++;
-    cur.setDate(cur.getDate() + 1);
+    cur.setUTCDate(cur.getUTCDate() + 1);
   }
   return count;
 }

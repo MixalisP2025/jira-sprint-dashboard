@@ -15,6 +15,8 @@ import JiraRefreshButton from './components/JiraRefreshButton';
 import ServerStatus from './components/ServerStatus';
 import SprintHealthTab from './components/SprintHealthTab';
 import AllocationTab from './components/AllocationTab';
+import CSRTicketsTab from './components/CSRTicketsTab';
+import CSRAnalyticsTab from './components/CSRAnalyticsTab.jsx';
 import {
   pingDB, saveIssuesToDB, loadIssuesFromDB,
   saveCapacityToDB, loadCapacityFromDB,
@@ -31,7 +33,7 @@ function getGreekHolidays(year) {
   const a = year % 4, b = year % 7, c = year % 19;
   const d = (19 * c + 15) % 30, e = (2 * a + 4 * b - d + 34) % 7;
   const month = Math.floor((d + e + 114) / 31), day = ((d + e + 114) % 31) + 1;
-  const easter = new Date(year, month - 1, day + 13);
+  const easter = new Date(Date.UTC(year, month - 1, day + 13));
   const add = (dt, n) => { const x = new Date(dt); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
   const es = easter.toISOString().slice(0, 10);
   return new Set([...fixed, add(easter, -48), add(easter, -2), es, add(easter, 1), add(easter, 50)]);
@@ -39,18 +41,18 @@ function getGreekHolidays(year) {
 
 function workingDaysBetween(startDate, endDate) {
   if (!startDate || !endDate) return 0;
-  const start = new Date(startDate); start.setHours(0, 0, 0, 0);
-  const end   = new Date(endDate);   end.setHours(0, 0, 0, 0);
+  const start = new Date(startDate); start.setUTCHours(0, 0, 0, 0);
+  const end   = new Date(endDate);   end.setUTCHours(0, 0, 0, 0);
   if (end <= start) return 0;
   const holidays = new Set();
-  for (let y = start.getFullYear(); y <= end.getFullYear(); y++)
+  for (let y = start.getUTCFullYear(); y <= end.getUTCFullYear(); y++)
     getGreekHolidays(y).forEach(h => holidays.add(h));
   let count = 0;
-  const cur = new Date(start); cur.setDate(cur.getDate() + 1);
+  const cur = new Date(start); cur.setUTCDate(cur.getUTCDate() + 1);
   while (cur <= end) {
-    const dow = cur.getDay(), iso = cur.toISOString().slice(0, 10);
+    const dow = cur.getUTCDay(), iso = cur.toISOString().slice(0, 10);
     if (dow !== 0 && dow !== 6 && !holidays.has(iso)) count++;
-    cur.setDate(cur.getDate() + 1);
+    cur.setUTCDate(cur.getUTCDate() + 1);
   }
   return count;
 }
@@ -705,6 +707,29 @@ const SprintDashboard = () => {
           holidayCapacityMultiplier = (totalWorkingDays - holidaysInSprint) / totalWorkingDays;
       }
     }
+
+    // ── Time-elapsed capacity multiplier ─────────────────────────────────────
+    // Effective capacity = base × (daysRemaining / totalDays)
+    // This reflects how much of the sprint is still ahead of us.
+    // Only applies when a specific sprint is selected and we're mid-sprint.
+    let timeElapsedMultiplier = 1;
+    if (selectedSprint && selectedSprint !== 'all' && sprintDates[selectedSprint]) {
+      const sd = sprintDates[selectedSprint];
+      const [sm, sday, sy] = sd.start.split('/');
+      const [em, eday, ey] = sd.end.split('/');
+      const sprintStart = new Date(`${sy}-${sm.padStart(2,'0')}-${sday.padStart(2,'0')}T00:00:00Z`);
+      const sprintEnd   = new Date(`${ey}-${em.padStart(2,'0')}-${eday.padStart(2,'0')}T00:00:00Z`);
+      // Use day-before-start so workingDaysBetween (exclusive of start) includes the sprint start day
+      const dayBeforeStart = new Date(sprintStart); dayBeforeStart.setUTCDate(dayBeforeStart.getUTCDate() - 1);
+      const todayLocal2 = new Date();
+      const today = new Date(`${todayLocal2.getFullYear()}-${String(todayLocal2.getMonth()+1).padStart(2,'0')}-${String(todayLocal2.getDate()).padStart(2,'0')}T00:00:00Z`);
+      const totalDays     = workingDaysBetween(dayBeforeStart, sprintEnd);   // includes sprint start day
+      const elapsedDays   = Math.max(0, Math.min(workingDaysBetween(dayBeforeStart, today), totalDays)); // includes today
+      const daysRemaining = Math.max(0, totalDays - elapsedDays);
+      if (totalDays > 0 && daysRemaining < totalDays) {
+        timeElapsedMultiplier = daysRemaining / totalDays;
+      }
+    }
     
     // DEBUG: Show first 10 items to see what we're working with
     if (filteredData.length > 0) {
@@ -750,7 +775,9 @@ const SprintDashboard = () => {
       if (!byAssignee[assignee]) {
         byAssignee[assignee] = {
           // Capacity relevant metrics
-          sprintCapacity: Math.round((capsToUse[assignee] || 16) * holidayCapacityMultiplier * 10) / 10,
+          // timeElapsedMultiplier already accounts for holidays (workingDaysBetween excludes them)
+          // so we don't apply holidayCapacityMultiplier separately to avoid double-counting
+          sprintCapacity: Math.round((capsToUse[assignee] || 16) * timeElapsedMultiplier * 10) / 10,
           activeWorkload: 0,  // NEW: Only To Do + In Progress
           remainingCapacity: 0,
           
@@ -990,8 +1017,9 @@ const SprintDashboard = () => {
     const dates = sprintDates[selectedSprint];
     if (!dates) return null;
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Use UTC date to avoid timezone offset shifting the day count (Greece = UTC+3)
+    const todayLocal = new Date();
+    const today = new Date(`${todayLocal.getFullYear()}-${String(todayLocal.getMonth()+1).padStart(2,'0')}-${String(todayLocal.getDate()).padStart(2,'0')}T00:00:00Z`);
 
     const [startMonth, startDay, startYear] = dates.start.split('/');
     const [endMonth, endDay, endYear] = dates.end.split('/');
@@ -999,11 +1027,13 @@ const SprintDashboard = () => {
     const startDate = new Date(`${startYear}-${startMonth.padStart(2,'0')}-${startDay.padStart(2,'0')}T00:00:00Z`);
     const endDate   = new Date(`${endYear}-${endMonth.padStart(2,'0')}-${endDay.padStart(2,'0')}T00:00:00Z`);
 
-    const defaultDays = workingDaysBetween(startDate, endDate);
+    // Use day-before-start so workingDaysBetween (exclusive of start) includes the sprint start day
+    const dayBeforeStart = new Date(startDate); dayBeforeStart.setUTCDate(dayBeforeStart.getUTCDate() - 1);
+    const defaultDays = workingDaysBetween(dayBeforeStart, endDate);
     const configuredDays = sprintDaysConfig[selectedSprint] || defaultDays;
 
-    const elapsedDays = Math.max(0, Math.min(workingDaysBetween(startDate, today), configuredDays));
-    const currentDay = Math.min(elapsedDays + 1, configuredDays); // Day 1 = sprint start day
+    const elapsedDays = Math.max(0, Math.min(workingDaysBetween(dayBeforeStart, today), configuredDays));
+    const currentDay = Math.min(elapsedDays, configuredDays); // elapsedDays now includes today
     const daysRemaining = Math.max(0, configuredDays - elapsedDays);
     const percentTimeElapsed = Math.min(100, Math.max(0, configuredDays > 0 ? Math.round((elapsedDays / configuredDays) * 100) : 0));
 
@@ -1363,6 +1393,8 @@ const SprintDashboard = () => {
     timeline: { icon: BarChart3, label: 'Timeline' },
     data: { icon: Database, label: 'Raw Data' },
     allocation: { icon: Target, label: 'Allocation' },
+    csr: { icon: Briefcase, label: "CSR Tickets" },
+    'csr-analytics': { icon: BarChart3, label: 'CSR Analytics' },
   };
 
   if (data.length === 0) {
@@ -1579,7 +1611,7 @@ const SprintDashboard = () => {
             ))}
           </div>
 
-          {activeTab !== 'timeline' && (
+          {activeTab !== 'timeline' && activeTab !== 'csr' && activeTab !== 'csr-analytics' && (
             <div className="pt-3">
               <FilterPanel
                 sprint={selectedSprint}
@@ -1609,7 +1641,7 @@ const SprintDashboard = () => {
         </div>
       </div>
 
-              <div className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+              <div className={`${activeTab === 'csr' || activeTab === 'csr-analytics' ? 'w-full px-4 py-6 space-y-6' : 'max-w-7xl mx-auto px-6 py-6 space-y-6'}`}>
 
 
         {activeTab === 'overview' && (
@@ -1733,6 +1765,12 @@ const SprintDashboard = () => {
             stats={stats}
           />
         )}
+
+        {activeTab === 'csr' && (
+          <CSRTicketsTab />
+        )}
+
+        {activeTab === 'csr-analytics' && <CSRAnalyticsTab />}
       </div>
 
       <button

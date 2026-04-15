@@ -146,6 +146,96 @@ app.post('/api/pm2-restart', async (req, res) => {
   }
 });
 
+// CSR Jira configuration
+const CSR_JIRA_CONFIG = {
+  baseUrl:  process.env.CSR_JIRA_BASE_URL  || 'https://advancedinformationservices.atlassian.net',
+  email:    process.env.CSR_JIRA_EMAIL,
+  apiToken: process.env.CSR_JIRA_API_TOKEN,
+};
+
+// CSR SLA bulk fetch — fetches SLA breach status for a list of issue keys
+app.post('/api/jira-csr/sla-bulk', async (req, res) => {
+  try {
+    const { keys } = req.body; // array of issue keys
+    if (!Array.isArray(keys) || keys.length === 0)
+      return res.status(400).json({ error: 'keys array required' });
+    if (!CSR_JIRA_CONFIG.email || !CSR_JIRA_CONFIG.apiToken)
+      return res.status(500).json({ error: 'CSR Jira credentials not configured' });
+
+    const auth = Buffer.from(`${CSR_JIRA_CONFIG.email}:${CSR_JIRA_CONFIG.apiToken}`).toString('base64');
+    const headers = { Authorization: `Basic ${auth}`, Accept: 'application/json' };
+
+    // Fetch SLA for each key with concurrency limit of 10
+    const CONCURRENCY = 10;
+    const results = {};
+    for (let i = 0; i < keys.length; i += CONCURRENCY) {
+      const batch = keys.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(async (key) => {
+        try {
+          const r = await axios.get(
+            `${CSR_JIRA_CONFIG.baseUrl}/rest/servicedeskapi/request/${key}/sla`,
+            { headers, timeout: 10000 }
+          );
+          const slaValues = r.data?.values || [];
+          // Extract Time to first response and Time to resolution
+          const firstResponse = slaValues.find(s => s.name === 'Time to first response');
+          const resolution    = slaValues.find(s => s.name === 'Time to resolution');
+          results[key] = {
+            firstResponse: firstResponse?.ongoingCycle
+              ? { breached: firstResponse.ongoingCycle.breached, remaining: firstResponse.ongoingCycle.remainingTime?.friendly, breachTime: firstResponse.ongoingCycle.breachTime?.iso8601 }
+              : firstResponse?.completedCycles?.length
+              ? { breached: firstResponse.completedCycles[firstResponse.completedCycles.length-1].breached, completed: true }
+              : null,
+            resolution: resolution?.ongoingCycle
+              ? { breached: resolution.ongoingCycle.breached, remaining: resolution.ongoingCycle.remainingTime?.friendly, breachTime: resolution.ongoingCycle.breachTime?.iso8601 }
+              : null,
+          };
+        } catch (_) {
+          results[key] = null;
+        }
+      }));
+    }
+    res.json(results);
+  } catch (err) {
+    console.error('CSR SLA bulk error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CSR Jira issues proxy
+app.get('/api/jira-csr/issues', async (req, res) => {
+  try {
+    const { jql, fields, startAt = 0, maxResults = 100, nextPageToken } = req.query;
+    if (!CSR_JIRA_CONFIG.email || !CSR_JIRA_CONFIG.apiToken)
+      return res.status(500).json({ error: 'CSR Jira credentials not configured' });
+
+    const auth = Buffer.from(`${CSR_JIRA_CONFIG.email}:${CSR_JIRA_CONFIG.apiToken}`).toString('base64');
+    const params = { jql, fields, maxResults: parseInt(maxResults) };
+    if (nextPageToken) params.nextPageToken = nextPageToken;
+    else params.startAt = parseInt(startAt);
+
+    const response = await axios.get(`${CSR_JIRA_CONFIG.baseUrl}/rest/api/3/search/jql`, {
+      headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+      params,
+      timeout: 30000,
+    });
+
+    const issues = response.data.issues || [];
+    res.json({
+      issues,
+      isLast:        response.data.isLast === true,
+      nextPageToken: response.data.nextPageToken || null,
+    });
+  } catch (error) {
+    console.error('CSR Jira API error:', error.message);
+    res.status(error.response?.status || 500).json({
+      error: 'CSR Jira API Error',
+      message: error.message,
+      details: error.response?.data,
+    });
+  }
+});
+
 // Check Jira configuration
 app.get('/api/jira-config', (req, res) => {
   console.log('Config check requested');
