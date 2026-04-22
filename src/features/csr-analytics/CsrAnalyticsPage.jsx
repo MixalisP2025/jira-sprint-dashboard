@@ -23,7 +23,6 @@ import CsrBacklogTrendChart from './components/CsrBacklogTrendChart.jsx';
 import CsrBacklogAgingChart from './components/CsrBacklogAgingChart.jsx';
 import CsrAssigneeWorkloadChart from './components/CsrAssigneeWorkloadChart.jsx';
 import CsrAnalyticsTicketGrid from './components/CsrAnalyticsTicketGrid.jsx';
-import CsrSnapshotModal from './components/CsrSnapshotModal.jsx';
 
 /**
  * Top-level CSR Analytics page component.
@@ -58,7 +57,6 @@ export default function CsrAnalyticsPage() {
 
   // ── Local state ────────────────────────────────────────────────────────────
   const [assigneeWorkloadMode, setAssigneeWorkloadMode] = useState('open');
-  const [showSnapshot, setShowSnapshot] = useState(false);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -100,7 +98,7 @@ export default function CsrAnalyticsPage() {
   return (
     <div className="min-h-screen bg-slate-900">
       {/* Header is always visible so the user can refresh even during load/error */}
-      <CsrAnalyticsHeader title="CSR Analytics" loading={loading} onRefresh={refresh} onSnapshot={() => setShowSnapshot(true)} />
+      <CsrAnalyticsHeader title="CSR Analytics" loading={loading} onRefresh={refresh} />
 
       {/* Last fetch time + auto-refresh countdown */}
       {(lastFetch || nextRefreshIn !== null) && (
@@ -182,14 +180,6 @@ export default function CsrAnalyticsPage() {
             <CsrAnalyticsTicketGrid tickets={filteredTickets} />
           </div>
         </>
-      )}
-
-      {/* Snapshot modal — uses all tickets (unfiltered) for full picture */}
-      {showSnapshot && (
-        <CsrSnapshotModal
-          tickets={normalizedTickets}
-          onClose={() => setShowSnapshot(false)}
-        />
       )}
     </div>
   );

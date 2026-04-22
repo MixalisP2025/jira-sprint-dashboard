@@ -17,6 +17,7 @@ import SprintHealthTab from './components/SprintHealthTab';
 import AllocationTab from './components/AllocationTab';
 import CSRTicketsTab from './components/CSRTicketsTab';
 import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
+import CsrSnapshotPage from './features/csr-analytics/CsrSnapshotPage.jsx';
 import {
   pingDB, saveIssuesToDB, loadIssuesFromDB,
   saveCapacityToDB, loadCapacityFromDB,
@@ -1395,6 +1396,7 @@ const SprintDashboard = () => {
     allocation: { icon: Target, label: 'Allocation' },
     csr: { icon: Briefcase, label: "CSR Tickets" },
     'csr-analytics': { icon: BarChart3, label: 'CSR Analytics' },
+    'csr-snapshot': { icon: PieChart, label: 'CSR Snapshot' },
   };
 
   if (data.length === 0) {
@@ -1771,6 +1773,8 @@ const SprintDashboard = () => {
         )}
 
         {activeTab === 'csr-analytics' && <CsrAnalyticsPage />}
+
+        {activeTab === 'csr-snapshot' && <CsrSnapshotPage />}
       </div>
 
       <button
