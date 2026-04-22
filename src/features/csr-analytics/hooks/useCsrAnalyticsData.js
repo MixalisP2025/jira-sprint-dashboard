@@ -72,12 +72,12 @@ function _ensureAutoRefresh() {
 // ---------------------------------------------------------------------------
 
 export function useCsrAnalyticsData({ filters, drilldowns }) {
-  const [cacheSnapshot, setCacheSnapshot] = useState({ ..._cache });
+  const [, forceUpdate] = useState(0);
   const [nextRefreshIn, setNextRefreshIn] = useState(null);
 
-  // Subscribe to cache updates
+  // Subscribe to cache updates — force re-render on every change
   useEffect(() => {
-    const handler = (snapshot) => setCacheSnapshot(snapshot);
+    const handler = () => forceUpdate(n => n + 1);
     _listeners.add(handler);
 
     // Fetch on first mount if we have no data yet
@@ -104,7 +104,7 @@ export function useCsrAnalyticsData({ filters, drilldowns }) {
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [cacheSnapshot.lastFetch]);
+  }, [_cache.lastFetch]);
 
   /** Manual refresh — triggers an immediate fetch */
   function refresh() {
@@ -112,7 +112,8 @@ export function useCsrAnalyticsData({ filters, drilldowns }) {
     _doFetch();
   }
 
-  const rawTickets = cacheSnapshot.tickets;
+  // Read directly from cache on every render
+  const rawTickets = _cache.tickets;
 
   // Normalise (memoised on rawTickets reference)
   const normalizedTickets = useMemo(
@@ -141,9 +142,9 @@ export function useCsrAnalyticsData({ filters, drilldowns }) {
   return {
     normalizedTickets,
     filteredTickets,
-    loading:       cacheSnapshot.loading,
-    error:         cacheSnapshot.error,
-    lastFetch:     cacheSnapshot.lastFetch,
+    loading:       _cache.loading,
+    error:         _cache.error,
+    lastFetch:     _cache.lastFetch,
     nextRefreshIn,
     refresh,
     kpis,

@@ -1,15 +1,22 @@
 @echo off
 echo ========================================
-echo Starting Jira Sprint Dashboard
+echo  Sprint Analytics Dashboard
 echo ========================================
 echo.
-echo Starting both Backend and Frontend servers...
+echo  Building frontend...
+call npm run build
+if %errorlevel% neq 0 (
+  echo  Build failed! Check errors above.
+  pause
+  exit /b 1
+)
 echo.
-echo Backend will run on: http://localhost:4001
-echo Frontend will run on: http://localhost:5174
+echo  Starting backend server...
+call pm2 restart jira-backend 2>nul || call pm2 start ecosystem.config.cjs
 echo.
-echo Press Ctrl+C to stop both servers
+echo ========================================
+echo  App is running at: http://localhost:4001
+echo  This is the ONLY URL you need.
 echo ========================================
 echo.
-
-npm start
+pause

@@ -1023,20 +1023,22 @@ function _csrEnsureAutoRefresh() {
 // ─── Main export ─────────────────────────────────────────────────────────────
 
 export default function CSRTicketsTab() {
-  const [cacheSnapshot, setCacheSnapshot] = useState({ ..._csrCache });
+  const [, forceUpdate] = useState(0);
   const [filters, setFilters]             = useState(DEFAULT_FILTERS);
   const [excludeLegacy, setExcludeLegacy] = useState(true);
   const [selectedKeys, setSelectedKeys]   = useState(new Set());
   const [nextRefreshIn, setNextRefreshIn] = useState(null);
 
-  const issues    = cacheSnapshot.issues;
-  const loading   = cacheSnapshot.loading;
-  const error     = cacheSnapshot.error;
-  const lastFetch = cacheSnapshot.lastFetch;
+  // Read directly from the module cache on every render
+  const issues    = _csrCache.issues;
+  const loading   = _csrCache.loading;
+  const error     = _csrCache.error;
+  const lastFetch = _csrCache.lastFetch;
 
   // Subscribe to cache; fetch once if empty; start auto-refresh timer
   useEffect(() => {
-    const handler = (snapshot) => setCacheSnapshot(snapshot);
+    // Force a re-render whenever the cache changes
+    const handler = () => forceUpdate(n => n + 1);
     _csrListeners.add(handler);
     if (_csrCache.issues.length === 0 && !_csrCache.loading) {
       _csrDoFetch();
@@ -1062,7 +1064,7 @@ export default function CSRTicketsTab() {
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [cacheSnapshot.lastFetch]);
+  }, [lastFetch]);
 
   const filtered = useMemo(() => applyFilters(issues, filters), [issues, filters]);
 
