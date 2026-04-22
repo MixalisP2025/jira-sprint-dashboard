@@ -36,7 +36,7 @@ export function formatPct(decimal) {
  */
 export function formatDays(n) {
   if (n == null) return '—';
-  return `${n} days`;
+  return `${Math.round(n)} days`;
 }
 
 /**
@@ -56,8 +56,9 @@ export function formatDays(n) {
  */
 export function formatDelta(n) {
   if (n == null) return '—';
-  if (n > 0) return `+${n}`;
-  return `${n}`;
+  const rounded = Math.round(n);
+  if (rounded > 0) return `+${rounded}`;
+  return `${rounded}`;
 }
 
 /**
