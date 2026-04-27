@@ -120,5 +120,14 @@ export function normalizeTicket(rawTicket) {
     resolutionDays,
     slaState,
     isLegacy,
+    // Time tracking (pass through from raw ticket)
+    timeSpent:           rawTicket.timeSpent ?? null,
+    timeSpentSeconds:    rawTicket.timeSpentSeconds ?? 0,
+    originalEstimate:    rawTicket.originalEstimate ?? null,
+    originalEstimateSec: rawTicket.originalEstimateSec ?? 0,
+    aggregateTimeSpent:  rawTicket.aggregateTimeSpent ?? 0,
+    storyPoints:         rawTicket.storyPoints ?? null,
+    parentKey:           rawTicket.parentKey ?? null,
+    parentSummary:       rawTicket.parentSummary ?? null,
   };
 }

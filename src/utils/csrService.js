@@ -95,6 +95,7 @@ const FIELDS = [
   'summary', 'status', 'assignee', 'reporter', 'created', 'updated',
   'priority', 'issuetype', 'project', 'customfield_10010', 'comment',
   'description', 'resolutiondate', 'duedate', 'issuelinks',
+  'timetracking', 'aggregatetimespent', 'customfield_10016', 'parent',
 ].join(',');
 
 async function fetchPage(jql, nextPageToken = null) {
@@ -212,6 +213,18 @@ export function transformCSRIssue(issue) {
     isSLABreach:   false, // set below after SLA target is known
     isStale:       isStaleVal,
     internalLinks,
+    // Time tracking fields
+    timeSpent:           f.timetracking?.timeSpent || null,
+    timeSpentSeconds:    f.timetracking?.timeSpentSeconds || 0,
+    originalEstimate:    f.timetracking?.originalEstimate || null,
+    originalEstimateSec: f.timetracking?.originalEstimateSeconds || 0,
+    remainingEstimate:   f.timetracking?.remainingEstimate || null,
+    aggregateTimeSpent:  f.aggregatetimespent || 0,
+    // Story points
+    storyPoints:         f.customfield_10016 || null,
+    // Parent (epic / support bucket)
+    parentKey:           f.parent?.key || null,
+    parentSummary:       f.parent?.fields?.summary || null,
   };
   ticket.slaTarget  = getSLATarget(ticket);
   ticket.slaRisk    = getSLARisk(ticket);

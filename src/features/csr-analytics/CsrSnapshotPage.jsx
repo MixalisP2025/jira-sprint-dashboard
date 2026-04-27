@@ -28,6 +28,26 @@ function topN(tickets, key, n) {
   tickets.forEach(t => { const v = t[key] || "Unknown"; map[v] = (map[v] || 0) + 1; });
   return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, n || 8);
 }
+function timeByKey(tickets, key) {
+  const map = {};
+  tickets.forEach(t => {
+    const v = t[key] || "Unknown";
+    const sec = t.timeSpentSeconds || 0;
+    if (!map[v]) map[v] = { seconds: 0, tickets: 0 };
+    map[v].seconds += sec;
+    map[v].tickets += 1;
+  });
+  return Object.entries(map)
+    .filter(([, v]) => v.seconds > 0)
+    .sort((a, b) => b[1].seconds - a[1].seconds)
+    .map(([k, v]) => [k, v.seconds, v.tickets]);
+}
+function fmtHours(sec) {
+  if (!sec) return "0h";
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  return h > 0 ? (m > 0 ? h + "h " + m + "m" : h + "h") : m + "m";
+}
 function pct(num, den) {
   if (!den) return "—";
   return Math.round((num / den) * 100) + "%";
@@ -53,6 +73,13 @@ function buildReport(tickets) {
     medRes: medianDays(tickets),
     byBank: topN(tickets, "bank"), byAssignee: topN(tickets.filter(t => t.isOpen), "assignee"),
     byProject: topN(tickets, "project"), byStatus: topN(tickets, "status"),
+    // Time & Effort
+    totalTimeSpentSec: tickets.reduce((s, t) => s + (t.timeSpentSeconds || 0), 0),
+    totalEstimateSec:  tickets.reduce((s, t) => s + (t.originalEstimateSec || 0), 0),
+    totalStoryPoints:  tickets.reduce((s, t) => s + (t.storyPoints || 0), 0),
+    timeByBank:     timeByKey(tickets, "bank"),
+    timeByProject:  timeByKey(tickets, "project"),
+    timeByAssignee: timeByKey(tickets, "assignee"),
   };
 }
 
@@ -68,6 +95,11 @@ function buildHtml(r, filterDesc) {
     "<h2>SLA Health</h2><table><tbody>" + row("On Track", "<span class=\"green\">" + r.onTrack + " (" + pct(r.onTrack, r.slaTotal) + ")</span>") + row("At Risk", "<span class=\"amber\">" + r.atRisk + " (" + pct(r.atRisk, r.slaTotal) + ")</span>") + row("Breaching", "<span class=\"red\">" + r.breaching + " (" + pct(r.breaching, r.slaTotal) + ")</span>") + row("Median Resolution", r.medRes != null ? r.medRes + " days" : "—") + row("Open 90+ days", r.over90) + row("Unassigned Open", r.unassigned + " (" + pct(r.unassigned, r.open) + ")") + "</tbody></table>" +
     "<div class=\"two-col\"><div><h2>By Bank / Client</h2><table><tbody>" + trows(r.byBank) + "</tbody></table></div><div><h2>Open Tickets by Assignee</h2><table><tbody>" + trows(r.byAssignee) + "</tbody></table></div></div>" +
     "<div class=\"two-col\"><div><h2>By Project</h2><table><tbody>" + trows(r.byProject) + "</tbody></table></div><div><h2>By Status</h2><table><tbody>" + trows(r.byStatus) + "</tbody></table></div></div>" +
+    "<h2>Time &amp; Effort Tracking</h2>" +
+    "<table><tbody>" + row("Total Time Logged", fmtHours(r.totalTimeSpentSec)) + row("Total Estimated", fmtHours(r.totalEstimateSec)) + row("Total Story Points", r.totalStoryPoints || "—") + "</tbody></table>" +
+    (r.timeByBank.length > 0 ? "<h2>Time by Bank / Client</h2><table><thead><tr><th>Bank</th><th style=\"text-align:right\">Time</th><th style=\"text-align:right\">Tickets</th></tr></thead><tbody>" + r.timeByBank.map(([k, s, c]) => "<tr><td style=\"padding:5px 12px;font-size:13px\">" + k + "</td><td style=\"padding:5px 12px;font-weight:600;text-align:right\">" + fmtHours(s) + "</td><td style=\"padding:5px 12px;text-align:right;color:#64748b\">" + c + "</td></tr>").join("") + "</tbody></table>" : "") +
+    (r.timeByProject.length > 0 ? "<h2>Time by Project</h2><table><thead><tr><th>Project</th><th style=\"text-align:right\">Time</th><th style=\"text-align:right\">Tickets</th></tr></thead><tbody>" + r.timeByProject.map(([k, s, c]) => "<tr><td style=\"padding:5px 12px;font-size:13px\">" + k + "</td><td style=\"padding:5px 12px;font-weight:600;text-align:right\">" + fmtHours(s) + "</td><td style=\"padding:5px 12px;text-align:right;color:#64748b\">" + c + "</td></tr>").join("") + "</tbody></table>" : "") +
+    (r.timeByAssignee.length > 0 ? "<h2>Time by Assignee</h2><table><thead><tr><th>Assignee</th><th style=\"text-align:right\">Time</th><th style=\"text-align:right\">Tickets</th></tr></thead><tbody>" + r.timeByAssignee.map(([k, s, c]) => "<tr><td style=\"padding:5px 12px;font-size:13px\">" + k + "</td><td style=\"padding:5px 12px;font-weight:600;text-align:right\">" + fmtHours(s) + "</td><td style=\"padding:5px 12px;text-align:right;color:#64748b\">" + c + "</td></tr>").join("") + "</tbody></table>" : "") +
     "</body></html>";
 }
 
@@ -330,6 +362,63 @@ export default function CsrSnapshotPage() {
             </section>
           ))}
         </div>
+
+        {/* Time & Effort Tracking */}
+        <section>
+          <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Time &amp; Effort Tracking</h2>
+
+          {/* Summary cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+            <div className="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 flex justify-between items-center">
+              <span className="text-xs text-slate-400">Total Time Logged</span>
+              <span className="text-sm font-bold text-cyan-400">{fmtHours(r.totalTimeSpentSec)}</span>
+            </div>
+            <div className="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 flex justify-between items-center">
+              <span className="text-xs text-slate-400">Total Estimated</span>
+              <span className="text-sm font-bold text-violet-400">{fmtHours(r.totalEstimateSec)}</span>
+            </div>
+            <div className="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 flex justify-between items-center">
+              <span className="text-xs text-slate-400">Total Story Points</span>
+              <span className="text-sm font-bold text-blue-400">{r.totalStoryPoints || "—"}</span>
+            </div>
+          </div>
+
+          {/* Time by Bank, Project, Assignee */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {[
+              { title: "Time by Bank / Client",  data: r.timeByBank     },
+              { title: "Time by Project",        data: r.timeByProject  },
+              { title: "Time by Assignee",       data: r.timeByAssignee },
+            ].map(({ title, data }) => (
+              <div key={title} className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-700">
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">{title}</h3>
+                </div>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-900 text-xs text-slate-500">
+                      <th className="px-4 py-1.5 text-left">Name</th>
+                      <th className="px-4 py-1.5 text-right">Time</th>
+                      <th className="px-4 py-1.5 text-right">Tickets</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-700">
+                    {data.length === 0
+                      ? <tr><td colSpan="3" className="px-4 py-3 text-slate-500 text-xs">No time logged</td></tr>
+                      : data.map(([name, sec, count]) => (
+                        <tr key={name} className="hover:bg-slate-700/30">
+                          <td className="px-4 py-2 text-slate-300 text-xs">{name}</td>
+                          <td className="px-4 py-2 text-right font-bold text-cyan-400 text-xs">{fmtHours(sec)}</td>
+                          <td className="px-4 py-2 text-right text-slate-400 text-xs">{count}</td>
+                        </tr>
+                      ))
+                    }
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        </section>
 
       </div>
     </div>
