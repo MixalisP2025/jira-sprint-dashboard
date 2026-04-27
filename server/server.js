@@ -124,23 +124,35 @@ app.post('/api/pm2-start', async (req, res) => {
   }
 });
 
-// PM2 Restart endpoint
+// PM2 Restart endpoint — rebuilds frontend then restarts
 app.post('/api/pm2-restart', async (req, res) => {
   const { exec } = require('child_process');
   const { promisify } = require('util');
   const execAsync = promisify(exec);
+  const path = require('path');
+  const rootDir = path.join(__dirname, '..');
   
   try {
-    const { stdout } = await execAsync('pm2 restart all');
+    // Step 1: Rebuild frontend
+    console.log('🔨 Rebuilding frontend...');
+    await execAsync('npm run build', { cwd: rootDir, timeout: 120000 });
+    console.log('✅ Frontend rebuilt');
+    
+    // Step 2: Restart PM2 (this will restart the server serving the new build)
+    console.log('🔄 Restarting PM2...');
+    const { stdout } = await execAsync('pm2 restart jira-backend', { timeout: 30000 });
+    console.log('✅ PM2 restarted');
+    
     res.json({ 
       success: true, 
-      message: 'Servers restarted successfully',
+      message: 'Frontend rebuilt and server restarted',
       output: stdout 
     });
   } catch (error) {
+    console.error('❌ Restart failed:', error.message);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to restart servers',
+      message: 'Failed to rebuild/restart',
       error: error.message 
     });
   }
