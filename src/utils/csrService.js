@@ -221,7 +221,7 @@ export function transformCSRIssue(issue) {
     remainingEstimate:   f.timetracking?.remainingEstimate || null,
     aggregateTimeSpent:  f.aggregatetimespent || 0,
     // Story points
-    storyPoints:         f.customfield_10016 || null,
+    storyPoints:         typeof f.customfield_10016 === 'number' ? f.customfield_10016 : null,
     // Parent (epic / support bucket)
     parentKey:           f.parent?.key || null,
     parentSummary:       f.parent?.fields?.summary || null,

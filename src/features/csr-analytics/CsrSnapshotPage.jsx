@@ -9,6 +9,17 @@ const H7D  = 7  * H24;
 const H30D = 30 * H24;
 const H12M = 365 * H24;
 
+const TIME_PERIODS = [
+  { value: "all",                label: "All Time" },
+  { value: String(H24),         label: "Last 24 hours" },
+  { value: String(3 * H24),     label: "Last 3 days" },
+  { value: String(H7D),         label: "Last 7 days" },
+  { value: String(14 * H24),    label: "Last 2 weeks" },
+  { value: String(H30D),        label: "Last 30 days" },
+  { value: String(90 * H24),    label: "Last 3 months" },
+  { value: String(H12M),        label: "Last 12 months" },
+];
+
 function countCreatedIn(tickets, ms) {
   const cutoff = Date.now() - ms;
   return tickets.filter(t => t.createdAt && new Date(t.createdAt).getTime() >= cutoff).length;
@@ -76,7 +87,7 @@ function buildReport(tickets) {
     // Time & Effort
     totalTimeSpentSec: tickets.reduce((s, t) => s + (t.timeSpentSeconds || 0), 0),
     totalEstimateSec:  tickets.reduce((s, t) => s + (t.originalEstimateSec || 0), 0),
-    totalStoryPoints:  tickets.reduce((s, t) => s + (t.storyPoints || 0), 0),
+    totalStoryPoints:  tickets.reduce((s, t) => s + (typeof t.storyPoints === "number" ? t.storyPoints : 0), 0),
     timeByBank:     timeByKey(tickets, "bank"),
     timeByProject:  timeByKey(tickets, "project"),
     timeByAssignee: timeByKey(tickets, "assignee"),
@@ -111,6 +122,7 @@ export default function CsrSnapshotPage() {
   const [filterAssignee, setFilterAssignee] = useState("all");
   const [filterProject,  setFilterProject]  = useState("all");
   const [filterStatus,   setFilterStatus]   = useState("all");
+  const [timePeriod,     setTimePeriod]     = useState("all");
   const [activeKpi,      setActiveKpi]      = useState(null);
   const [copied,         setCopied]         = useState(false);
 
@@ -124,21 +136,26 @@ export default function CsrSnapshotPage() {
     if (filterAssignee !== "all" && t.assignee !== filterAssignee) return false;
     if (filterProject  !== "all" && t.project  !== filterProject)  return false;
     if (filterStatus   !== "all" && t.status   !== filterStatus)   return false;
+    if (timePeriod !== "all" && t.createdAt) {
+      const cutoff = Date.now() - Number(timePeriod);
+      if (new Date(t.createdAt).getTime() < cutoff) return false;
+    }
     return true;
-  }), [normalizedTickets, filterBank, filterAssignee, filterProject, filterStatus]);
+  }), [normalizedTickets, filterBank, filterAssignee, filterProject, filterStatus, timePeriod]);
 
   const report = useMemo(() => buildReport(filteredTickets), [filteredTickets]);
   const r = report;
 
-  const hasFilters = filterBank !== "all" || filterAssignee !== "all" || filterProject !== "all" || filterStatus !== "all";
+  const hasFilters = filterBank !== "all" || filterAssignee !== "all" || filterProject !== "all" || filterStatus !== "all" || timePeriod !== "all";
   const filterDesc = [
     filterBank     !== "all" ? "Bank: " + filterBank         : null,
     filterAssignee !== "all" ? "Assignee: " + filterAssignee : null,
     filterProject  !== "all" ? "Project: " + filterProject   : null,
     filterStatus   !== "all" ? "Status: " + filterStatus     : null,
+    timePeriod     !== "all" ? "Period: " + TIME_PERIODS.find(p => p.value === timePeriod)?.label : null,
   ].filter(Boolean).join(", ");
 
-  function clearFilters() { setFilterBank("all"); setFilterAssignee("all"); setFilterProject("all"); setFilterStatus("all"); }
+  function clearFilters() { setFilterBank("all"); setFilterAssignee("all"); setFilterProject("all"); setFilterStatus("all"); setTimePeriod("all"); }
 
   function handleCopy() {
     const dateStr = r.generatedAt.toLocaleString("en-GB");
@@ -247,6 +264,13 @@ export default function CsrSnapshotPage() {
                 </select>
               </div>
             ))}
+            {/* Time Period dropdown */}
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-slate-500">Time Period</label>
+              <select value={timePeriod} onChange={e => setTimePeriod(e.target.value)} className={selectCls}>
+                {TIME_PERIODS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
           </div>
           <p className="text-xs text-slate-500 mt-2">
             Showing <span className="text-slate-300 font-semibold">{filteredTickets.length}</span> of {normalizedTickets.length} tickets
