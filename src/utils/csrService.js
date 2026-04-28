@@ -88,7 +88,7 @@ export const CSR_PROJECTS = [
   { key: 'SRDII', name: 'SRDII UAT' },
   { key: 'CSR',   name: 'ais-Custody Support' },
   { key: 'SSLM',  name: 'Sett Suite Local Market' },
-  { key: 'CPM',   name: 'Custody On-going Project' },
+  { key: 'COGP',  name: 'Custody On-going Project' },
 ];
 
 const FIELDS = [
