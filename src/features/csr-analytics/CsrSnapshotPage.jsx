@@ -59,6 +59,19 @@ function fmtHours(sec) {
   const m = Math.round((sec % 3600) / 60);
   return h > 0 ? (m > 0 ? h + "h " + m + "m" : h + "h") : m + "m";
 }
+function csrCogpByKey(tickets, key) {
+  const map = {};
+  tickets.forEach(t => {
+    const v = t[key] || "Unknown";
+    if (!map[v]) map[v] = { csrSec: 0, cogpSec: 0, tickets: 0 };
+    map[v].csrSec  += t.timeSpentSeconds || 0;
+    map[v].cogpSec += t.linkedTimeSpentSec || 0;
+    map[v].tickets += 1;
+  });
+  return Object.entries(map)
+    .filter(([, v]) => v.csrSec > 0 || v.cogpSec > 0)
+    .sort((a, b) => (b[1].csrSec + b[1].cogpSec) - (a[1].csrSec + a[1].cogpSec));
+}
 function pct(num, den) {
   if (!den) return "—";
   return Math.round((num / den) * 100) + "%";
@@ -91,6 +104,10 @@ function buildReport(tickets) {
     timeByBank:     timeByKey(tickets, "bank"),
     timeByProject:  timeByKey(tickets, "project"),
     timeByAssignee: timeByKey(tickets, "assignee"),
+    // CSR vs COGP linked time
+    csrTimeSec:    tickets.reduce((s, t) => s + (t.timeSpentSeconds || 0), 0),
+    cogpTimeSec:   tickets.reduce((s, t) => s + (t.linkedTimeSpentSec || 0), 0),
+    csrCogpByBank: csrCogpByKey(tickets, "bank"),
   };
 }
 
@@ -409,6 +426,44 @@ export default function CsrSnapshotPage() {
 
           {/* Time by Bank, Project, Assignee */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+            {/* CSR vs COGP Time Comparison — full width */}
+            <div className="sm:col-span-3 bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">CSR vs COGP Time by Bank / Client</h3>
+                <div className="flex items-center gap-4 text-xs">
+                  <span className="text-cyan-400 font-semibold">Total CSR: {fmtHours(r.csrTimeSec)}</span>
+                  <span className="text-violet-400 font-semibold">Total COGP: {fmtHours(r.cogpTimeSec)}</span>
+                  <span className="text-slate-300 font-semibold">Combined: {fmtHours(r.csrTimeSec + r.cogpTimeSec)}</span>
+                </div>
+              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-900 text-xs text-slate-500">
+                    <th className="px-4 py-2 text-left">Bank / Client</th>
+                    <th className="px-4 py-2 text-right text-cyan-400">Σ Time in CSR</th>
+                    <th className="px-4 py-2 text-right text-violet-400">Σ Time in COGP</th>
+                    <th className="px-4 py-2 text-right">Combined</th>
+                    <th className="px-4 py-2 text-right">Tickets</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-700">
+                  {r.csrCogpByBank.length === 0
+                    ? <tr><td colSpan="5" className="px-4 py-3 text-slate-500 text-xs">No time logged</td></tr>
+                    : r.csrCogpByBank.map(([name, v]) => (
+                      <tr key={name} className="hover:bg-slate-700/30">
+                        <td className="px-4 py-2.5 text-slate-300 text-sm">{name}</td>
+                        <td className="px-4 py-2.5 text-right font-bold text-cyan-400 text-sm">{fmtHours(v.csrSec)}</td>
+                        <td className="px-4 py-2.5 text-right font-bold text-violet-400 text-sm">{fmtHours(v.cogpSec)}</td>
+                        <td className="px-4 py-2.5 text-right font-bold text-slate-100 text-sm">{fmtHours(v.csrSec + v.cogpSec)}</td>
+                        <td className="px-4 py-2.5 text-right text-slate-400 text-sm">{v.tickets}</td>
+                      </tr>
+                    ))
+                  }
+                </tbody>
+              </table>
+            </div>
+
             {[
               { title: "Time by Bank / Client",  data: r.timeByBank     },
               { title: "Time by Project",        data: r.timeByProject  },

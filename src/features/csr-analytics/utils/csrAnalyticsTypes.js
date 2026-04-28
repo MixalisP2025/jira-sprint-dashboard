@@ -129,5 +129,10 @@ export function normalizeTicket(rawTicket) {
     storyPoints:         rawTicket.storyPoints ?? null,
     parentKey:           rawTicket.parentKey ?? null,
     parentSummary:       rawTicket.parentSummary ?? null,
+    // Linked COGP time tracking
+    linkedTimeSpent:     rawTicket.linkedTimeSpent ?? null,
+    linkedTimeSpentSec:  rawTicket.linkedTimeSpentSec ?? 0,
+    linkedKey:           rawTicket.linkedKey ?? null,
+    linkedStoryPoints:   rawTicket.linkedStoryPoints ?? null,
   };
 }

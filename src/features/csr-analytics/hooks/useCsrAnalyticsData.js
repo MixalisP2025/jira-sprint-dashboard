@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useMemo } from 'react';
-import { fetchCSRIssues, transformCSRIssue } from '../../../utils/csrService.js';
+import { fetchCSRIssues, transformCSRIssue, enrichWithLinkedTime } from '../../../utils/csrService.js';
 import { normalizeTicket } from '../utils/csrAnalyticsTypes.js';
 import {
   applyFilters,
@@ -50,7 +50,8 @@ async function _doFetch() {
   _notify();
   try {
     const raw = await fetchCSRIssues();
-    _cache.tickets = raw.map(transformCSRIssue);
+    const transformed = raw.map(transformCSRIssue);
+    _cache.tickets = await enrichWithLinkedTime(transformed);
     _cache.lastFetch = new Date();
   } catch (err) {
     _cache.error = err?.message ?? 'Failed to load CSR tickets';

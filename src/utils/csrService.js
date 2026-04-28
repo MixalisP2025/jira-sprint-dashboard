@@ -170,7 +170,6 @@ export function transformCSRIssue(issue) {
   const age = ticketAge(created);
 
   const isClosed = status === 'Completed' || status === 'Closed';
-  // isSLABreach will be set after ticket object is built (needs bank+priority for SLA target)
   const daysSinceUpdated = updated
     ? Math.floor((new Date() - new Date(updated)) / 86400000)
     : 0;
@@ -210,7 +209,7 @@ export function transformCSRIssue(issue) {
     resolved:      f.resolutiondate || null,
     due:           f.duedate || null,
     age,
-    isSLABreach:   false, // set below after SLA target is known
+    isSLABreach:   false,
     isStale:       isStaleVal,
     internalLinks,
     // Time tracking fields
@@ -220,6 +219,10 @@ export function transformCSRIssue(issue) {
     originalEstimateSec: f.timetracking?.originalEstimateSeconds || 0,
     remainingEstimate:   f.timetracking?.remainingEstimate || null,
     aggregateTimeSpent:  f.aggregatetimespent || 0,
+    // Linked COGP time (populated later by enrichWithLinkedTime)
+    linkedTimeSpent:     null,
+    linkedTimeSpentSec:  0,
+    linkedKey:           null,
     // Story points
     storyPoints:         typeof f.customfield_10016 === 'number' ? f.customfield_10016 : null,
     // Parent (epic / support bucket)
@@ -230,4 +233,60 @@ export function transformCSRIssue(issue) {
   ticket.slaRisk    = getSLARisk(ticket);
   ticket.isSLABreach = ticket.slaRisk === 'breaching';
   return ticket;
+}
+
+/**
+ * Enriches CSR tickets with time tracking data from their linked COGP tickets.
+ * Fetches linked tickets in batches and merges the time data back.
+ */
+export async function enrichWithLinkedTime(tickets) {
+  // Collect all linked COGP/internal keys from CSR tickets
+  const linkedKeys = new Map(); // linkedKey -> csrTicketKey
+  for (const t of tickets) {
+    if (!t.internalLinks || t.internalLinks.length === 0) continue;
+    for (const link of t.internalLinks) {
+      if (link.key && !linkedKeys.has(link.key)) {
+        linkedKeys.set(link.key, t.key);
+      }
+    }
+  }
+
+  if (linkedKeys.size === 0) return tickets;
+
+  // Fetch time tracking for linked tickets in batches of 50
+  const allLinkedKeys = Array.from(linkedKeys.keys());
+  const linkedTimeMap = new Map(); // linkedKey -> { timeSpent, timeSpentSeconds }
+
+  for (let i = 0; i < allLinkedKeys.length; i += 50) {
+    const batch = allLinkedKeys.slice(i, i + 50);
+    const jql = `key in (${batch.map(k => `"${k}"`).join(',')})`;
+    try {
+      const data = await fetchPage(jql + ' ORDER BY key ASC');
+      for (const issue of (data.issues || [])) {
+        const f = issue.fields || {};
+        linkedTimeMap.set(issue.key, {
+          timeSpent:        f.timetracking?.timeSpent || null,
+          timeSpentSeconds: f.timetracking?.timeSpentSeconds || 0,
+          storyPoints:      typeof f.customfield_10016 === 'number' ? f.customfield_10016 : null,
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to fetch linked ticket time:', e.message);
+    }
+  }
+
+  // Merge linked time back into CSR tickets
+  return tickets.map(t => {
+    if (!t.internalLinks || t.internalLinks.length === 0) return t;
+    const primaryLink = t.internalLinks[0];
+    const linked = linkedTimeMap.get(primaryLink.key);
+    if (!linked) return t;
+    return {
+      ...t,
+      linkedTimeSpent:    linked.timeSpent,
+      linkedTimeSpentSec: linked.timeSpentSeconds,
+      linkedKey:          primaryLink.key,
+      linkedStoryPoints:  linked.storyPoints,
+    };
+  });
 }
