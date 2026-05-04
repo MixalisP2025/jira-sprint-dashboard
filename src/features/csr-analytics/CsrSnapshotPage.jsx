@@ -108,6 +108,11 @@ function buildReport(tickets) {
     csrTimeSec:    tickets.reduce((s, t) => s + (t.timeSpentSeconds || 0), 0),
     cogpTimeSec:   tickets.reduce((s, t) => s + (t.linkedTimeSpentSec || 0), 0),
     csrCogpByBank: csrCogpByKey(tickets, "bank"),
+    // Per-ticket time details (only tickets with any time logged)
+    ticketTimeDetails: tickets
+      .filter(t => (t.timeSpentSeconds || 0) > 0 || (t.linkedTimeSpentSec || 0) > 0)
+      .sort((a, b) => ((b.timeSpentSeconds || 0) + (b.linkedTimeSpentSec || 0)) - ((a.timeSpentSeconds || 0) + (a.linkedTimeSpentSec || 0)))
+      .slice(0, 100),
   };
 }
 
@@ -128,6 +133,7 @@ function buildHtml(r, filterDesc) {
     (r.timeByBank.length > 0 ? "<h2>Time by Bank / Client</h2><table><thead><tr><th>Bank</th><th style=\"text-align:right\">Time</th><th style=\"text-align:right\">Tickets</th></tr></thead><tbody>" + r.timeByBank.map(([k, s, c]) => "<tr><td style=\"padding:5px 12px;font-size:13px\">" + k + "</td><td style=\"padding:5px 12px;font-weight:600;text-align:right\">" + fmtHours(s) + "</td><td style=\"padding:5px 12px;text-align:right;color:#64748b\">" + c + "</td></tr>").join("") + "</tbody></table>" : "") +
     (r.timeByProject.length > 0 ? "<h2>Time by Project</h2><table><thead><tr><th>Project</th><th style=\"text-align:right\">Time</th><th style=\"text-align:right\">Tickets</th></tr></thead><tbody>" + r.timeByProject.map(([k, s, c]) => "<tr><td style=\"padding:5px 12px;font-size:13px\">" + k + "</td><td style=\"padding:5px 12px;font-weight:600;text-align:right\">" + fmtHours(s) + "</td><td style=\"padding:5px 12px;text-align:right;color:#64748b\">" + c + "</td></tr>").join("") + "</tbody></table>" : "") +
     (r.timeByAssignee.length > 0 ? "<h2>Time by Assignee</h2><table><thead><tr><th>Assignee</th><th style=\"text-align:right\">Time</th><th style=\"text-align:right\">Tickets</th></tr></thead><tbody>" + r.timeByAssignee.map(([k, s, c]) => "<tr><td style=\"padding:5px 12px;font-size:13px\">" + k + "</td><td style=\"padding:5px 12px;font-weight:600;text-align:right\">" + fmtHours(s) + "</td><td style=\"padding:5px 12px;text-align:right;color:#64748b\">" + c + "</td></tr>").join("") + "</tbody></table>" : "") +
+    (r.ticketTimeDetails.length > 0 ? "<h2>Per-Ticket Time Detail (CSR vs COGP)</h2><table><thead><tr><th>Key</th><th>Summary</th><th>Bank</th><th>Assignee</th><th style=\"text-align:right;color:#06b6d4\">CSR Time</th><th style=\"text-align:right;color:#8b5cf6\">COGP Time</th><th style=\"text-align:right\">Combined</th></tr></thead><tbody>" + r.ticketTimeDetails.map(t => "<tr><td style=\"padding:5px 12px;font-size:12px;font-family:monospace;color:#3b82f6\">" + t.key + "</td><td style=\"padding:5px 12px;font-size:12px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\">" + (t.summary || "") + "</td><td style=\"padding:5px 12px;font-size:12px\">" + (t.bank || "") + "</td><td style=\"padding:5px 12px;font-size:12px\">" + (t.assignee || "") + "</td><td style=\"padding:5px 12px;font-size:12px;text-align:right;font-weight:600;color:#06b6d4\">" + fmtHours(t.timeSpentSeconds) + "</td><td style=\"padding:5px 12px;font-size:12px;text-align:right;font-weight:600;color:#8b5cf6\">" + fmtHours(t.linkedTimeSpentSec) + "</td><td style=\"padding:5px 12px;font-size:12px;text-align:right;font-weight:700\">" + fmtHours((t.timeSpentSeconds || 0) + (t.linkedTimeSpentSec || 0)) + "</td></tr>").join("") + "</tbody></table>" : "") +
     "</body></html>";
 }
 
@@ -135,26 +141,33 @@ export default function CsrSnapshotPage() {
   const { filters, setFilter } = useCsrAnalyticsFilters();
   const { normalizedTickets, loading } = useCsrAnalyticsData({ filters, drilldowns: [] });
 
-  const [filterBank,     setFilterBank]     = useState("all");
-  const [filterAssignee, setFilterAssignee] = useState("all");
-  const [filterProject,  setFilterProject]  = useState("all");
-  const [filterStatus,   setFilterStatus]   = useState("all");
+  const [filterBank,     setFilterBank]     = useState([]);
+  const [filterAssignee, setFilterAssignee] = useState([]);
+  const [filterProject,  setFilterProject]  = useState([]);
+  const [filterStatus,   setFilterStatus]   = useState([]);
   const [timePeriod,     setTimePeriod]     = useState("all");
   const [dateFrom,       setDateFrom]       = useState("");
   const [dateTo,         setDateTo]         = useState("");
   const [activeKpi,      setActiveKpi]      = useState(null);
   const [copied,         setCopied]         = useState(false);
+  // Track which filter dropdowns are open
+  const [openFilter,     setOpenFilter]     = useState(null);
 
   const banks     = useMemo(() => [...new Set(normalizedTickets.map(t => t.bank).filter(Boolean))].sort(), [normalizedTickets]);
   const assignees = useMemo(() => [...new Set(normalizedTickets.map(t => t.assignee).filter(v => v && v !== "Unassigned"))].sort(), [normalizedTickets]);
   const projects  = useMemo(() => [...new Set(normalizedTickets.map(t => t.project).filter(Boolean))].sort(), [normalizedTickets]);
   const statuses  = useMemo(() => [...new Set(normalizedTickets.map(t => t.status).filter(Boolean))].sort(), [normalizedTickets]);
 
+  // Toggle a value in a multi-select array
+  function toggleFilter(setter, value) {
+    setter(prev => prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value]);
+  }
+
   const filteredTickets = useMemo(() => normalizedTickets.filter(t => {
-    if (filterBank     !== "all" && t.bank     !== filterBank)     return false;
-    if (filterAssignee !== "all" && t.assignee !== filterAssignee) return false;
-    if (filterProject  !== "all" && t.project  !== filterProject)  return false;
-    if (filterStatus   !== "all" && t.status   !== filterStatus)   return false;
+    if (filterBank.length > 0     && !filterBank.includes(t.bank))         return false;
+    if (filterAssignee.length > 0 && !filterAssignee.includes(t.assignee)) return false;
+    if (filterProject.length > 0  && !filterProject.includes(t.project))   return false;
+    if (filterStatus.length > 0   && !filterStatus.includes(t.status))     return false;
     if (timePeriod !== "all" && t.createdAt) {
       const cutoff = Date.now() - Number(timePeriod);
       if (new Date(t.createdAt).getTime() < cutoff) return false;
@@ -167,18 +180,18 @@ export default function CsrSnapshotPage() {
   const report = useMemo(() => buildReport(filteredTickets), [filteredTickets]);
   const r = report;
 
-  const hasFilters = filterBank !== "all" || filterAssignee !== "all" || filterProject !== "all" || filterStatus !== "all" || timePeriod !== "all" || dateFrom !== "" || dateTo !== "";
+  const hasFilters = filterBank.length > 0 || filterAssignee.length > 0 || filterProject.length > 0 || filterStatus.length > 0 || timePeriod !== "all" || dateFrom !== "" || dateTo !== "";
   const filterDesc = [
-    filterBank     !== "all" ? "Bank: " + filterBank         : null,
-    filterAssignee !== "all" ? "Assignee: " + filterAssignee : null,
-    filterProject  !== "all" ? "Project: " + filterProject   : null,
-    filterStatus   !== "all" ? "Status: " + filterStatus     : null,
+    filterBank.length > 0     ? "Bank: " + filterBank.join(", ")         : null,
+    filterAssignee.length > 0 ? "Assignee: " + filterAssignee.join(", ") : null,
+    filterProject.length > 0  ? "Project: " + filterProject.join(", ")   : null,
+    filterStatus.length > 0   ? "Status: " + filterStatus.join(", ")     : null,
     timePeriod     !== "all" ? "Period: " + TIME_PERIODS.find(p => p.value === timePeriod)?.label : null,
     dateFrom ? "From: " + dateFrom : null,
     dateTo   ? "To: " + dateTo     : null,
   ].filter(Boolean).join(", ");
 
-  function clearFilters() { setFilterBank("all"); setFilterAssignee("all"); setFilterProject("all"); setFilterStatus("all"); setTimePeriod("all"); setDateFrom(""); setDateTo(""); }
+  function clearFilters() { setFilterBank([]); setFilterAssignee([]); setFilterProject([]); setFilterStatus([]); setTimePeriod("all"); setDateFrom(""); setDateTo(""); }
 
   function handleCopy() {
     const dateStr = r.generatedAt.toLocaleString("en-GB");
@@ -274,17 +287,42 @@ export default function CsrSnapshotPage() {
           </div>
           <div className="flex flex-wrap gap-4">
             {[
-              { label: "Bank",     val: filterBank,     set: setFilterBank,     opts: banks,     placeholder: "All Banks"     },
-              { label: "Assignee", val: filterAssignee, set: setFilterAssignee, opts: assignees, placeholder: "All Assignees" },
-              { label: "Project",  val: filterProject,  set: setFilterProject,  opts: projects,  placeholder: "All Projects"  },
-              { label: "Status",   val: filterStatus,   set: setFilterStatus,   opts: statuses,  placeholder: "All Statuses"  },
-            ].map(({ label, val, set, opts, placeholder }) => (
-              <div key={label} className="flex flex-col gap-1">
+              { label: "Bank",     selected: filterBank,     setter: setFilterBank,     opts: banks     },
+              { label: "Assignee", selected: filterAssignee, setter: setFilterAssignee, opts: assignees },
+              { label: "Project",  selected: filterProject,  setter: setFilterProject,  opts: projects  },
+              { label: "Status",   selected: filterStatus,   setter: setFilterStatus,   opts: statuses  },
+            ].map(({ label, selected, setter, opts }) => (
+              <div key={label} className="flex flex-col gap-1 relative">
                 <label className="text-xs text-slate-500">{label}</label>
-                <select value={val} onChange={e => set(e.target.value)} className={selectCls}>
-                  <option value="all">{placeholder}</option>
-                  {opts.map(o => <option key={o} value={o}>{o}</option>)}
-                </select>
+                <button
+                  type="button"
+                  onClick={() => setOpenFilter(openFilter === label ? null : label)}
+                  className={selectCls + " text-left min-w-[140px] flex items-center justify-between gap-2"}
+                >
+                  <span className="truncate">
+                    {selected.length === 0 ? "All " + label + "s" : selected.length + " selected"}
+                  </span>
+                  <span className="text-slate-500 text-xs">{openFilter === label ? "▲" : "▼"}</span>
+                </button>
+                {openFilter === label && (
+                  <div className="absolute top-full left-0 z-20 mt-1 w-56 max-h-60 overflow-y-auto bg-slate-700 border border-slate-600 rounded-lg shadow-xl">
+                    <div className="px-3 py-2 border-b border-slate-600 flex items-center justify-between">
+                      <button onClick={() => setter(opts.slice())} className="text-xs text-indigo-400 hover:text-indigo-300">Select all</button>
+                      <button onClick={() => setter([])} className="text-xs text-slate-400 hover:text-slate-300">Clear</button>
+                    </div>
+                    {opts.map(o => (
+                      <label key={o} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-600 cursor-pointer text-xs text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={selected.includes(o)}
+                          onChange={() => toggleFilter(setter, o)}
+                          className="w-3.5 h-3.5 rounded border-slate-500 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
+                        />
+                        {o}
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
             {/* Time Period dropdown */}
