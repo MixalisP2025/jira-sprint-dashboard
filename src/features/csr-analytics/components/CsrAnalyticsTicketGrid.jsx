@@ -12,23 +12,35 @@ import { useState, useMemo } from 'react';
 import { csvEscape, formatDate } from '../utils/csrAnalyticsFormatters.js';
 import { MAX_GRID_ROWS } from '../utils/csrAnalyticsConstants.js';
 
+/** Formats seconds into a human-readable time string (e.g. "2h 30m") */
+function fmtTime(sec) {
+  if (!sec) return '—';
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  if (h > 0 && m > 0) return `${h}h ${m}m`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
+}
+
 // ---------------------------------------------------------------------------
 // Column definitions
 // ---------------------------------------------------------------------------
 
 const COLUMNS = [
-  { key: 'key',       label: 'Key',          sortable: true },
-  { key: 'summary',   label: 'Summary',      sortable: true },
-  { key: 'assignee',  label: 'Assignee',     sortable: true },
-  { key: 'bank',      label: 'Bank',         sortable: true },
-  { key: 'status',    label: 'Status',       sortable: true },
-  { key: 'ageDays',   label: 'Age (days)',   sortable: true },
-  { key: 'slaState',  label: 'SLA State',    sortable: true },
-  { key: 'updatedAt', label: 'Last Updated', sortable: true },
+  { key: 'key',              label: 'Key',            sortable: true },
+  { key: 'summary',          label: 'Summary',        sortable: true },
+  { key: 'assignee',         label: 'Assignee',       sortable: true },
+  { key: 'bank',             label: 'Bank',           sortable: true },
+  { key: 'status',           label: 'Status',         sortable: true },
+  { key: 'ageDays',          label: 'Age (days)',     sortable: true },
+  { key: 'slaState',         label: 'SLA State',      sortable: true },
+  { key: 'timeSpentSeconds', label: 'CSR Time',       sortable: true },
+  { key: 'linkedTimeSpentSec', label: 'COGP Time',    sortable: true },
+  { key: 'updatedAt',        label: 'Last Updated',   sortable: true },
 ];
 
 /** Columns that use numeric comparison instead of localeCompare. */
-const NUMERIC_COLS = new Set(['ageDays', 'resolutionDays']);
+const NUMERIC_COLS = new Set(['ageDays', 'resolutionDays', 'timeSpentSeconds', 'linkedTimeSpentSec']);
 
 /** Columns that are ISO date strings (sort lexicographically). */
 const DATE_COLS = new Set(['updatedAt', 'createdAt', 'resolvedAt']);
@@ -100,6 +112,9 @@ function handleExport(tickets) {
     'Status',
     'Age (days)',
     'SLA State',
+    'CSR Time (h)',
+    'COGP Time (h)',
+    'Linked COGP Key',
     'Last Updated',
     'Created Date',
     'Resolution Days',
@@ -113,6 +128,9 @@ function handleExport(tickets) {
     csvEscape(t.status),
     t.ageDays,
     csvEscape(t.slaState),
+    t.timeSpentSeconds ? (t.timeSpentSeconds / 3600).toFixed(1) : '',
+    t.linkedTimeSpentSec ? (t.linkedTimeSpentSec / 3600).toFixed(1) : '',
+    csvEscape(t.linkedKey || ''),
     csvEscape(t.updatedAt),
     csvEscape(t.createdAt),
     t.resolutionDays ?? '',
@@ -264,6 +282,14 @@ export default function CsrAnalyticsTicketGrid({ tickets = [], maxRows = MAX_GRI
                   {/* SLA State */}
                   <td className={`px-3 py-2 whitespace-nowrap font-medium ${slaStateClass(ticket.slaState)}`}>
                     {ticket.slaState || '—'}
+                  </td>
+                  {/* CSR Time */}
+                  <td className="px-3 py-2 text-right whitespace-nowrap text-cyan-400 tabular-nums">
+                    {ticket.timeSpentSeconds ? fmtTime(ticket.timeSpentSeconds) : '—'}
+                  </td>
+                  {/* COGP Time */}
+                  <td className="px-3 py-2 text-right whitespace-nowrap text-violet-400 tabular-nums">
+                    {ticket.linkedTimeSpentSec ? fmtTime(ticket.linkedTimeSpentSec) : '—'}
                   </td>
                   {/* Last Updated */}
                   <td className="px-3 py-2 whitespace-nowrap text-slate-300">
