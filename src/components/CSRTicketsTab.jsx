@@ -156,46 +156,51 @@ function FilterPanel({ issues, filters, setFilters }) {
   const banks     = useMemo(() => [...new Set(issues.map(i => i.bank))].filter(Boolean).sort(), [issues]);
   const assignees = useMemo(() => [...new Set(issues.map(i => i.assignee))].filter(Boolean).sort(), [issues]);
   const set = (key, val) => setFilters(f => ({ ...f, [key]: val }));
+  const [openDrop, setOpenDrop] = useState(null);
+
+  function handleSelect(filterKey, value) {
+    const newValue = filters[filterKey] === value ? 'all' : value;
+    set(filterKey, newValue);
+    setOpenDrop(null);
+  }
+
+  const btnCls = 'px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:ring-2 focus:ring-indigo-400 outline-none text-left min-w-[130px] flex items-center justify-between gap-2';
+
+  const filterDropdowns = [
+    { key: 'project',  label: 'Project',  options: CSR_PROJECTS.map(p => ({ value: p.key, label: p.name })), current: filters.project },
+    { key: 'status',   label: 'Status',   options: statuses.map(s => ({ value: s, label: s })),              current: filters.status },
+    { key: 'bank',     label: 'Bank',     options: banks.map(b => ({ value: b, label: b })),                 current: filters.bank },
+    { key: 'assignee', label: 'Assignee', options: assignees.map(a => ({ value: a, label: a })),             current: filters.assignee },
+  ];
 
   return (
     <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
       <div className="flex flex-wrap gap-3 items-end">
-        {/* Project */}
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Project</label>
-          <select value={filters.project} onChange={e => set('project', e.target.value)}
-            className="px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:ring-2 focus:ring-indigo-400 outline-none">
-            <option value="all">All Projects</option>
-            {CSR_PROJECTS.map(p => <option key={p.key} value={p.key}>{p.name}</option>)}
-          </select>
-        </div>
-        {/* Status */}
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Status</label>
-          <select value={filters.status} onChange={e => set('status', e.target.value)}
-            className="px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:ring-2 focus:ring-indigo-400 outline-none">
-            <option value="all">All Statuses</option>
-            {statuses.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </div>
-        {/* Bank */}
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Bank</label>
-          <select value={filters.bank} onChange={e => set('bank', e.target.value)}
-            className="px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:ring-2 focus:ring-indigo-400 outline-none">
-            <option value="all">All Banks</option>
-            {banks.map(b => <option key={b} value={b}>{b}</option>)}
-          </select>
-        </div>
-        {/* Assignee */}
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Assignee</label>
-          <select value={filters.assignee} onChange={e => set('assignee', e.target.value)}
-            className="px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:ring-2 focus:ring-indigo-400 outline-none">
-            <option value="all">All Assignees</option>
-            {assignees.map(a => <option key={a} value={a}>{a}</option>)}
-          </select>
-        </div>
+        {filterDropdowns.map(({ key, label, options, current }) => (
+          <div key={key} className="flex flex-col gap-1 relative">
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{label}</label>
+            <button type="button" onClick={() => setOpenDrop(openDrop === key ? null : key)} className={btnCls}>
+              <span className="truncate">{current === 'all' ? 'All ' + label + 's' : options.find(o => o.value === current)?.label || current}</span>
+              <span className="text-slate-400 text-xs">{openDrop === key ? '▲' : '▼'}</span>
+            </button>
+            {openDrop === key && (
+              <div className="absolute top-full left-0 z-20 mt-1 w-56 max-h-60 overflow-y-auto bg-white border border-slate-300 rounded-lg shadow-xl">
+                <label className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-xs text-slate-700 border-b border-slate-200">
+                  <input type="checkbox" checked={current === 'all'} onChange={() => { set(key, 'all'); setOpenDrop(null); }}
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                  All {label}s
+                </label>
+                {options.map(opt => (
+                  <label key={opt.value} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-xs text-slate-700">
+                    <input type="checkbox" checked={current === opt.value} onChange={() => handleSelect(key, opt.value)}
+                      className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
         {/* Date From */}
         <div className="flex flex-col gap-1">
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Date From</label>
