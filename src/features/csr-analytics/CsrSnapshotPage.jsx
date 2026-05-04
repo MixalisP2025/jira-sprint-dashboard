@@ -140,6 +140,8 @@ export default function CsrSnapshotPage() {
   const [filterProject,  setFilterProject]  = useState("all");
   const [filterStatus,   setFilterStatus]   = useState("all");
   const [timePeriod,     setTimePeriod]     = useState("all");
+  const [dateFrom,       setDateFrom]       = useState("");
+  const [dateTo,         setDateTo]         = useState("");
   const [activeKpi,      setActiveKpi]      = useState(null);
   const [copied,         setCopied]         = useState(false);
 
@@ -157,22 +159,26 @@ export default function CsrSnapshotPage() {
       const cutoff = Date.now() - Number(timePeriod);
       if (new Date(t.createdAt).getTime() < cutoff) return false;
     }
+    if (dateFrom && t.createdAt && t.createdAt.slice(0, 10) < dateFrom) return false;
+    if (dateTo   && t.createdAt && t.createdAt.slice(0, 10) > dateTo)   return false;
     return true;
-  }), [normalizedTickets, filterBank, filterAssignee, filterProject, filterStatus, timePeriod]);
+  }), [normalizedTickets, filterBank, filterAssignee, filterProject, filterStatus, timePeriod, dateFrom, dateTo]);
 
   const report = useMemo(() => buildReport(filteredTickets), [filteredTickets]);
   const r = report;
 
-  const hasFilters = filterBank !== "all" || filterAssignee !== "all" || filterProject !== "all" || filterStatus !== "all" || timePeriod !== "all";
+  const hasFilters = filterBank !== "all" || filterAssignee !== "all" || filterProject !== "all" || filterStatus !== "all" || timePeriod !== "all" || dateFrom !== "" || dateTo !== "";
   const filterDesc = [
     filterBank     !== "all" ? "Bank: " + filterBank         : null,
     filterAssignee !== "all" ? "Assignee: " + filterAssignee : null,
     filterProject  !== "all" ? "Project: " + filterProject   : null,
     filterStatus   !== "all" ? "Status: " + filterStatus     : null,
     timePeriod     !== "all" ? "Period: " + TIME_PERIODS.find(p => p.value === timePeriod)?.label : null,
+    dateFrom ? "From: " + dateFrom : null,
+    dateTo   ? "To: " + dateTo     : null,
   ].filter(Boolean).join(", ");
 
-  function clearFilters() { setFilterBank("all"); setFilterAssignee("all"); setFilterProject("all"); setFilterStatus("all"); setTimePeriod("all"); }
+  function clearFilters() { setFilterBank("all"); setFilterAssignee("all"); setFilterProject("all"); setFilterStatus("all"); setTimePeriod("all"); setDateFrom(""); setDateTo(""); }
 
   function handleCopy() {
     const dateStr = r.generatedAt.toLocaleString("en-GB");
@@ -287,6 +293,15 @@ export default function CsrSnapshotPage() {
               <select value={timePeriod} onChange={e => setTimePeriod(e.target.value)} className={selectCls}>
                 {TIME_PERIODS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
+            </div>
+            {/* Date range */}
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-slate-500">From</label>
+              <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className={selectCls} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-slate-500">To</label>
+              <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className={selectCls} />
             </div>
           </div>
           <p className="text-xs text-slate-500 mt-2">
