@@ -4377,15 +4377,25 @@ const TimelineSection = ({
           </h3>
           
           {/* Horizontal Month Timeline */}
-          <div className="relative mb-8 bg-slate-900/50 rounded-xl p-6 border border-slate-700">
+          <div className="relative mb-8 bg-slate-900/50 rounded-xl p-6 border border-slate-700 overflow-x-auto">
             {/* Month Headers */}
-            <div className="flex justify-between items-center mb-4">
-              {monthHeader.map((m, i) => (
-                <div key={i} className="flex-1 text-center">
-                  <div className="text-xl font-bold text-white">{m.month}</div>
-                  <div className="text-sm text-slate-400">{m.year}</div>
-                </div>
-              ))}
+            <div className="flex items-center mb-4" style={{ minWidth: monthHeader.length > 18 ? `${monthHeader.length * 60}px` : '100%' }}>
+              {monthHeader.map((m, i) => {
+                // Show every Nth label to avoid crowding
+                const showLabel = monthHeader.length <= 18 || i % Math.ceil(monthHeader.length / 18) === 0;
+                return (
+                  <div key={i} className="flex-1 text-center">
+                    {showLabel ? (
+                      <>
+                        <div className="text-xs font-bold text-white">{m.month}</div>
+                        <div className="text-xs text-slate-500">{m.year}</div>
+                      </>
+                    ) : (
+                      <div className="text-xs text-slate-600">·</div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             
             {/* Timeline Bar */}
