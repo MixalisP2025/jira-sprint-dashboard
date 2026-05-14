@@ -1427,32 +1427,7 @@ const SprintDashboard = () => {
               </label>
             </div>
 
-            {/* Rebuild & Restart button */}
-            <div className="flex justify-center mb-4">
-              <button
-                onClick={async () => {
-                  const btn = document.getElementById('restart-btn');
-                  if (btn) { btn.disabled = true; btn.textContent = '⏳ Restarting...'; }
-                  try {
-                    const res = await fetch('/api/pm2-restart', { method: 'POST' });
-                    const data = await res.json();
-                    if (data.success) {
-                      if (btn) { btn.textContent = '✅ Restarted! Refreshing...'; }
-                      setTimeout(() => window.location.reload(), 3000);
-                    } else {
-                      if (btn) { btn.textContent = '❌ Failed — try restart.bat'; btn.disabled = false; }
-                    }
-                  } catch (e) {
-                    if (btn) { btn.textContent = '❌ Server unreachable'; btn.disabled = false; }
-                  }
-                }}
-                id="restart-btn"
-                className="px-6 py-3 bg-slate-700 text-slate-200 rounded-lg hover:bg-slate-600 transition-colors text-sm font-medium border border-slate-500"
-              >
-                🔄 Rebuild &amp; Restart Server
-              </button>
-            </div>
-            <p className="text-xs text-gray-400 mb-2">Rebuilds the frontend and restarts the backend. Page will auto-refresh after 3 seconds.</p>
+
             
             {lastUpdated && (
               <div className="mt-8 pt-4 border-t border-gray-200">
