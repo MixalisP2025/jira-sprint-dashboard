@@ -935,16 +935,21 @@ const SprintDashboard = () => {
       // NEW: Add time-based work to active workload if it's active
       d.activeWorkload += d.timeBasedActiveSP;
       
-      // CRITICAL: Remaining capacity calculation
-      d.remainingCapacity = d.sprintCapacity - d.activeWorkload;
+      // CRITICAL: Remaining capacity calculation — uses BASE capacity (full sprint)
+      // The time-decayed sprintCapacity is kept for the Sprint Health buffer widget only
+      d.remainingCapacity = d.baseCapacity - d.activeWorkload;
       
-      // NEW: Simplified status logic based only on remaining capacity
-      if (d.remainingCapacity > 0) {
+      // Status banding based on utilization against full sprint capacity
+      const utilization = d.baseCapacity > 0 ? (d.activeWorkload / d.baseCapacity) * 100 : 0;
+      if (utilization <= 90) {
         d.capacityStatus = 'Has Capacity';
         d.pmGuidance = `✅ Has capacity — ${d.remainingCapacity.toFixed(1)} SP available`;
-      } else if (d.remainingCapacity === 0) {
+      } else if (utilization <= 110) {
+        d.capacityStatus = 'Has Capacity';
+        d.pmGuidance = `✅ On Track — ${d.remainingCapacity.toFixed(1)} SP available`;
+      } else if (utilization <= 120) {
         d.capacityStatus = 'Fully Allocated';
-        d.pmGuidance = '🟡 Fully allocated — no buffer';
+        d.pmGuidance = `🟡 At Risk — reduce scope by ${Math.abs(d.remainingCapacity).toFixed(1)} SP`;
       } else {
         d.capacityStatus = 'Overloaded';
         d.pmGuidance = `❌ Overloaded — reduce scope by ${Math.abs(d.remainingCapacity).toFixed(1)} SP`;
