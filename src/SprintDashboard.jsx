@@ -1090,7 +1090,7 @@ const SprintDashboard = () => {
   const sprintHealthSummary = useMemo(() => {
     if (selectedSprint === 'all') return null;
     
-    const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.sprintCapacity, 0);
+    const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.baseCapacity, 0);
     const activeWorkload = Object.values(stats).reduce((sum, s) => sum + s.activeWorkload, 0);
     const remainingCapacity = totalCapacity - activeWorkload;
     
@@ -1966,7 +1966,7 @@ const OverviewSection = ({
                 .map(([name, data]) => (
                   <li key={name}>
                     <strong>{name}</strong>: Reduce active work by {Math.abs(data.remainingCapacity).toFixed(1)} SP
-                    (currently {data.activeWorkload.toFixed(1)} SP active, capacity is {data.sprintCapacity} SP)
+                    (currently {data.activeWorkload.toFixed(1)} SP active, capacity is {data.baseCapacity} SP)
                   </li>
                 ))}
             </ul>
@@ -2004,13 +2004,13 @@ const OverviewSection = ({
               .sort((a, b) => b[1].activeWorkload - a[1].activeWorkload)
               .slice(0, 10)
               .map(([name, data]) => {
-                const maxSP = Math.max(...Object.values(stats).map(s => s.sprintCapacity));
-                const capacityWidth = (data.sprintCapacity / maxSP) * 100;
+                const maxSP = Math.max(...Object.values(stats).map(s => s.baseCapacity));
+                const capacityWidth = (data.baseCapacity / maxSP) * 100;
                 const activeWidth = Math.min((data.activeWorkload / maxSP) * 100, 100);
                 const completedWidth = Math.min((data.completedWorkload / maxSP) * 100, 100);
                 const awaitingWidth = Math.min((data.awaitingWorkload / maxSP) * 100, 100);
                 
-                const isOverloaded = data.activeWorkload > data.sprintCapacity;
+                const isOverloaded = data.activeWorkload > data.baseCapacity;
                 
                 return (
                   <div key={name} className="group">
@@ -2027,7 +2027,7 @@ const OverviewSection = ({
                       </div>
                       <div className="text-right">
                         <div className="font-semibold text-slate-900">
-                          Active: {data.activeWorkload.toFixed(1)} / {data.sprintCapacity} SP
+                          Active: {data.activeWorkload.toFixed(1)} / {data.baseCapacity} SP
                         </div>
                         <div className="text-xs text-slate-500">
                           Completed: {data.completedWorkload.toFixed(1)} SP
@@ -2043,7 +2043,7 @@ const OverviewSection = ({
                         style={{ left: `${capacityWidth}%` }}
                       >
                         <div className="absolute -top-1 -right-3 text-xs font-bold text-blue-600 bg-white px-1 rounded">
-                          {data.sprintCapacity}
+                          {data.baseCapacity}
                         </div>
                       </div>
                       
@@ -2130,7 +2130,7 @@ const OverviewSection = ({
                       </span>
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-slate-500">
-                          {data.activeWorkload.toFixed(1)} / {data.sprintCapacity} SP
+                          {data.activeWorkload.toFixed(1)} / {data.baseCapacity} SP
                         </span>
                         <span className={`font-bold text-lg ${
                           remaining > 0 ? 'text-green-600' :
