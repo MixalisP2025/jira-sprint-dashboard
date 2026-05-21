@@ -24,15 +24,20 @@ const TONE_CLASSES = {
  *   value: string | number | null,
  *   delta: number | null,
  *   tone: 'good' | 'danger' | 'neutral',
- *   lowerIsBetter?: boolean
+ *   lowerIsBetter?: boolean,
+ *   onClick?: () => void,
+ *   active?: boolean
  * }} props
  */
-export default function CsrKpiCard({ label, value, delta, tone = 'neutral', lowerIsBetter }) {
+export default function CsrKpiCard({ label, value, delta, tone = 'neutral', lowerIsBetter, onClick, active }) {
   const badgeClasses = TONE_CLASSES[tone] ?? TONE_CLASSES.neutral;
   const displayValue = value === null || value === undefined ? '—' : value;
 
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 flex flex-col items-center text-center">
+    <div
+      onClick={onClick}
+      className={`bg-slate-800 border rounded-xl p-4 flex flex-col items-center text-center transition-all ${onClick ? 'cursor-pointer hover:bg-slate-700 hover:shadow-lg' : ''} ${active ? 'ring-2 ring-indigo-500 border-indigo-400' : 'border-slate-700'}`}
+    >
       {/* Value */}
       <span className="text-2xl font-bold text-slate-100">{displayValue}</span>
 
@@ -45,6 +50,9 @@ export default function CsrKpiCard({ label, value, delta, tone = 'neutral', lowe
           {formatDelta(delta)}
         </span>
       )}
+
+      {/* Active indicator */}
+      {active && <div className="text-xs text-indigo-400 mt-1 font-semibold">✓ filtered</div>}
     </div>
   );
 }

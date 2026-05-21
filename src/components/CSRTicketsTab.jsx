@@ -616,6 +616,7 @@ function StalePanel({ filtered, selectedKeys, setSelectedKeys }) {
                 <th className="px-3 py-2 text-left">Key</th>
                 <th className="px-3 py-2 text-left">Summary</th>
                 <th className="px-3 py-2 text-left">Assignee</th>
+                <th className="px-3 py-2 text-left">Reporter</th>
                 <th className="px-3 py-2 text-left">Bank</th>
                 <th className="px-3 py-2 text-left min-w-[120px]">Internal Ref</th>
                 <th className="px-3 py-2 text-center">Age</th>
@@ -638,6 +639,7 @@ function StalePanel({ filtered, selectedKeys, setSelectedKeys }) {
                     <td className="px-3 py-2 font-mono font-bold text-red-600 whitespace-nowrap">{t.key}</td>
                     <td className="px-3 py-2 text-slate-700 max-w-xs truncate" title={t.summary}>{t.summary}</td>
                     <td className={`px-3 py-2 whitespace-nowrap ${t.assignee === 'Unassigned' && t.slaRisk !== 'on-track' ? 'text-red-600 font-semibold' : 'text-slate-600'}`}>{t.assignee}</td>
+                    <td className="px-3 py-2 whitespace-nowrap text-sm text-slate-500">{t.reporter || '—'}</td>
                     <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{t.bank}</td>
                     <td className="px-3 py-2 whitespace-nowrap min-w-[120px]">
                       {primaryLink ? (
@@ -775,6 +777,7 @@ function TicketTable({ filtered, selectedKeys, setSelectedKeys, onExportSelected
       else if (sortCol === 'key')   cmp = (a.key || '').localeCompare(b.key || '');
       else if (sortCol === 'summary') cmp = (a.summary || '').localeCompare(b.summary || '');
       else if (sortCol === 'assignee') cmp = (a.assignee || '').localeCompare(b.assignee || '');
+      else if (sortCol === 'reporter') cmp = (a.reporter || '').localeCompare(b.reporter || '');
       else if (sortCol === 'bank')  cmp = (a.bank || '').localeCompare(b.bank || '');
       else if (sortCol === 'status') cmp = (a.status || '').localeCompare(b.status || '');
       else if (sortCol === 'updated') cmp = (a.updated || '').localeCompare(b.updated || '');
@@ -839,6 +842,7 @@ function TicketTable({ filtered, selectedKeys, setSelectedKeys, onExportSelected
               <th className={thSort} onClick={() => toggleSort('key')}>Key{sortIcon('key')}</th>
               <th className={thSort} onClick={() => toggleSort('summary')}>Summary / Bank{sortIcon('summary')}</th>
               <th className={thSort} onClick={() => toggleSort('assignee')}>Assignee{sortIcon('assignee')}</th>
+              <th className={thSort} onClick={() => toggleSort('reporter')}>Reporter{sortIcon('reporter')}</th>
               <th className={thFixed} style={{ minWidth: '120px' }}>Internal Ref</th>
               <th className={thSort} onClick={() => toggleSort('status')}>Status{sortIcon('status')}</th>
               <th className={`${thSort} text-center`} onClick={() => toggleSort('age')}>Age{sortIcon('age')}</th>
@@ -850,7 +854,7 @@ function TicketTable({ filtered, selectedKeys, setSelectedKeys, onExportSelected
           </thead>
           <tbody className="divide-y divide-slate-100">
             {visible.length === 0 ? (
-              <tr><td colSpan="11" className="px-4 py-8 text-center text-slate-400">No tickets match the current filters.</td></tr>
+              <tr><td colSpan="12" className="px-4 py-8 text-center text-slate-400">No tickets match the current filters.</td></tr>
             ) : visible.map(t => {
               const slaStyle = SLA_RISK_STYLES[t.slaRisk] || SLA_RISK_STYLES['on-track'];
               const isSelected = selectedKeys.has(t.key);
@@ -874,6 +878,7 @@ function TicketTable({ filtered, selectedKeys, setSelectedKeys, onExportSelected
                       <div className="text-xs text-slate-400">{t.bank} · {t.project}</div>
                     </td>
                     <td className={`px-4 py-2 whitespace-nowrap text-sm ${t.assignee === 'Unassigned' && t.slaRisk !== 'on-track' ? 'text-red-600 font-semibold' : 'text-slate-600'}`}>{t.assignee}</td>
+                    <td className="px-4 py-2 whitespace-nowrap text-sm text-slate-500">{t.reporter || '—'}</td>
                     <td className="px-4 py-2 whitespace-nowrap">
                       {primaryLink ? (
                         <div className="flex items-center gap-1.5">

@@ -27,10 +27,12 @@ function computeDelta(current, previous) {
  *
  * @param {{
  *   kpis: import('../utils/csrAnalyticsTypes').KpiSet,
- *   prevKpis: import('../utils/csrAnalyticsTypes').KpiSet
+ *   prevKpis: import('../utils/csrAnalyticsTypes').KpiSet,
+ *   activeKpi: string | null,
+ *   onKpiClick: (kpiKey: string | null) => void
  * }} props
  */
-export default function CsrKpiRow({ kpis, prevKpis }) {
+export default function CsrKpiRow({ kpis, prevKpis, activeKpi, onKpiClick }) {
   if (!kpis || !prevKpis) return null;
 
   /**
@@ -47,30 +49,35 @@ export default function CsrKpiRow({ kpis, prevKpis }) {
    */
   const cards = [
     {
+      key: 'createdThisWeek',
       label: 'Created this week',
       rawValue: kpis.createdThisWeek,
       prevValue: prevKpis.createdThisWeek,
       lowerIsBetter: true,
     },
     {
+      key: 'resolvedThisWeek',
       label: 'Resolved this week',
       rawValue: kpis.resolvedThisWeek,
       prevValue: prevKpis.resolvedThisWeek,
       lowerIsBetter: false,
     },
     {
+      key: 'netBacklogChange',
       label: 'Net backlog change',
       rawValue: kpis.netBacklogChange,
       prevValue: prevKpis.netBacklogChange,
       lowerIsBetter: true,
     },
     {
+      key: 'openBacklog',
       label: 'Open backlog',
       rawValue: kpis.openBacklog,
       prevValue: prevKpis.openBacklog,
       lowerIsBetter: true,
     },
     {
+      key: 'avgResolutionDays4w',
       label: 'Avg resolution (4w)',
       rawValue: kpis.avgResolutionDays4w,
       prevValue: prevKpis.avgResolutionDays4w,
@@ -78,6 +85,7 @@ export default function CsrKpiRow({ kpis, prevKpis }) {
       lowerIsBetter: true,
     },
     {
+      key: 'medianResolutionDays4w',
       label: 'Median resolution (4w)',
       rawValue: kpis.medianResolutionDays4w,
       prevValue: prevKpis.medianResolutionDays4w,
@@ -85,6 +93,7 @@ export default function CsrKpiRow({ kpis, prevKpis }) {
       lowerIsBetter: true,
     },
     {
+      key: 'slaBreachRate4w',
       label: 'SLA breach rate (4w)',
       rawValue: kpis.slaBreachRate4w,
       prevValue: prevKpis.slaBreachRate4w,
@@ -92,12 +101,14 @@ export default function CsrKpiRow({ kpis, prevKpis }) {
       lowerIsBetter: true,
     },
     {
+      key: 'openOver90Days',
       label: '90+ day open',
       rawValue: kpis.openOver90Days,
       prevValue: prevKpis.openOver90Days,
       lowerIsBetter: true,
     },
     {
+      key: 'unassignedOpenPct',
       label: 'Unassigned open %',
       rawValue: kpis.unassignedOpenPct,
       prevValue: prevKpis.unassignedOpenPct,
@@ -108,7 +119,7 @@ export default function CsrKpiRow({ kpis, prevKpis }) {
 
   return (
     <div className="grid grid-cols-3 lg:grid-cols-9 gap-3">
-      {cards.map(({ label, rawValue, prevValue, format, lowerIsBetter }) => {
+      {cards.map(({ key, label, rawValue, prevValue, format, lowerIsBetter }) => {
         // Format the display value (null → card renders "—")
         const displayValue =
           rawValue === null || rawValue === undefined
@@ -131,6 +142,8 @@ export default function CsrKpiRow({ kpis, prevKpis }) {
             delta={delta}
             tone={tone}
             lowerIsBetter={lowerIsBetter}
+            active={activeKpi === key}
+            onClick={() => onKpiClick && onKpiClick(activeKpi === key ? null : key)}
           />
         );
       })}

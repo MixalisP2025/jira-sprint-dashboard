@@ -58,19 +58,52 @@ export default function CsrAnalyticsPage() {
   // ── Local state ────────────────────────────────────────────────────────────
   const [assigneeWorkloadMode, setAssigneeWorkloadMode] = useState('open');
   const [searchQuery, setSearchQuery] = useState('');
+  const [activeKpi, setActiveKpi] = useState(null);
+  // ── KPI filter applied to filtered tickets ─────────────────────────────────
+  const kpiFilteredTickets = useMemo(() => {
+    if (!activeKpi) return filteredTickets;
+    const now = new Date();
+    const weekAgo = new Date(now - 7 * 86400000);
+    const fourWeeksAgo = new Date(now - 28 * 86400000);
+
+    switch (activeKpi) {
+      case 'createdThisWeek':
+        return filteredTickets.filter(t => t.createdAt && new Date(t.createdAt) >= weekAgo);
+      case 'resolvedThisWeek':
+        return filteredTickets.filter(t => t.resolvedAt && new Date(t.resolvedAt) >= weekAgo);
+      case 'netBacklogChange':
+        return filteredTickets.filter(t =>
+          (t.createdAt && new Date(t.createdAt) >= weekAgo) ||
+          (t.resolvedAt && new Date(t.resolvedAt) >= weekAgo)
+        );
+      case 'openBacklog':
+        return filteredTickets.filter(t => t.isOpen);
+      case 'avgResolutionDays4w':
+      case 'medianResolutionDays4w':
+        return filteredTickets.filter(t => t.resolvedAt && new Date(t.resolvedAt) >= fourWeeksAgo);
+      case 'slaBreachRate4w':
+        return filteredTickets.filter(t => t.slaState === 'breaching' && t.createdAt && new Date(t.createdAt) >= fourWeeksAgo);
+      case 'openOver90Days':
+        return filteredTickets.filter(t => t.isOpen && t.ageDays >= 90);
+      case 'unassignedOpenPct':
+        return filteredTickets.filter(t => t.isOpen && (!t.assignee || t.assignee === 'Unassigned'));
+      default:
+        return filteredTickets;
+    }
+  }, [filteredTickets, activeKpi]);
 
   // ── Search filter applied to the ticket grid ──────────────────────────────
   const searchedTickets = useMemo(() => {
-    if (!searchQuery.trim()) return filteredTickets;
+    if (!searchQuery.trim()) return kpiFilteredTickets;
     const q = searchQuery.trim().toLowerCase();
-    return filteredTickets.filter(t =>
+    return kpiFilteredTickets.filter(t =>
       (t.key && t.key.toLowerCase().includes(q)) ||
       (t.summary && t.summary.toLowerCase().includes(q)) ||
       (t.assignee && t.assignee.toLowerCase().includes(q)) ||
       (t.bank && t.bank.toLowerCase().includes(q)) ||
       (t.project && t.project.toLowerCase().includes(q))
     );
-  }, [filteredTickets, searchQuery]);
+  }, [kpiFilteredTickets, searchQuery]);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -179,7 +212,7 @@ export default function CsrAnalyticsPage() {
           />
 
           <div className="p-6">
-            <CsrKpiRow kpis={kpis} prevKpis={prevKpis} />
+            <CsrKpiRow kpis={kpis} prevKpis={prevKpis} activeKpi={activeKpi} onKpiClick={setActiveKpi} />
           </div>
 
           {/* Chart grid — 1 column on mobile, 2 columns on lg+ */}
