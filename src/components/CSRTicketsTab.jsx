@@ -17,6 +17,7 @@ export function applyFilters(issues, filters) {
     if (filters.status    !== 'all' && t.status     !== filters.status)    return false;
     if (filters.bank      !== 'all' && t.bank       !== filters.bank)      return false;
     if (filters.assignee  !== 'all' && t.assignee   !== filters.assignee)  return false;
+    if (filters.reporter  !== 'all' && t.reporter   !== filters.reporter)  return false;
     if (filters.dateFrom && (!t.created || t.created < filters.dateFrom))  return false;
     if (filters.dateTo) {
       const d = t.created ? t.created.slice(0, 10) : '';
@@ -105,12 +106,12 @@ export function serializeStandupToText(report) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const DEFAULT_FILTERS = {
-  project: 'all', status: 'all', bank: 'all', assignee: 'all',
+  project: 'all', status: 'all', bank: 'all', assignee: 'all', reporter: 'all',
   dateFrom: '', dateTo: '', slaOnly: false, staleOnly: false, kpiFilter: null,
 };
 
 function isFiltersActive(f) {
-  return f.project !== 'all' || f.status !== 'all' || f.bank !== 'all' || f.assignee !== 'all' ||
+  return f.project !== 'all' || f.status !== 'all' || f.bank !== 'all' || f.assignee !== 'all' || f.reporter !== 'all' ||
     f.dateFrom !== '' || f.dateTo !== '' || f.slaOnly || f.staleOnly || !!f.kpiFilter;
 }
 
@@ -155,6 +156,7 @@ function FilterPanel({ issues, filters, setFilters }) {
   const statuses  = useMemo(() => [...new Set(issues.map(i => i.status))].filter(Boolean).sort(), [issues]);
   const banks     = useMemo(() => [...new Set(issues.map(i => i.bank))].filter(Boolean).sort(), [issues]);
   const assignees = useMemo(() => [...new Set(issues.map(i => i.assignee))].filter(Boolean).sort(), [issues]);
+  const reporters = useMemo(() => [...new Set(issues.map(i => i.reporter))].filter(Boolean).sort(), [issues]);
   const set = (key, val) => setFilters(f => ({ ...f, [key]: val }));
   const [openDrop, setOpenDrop] = useState(null);
 
@@ -171,6 +173,7 @@ function FilterPanel({ issues, filters, setFilters }) {
     { key: 'status',   label: 'Status',   options: statuses.map(s => ({ value: s, label: s })),              current: filters.status },
     { key: 'bank',     label: 'Bank',     options: banks.map(b => ({ value: b, label: b })),                 current: filters.bank },
     { key: 'assignee', label: 'Assignee', options: assignees.map(a => ({ value: a, label: a })),             current: filters.assignee },
+    { key: 'reporter', label: 'Reporter', options: reporters.map(r => ({ value: r, label: r })),             current: filters.reporter },
   ];
 
   return (
