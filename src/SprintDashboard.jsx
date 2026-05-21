@@ -2798,7 +2798,7 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
   const [overviewTab, setOverviewTab] = React.useState('capacity');
   const [saving, setSaving] = React.useState(false);
   const [saveMsg, setSaveMsg] = React.useState('');
-
+  const [capacityMode, setCapacityMode] = React.useState('daily');
   const handleSaveCapacity = async () => {
     setSaving(true);
     setSaveMsg('');
@@ -2819,7 +2819,7 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
   const completedSP = Object.values(stats).reduce((sum, s) => sum + s.totalCompletedSP, 0);
   const activeWorkload = Object.values(stats).reduce((sum, s) => sum + s.activeWorkload, 0);
   const awaitingWorkload = Object.values(stats).reduce((sum, s) => sum + s.awaitingWorkload, 0);
-  const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.sprintCapacity, 0);
+  const totalCapacity = Object.values(stats).reduce((sum, s) => sum + s.baseCapacity, 0);
 
   return (
     <div className="space-y-6">
@@ -2933,8 +2933,25 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
 
       {/* UPDATED: Capacity Planning Table - PM-First Design */}
       <div className="bg-white rounded-xl p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold text-slate-900">Sprint Capacity Planning</h2>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-4">
+            <h2 className="text-2xl font-bold text-slate-900">Sprint Capacity Planning</h2>
+            {/* Daily / Sprint toggle */}
+            <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
+              <button
+                onClick={() => setCapacityMode('daily')}
+                className={`px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${capacityMode === 'daily' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Daily
+              </button>
+              <button
+                onClick={() => setCapacityMode('sprint')}
+                className={`px-3 py-1.5 text-sm font-semibold rounded-md transition-colors ${capacityMode === 'sprint' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Sprint
+              </button>
+            </div>
+          </div>
           <div className="flex items-center gap-2">
             {saveMsg && <span className="text-sm font-medium text-green-700">{saveMsg}</span>}
             <button
@@ -2966,6 +2983,12 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
             </button>
           </div>
         </div>
+        {/* Mode description */}
+        <p className="text-sm text-slate-500 mb-4">
+          {capacityMode === 'daily'
+            ? 'Showing work currently in this person\'s hands (To Do + In Progress). Tickets in Awaiting Testing and Awaiting Versioning are excluded — they\'ve been handed off.'
+            : 'Showing total sprint commitment (all non-Done work). Use this view for sprint planning and overcommitment review.'}
+        </p>
         {sprintHolidays.length > 0 && (
           <div className="mb-4 p-3 bg-amber-50 border border-amber-300 rounded-lg flex items-start gap-2 text-sm text-amber-800">
             <span className="text-lg flex-shrink-0">🗓️</span>
@@ -2997,7 +3020,27 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {Object.entries(stats).map(([assignee, data]) => (
+              {Object.entries(stats).map(([assignee, data]) => {
+                // Compute mode-specific values
+                const modeActiveWorkload = capacityMode === 'daily' ? data.activeWorkload : data.activeWorkload + data.awaitingWorkload;
+                const modeActiveItems = capacityMode === 'daily' ? data.activeItems : data.activeItems + data.awaitingItems;
+                const modeRemaining = data.baseCapacity - modeActiveWorkload;
+                const modeUtilization = data.baseCapacity > 0 ? (modeActiveWorkload / data.baseCapacity) * 100 : 0;
+                let modeStatus, modeGuidance;
+                if (modeUtilization <= 90) {
+                  modeStatus = 'Has Capacity';
+                  modeGuidance = `✅ Has capacity — ${modeRemaining.toFixed(1)} SP available`;
+                } else if (modeUtilization <= 110) {
+                  modeStatus = 'Has Capacity';
+                  modeGuidance = `✅ On Track — ${modeRemaining.toFixed(1)} SP available`;
+                } else if (modeUtilization <= 120) {
+                  modeStatus = 'Fully Allocated';
+                  modeGuidance = `🟡 At Risk — reduce scope by ${Math.abs(modeRemaining).toFixed(1)} SP`;
+                } else {
+                  modeStatus = 'Overloaded';
+                  modeGuidance = `❌ Overloaded — reduce scope by ${Math.abs(modeRemaining).toFixed(1)} SP`;
+                }
+                return (
                 <tr key={assignee} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-4 text-center">
                     <input
@@ -3025,43 +3068,43 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
                   </td>
                   <td className="px-4 py-4 text-center bg-red-50">
                     <div className="font-bold text-red-700 text-lg">
-                      {data.activeWorkload.toFixed(1)}
+                      {modeActiveWorkload.toFixed(1)}
                     </div>
                     <div className="text-xs text-red-600 mt-0.5">
-                      {data.activeItems} items
+                      {modeActiveItems} items
                     </div>
                   </td>
                   <td className="px-4 py-4 text-center bg-green-50">
                     <div className={`text-xl font-bold ${
-                      data.remainingCapacity > 0 ? 'text-green-600' :
-                      data.remainingCapacity === 0 ? 'text-amber-600' :
+                      modeRemaining > 0 ? 'text-green-600' :
+                      modeRemaining === 0 ? 'text-amber-600' :
                       'text-red-600'
                     }`}>
-                      {data.remainingCapacity > 0 ? '+' : ''}{data.remainingCapacity.toFixed(1)}
+                      {modeRemaining > 0 ? '+' : ''}{modeRemaining.toFixed(1)}
                     </div>
                     <div className="text-xs text-slate-600 mt-0.5">
-                      {data.remainingCapacity > 0 ? 'Available' : data.remainingCapacity === 0 ? 'No buffer' : 'Over capacity'}
+                      {modeRemaining > 0 ? 'Available' : modeRemaining === 0 ? 'No buffer' : 'Over capacity'}
                     </div>
                   </td>
                   <td className="px-4 py-4 text-center">
                     <span className={`inline-block px-3 py-2 rounded-lg text-sm font-bold whitespace-nowrap ${
-                      data.capacityStatus === 'Has Capacity' ? 'bg-green-100 text-green-800 border-2 border-green-300' :
-                      data.capacityStatus === 'Fully Allocated' ? 'bg-amber-100 text-amber-800 border-2 border-amber-300' :
+                      modeStatus === 'Has Capacity' ? 'bg-green-100 text-green-800 border-2 border-green-300' :
+                      modeStatus === 'Fully Allocated' ? 'bg-amber-100 text-amber-800 border-2 border-amber-300' :
                       'bg-red-100 text-red-800 border-2 border-red-300'
                     }`}>
-                      {data.capacityStatus}
+                      {modeStatus}
                     </span>
                   </td>
                   <td className="px-4 py-4">
                     <div className="flex items-start gap-2">
                       <span className="text-lg flex-shrink-0">
-                        {data.capacityStatus === 'Has Capacity' ? '✅' :
-                         data.capacityStatus === 'Fully Allocated' ? '🟡' :
+                        {modeStatus === 'Has Capacity' ? '✅' :
+                         modeStatus === 'Fully Allocated' ? '🟡' :
                          '❌'}
                       </span>
                       <div>
                         <span className="text-sm text-slate-700 leading-tight">
-                          {data.pmGuidance}
+                          {modeGuidance}
                         </span>
                         {/* Show completed/awaiting for transparency */}
                         {(data.completedWorkload > 0 || data.awaitingWorkload > 0) && (
@@ -3081,7 +3124,8 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -3090,8 +3134,10 @@ const CapacitySection = ({ stats, assigneeCaps, setAssigneeCaps, selectedAssigne
         <div className="flex items-start gap-2">
           <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
           <div className="text-sm text-amber-800">
-            <strong>PM Decision Rule:</strong> Only look at <strong>Active Workload ({activeWorkload.toFixed(1)} SP)</strong> versus <strong>Sprint Capacity ({totalCapacity} SP)</strong>. 
-            Completed/Awaiting work ({completedSP.toFixed(1)} SP) is already delivered and doesn't affect capacity.
+            <strong>PM Decision Rule:</strong> Only look at <strong>Active Workload ({(capacityMode === 'daily' ? activeWorkload : activeWorkload + awaitingWorkload).toFixed(1)} SP)</strong> versus <strong>Sprint Capacity ({totalCapacity} SP)</strong>. 
+            {capacityMode === 'daily'
+              ? ` Awaiting work (${awaitingWorkload.toFixed(1)} SP) is handed off and excluded. Completed work (${completedSP.toFixed(1)} SP) is delivered.`
+              : ` Completed work (${completedSP.toFixed(1)} SP) is already delivered and doesn't affect capacity.`}
           </div>
         </div>
       </div>
