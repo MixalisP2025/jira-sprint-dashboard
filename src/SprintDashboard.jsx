@@ -779,6 +779,7 @@ const SprintDashboard = () => {
           // timeElapsedMultiplier already accounts for holidays (workingDaysBetween excludes them)
           // so we don't apply holidayCapacityMultiplier separately to avoid double-counting
           sprintCapacity: Math.round((capsToUse[assignee] || 16) * timeElapsedMultiplier * 10) / 10,
+          baseCapacity: capsToUse[assignee] || 16,  // Full sprint capacity (no time decay)
           activeWorkload: 0,  // NEW: Only To Do + In Progress
           remainingCapacity: 0,
           
@@ -2486,12 +2487,20 @@ function TeamOverviewModal({ assigneeList, stats, filteredData, overviewTab, set
     ];
     assigneeList.forEach(assignee => {
       const d = stats[assignee];
+      const cap = d.baseCapacity;
+      const remaining = cap - d.activeWorkload;
+      const utilization = cap > 0 ? (d.activeWorkload / cap) * 100 : 0;
+      let overviewStatus;
+      if (utilization <= 90) overviewStatus = 'Under-Utilized';
+      else if (utilization <= 110) overviewStatus = 'On Track';
+      else if (utilization <= 120) overviewStatus = 'At Risk';
+      else overviewStatus = 'Overloaded';
       lines.push(
         pad(assignee, 28) +
-        pad(d.sprintCapacity + ' SP', 12) +
+        pad(cap + ' SP', 12) +
         pad(d.activeWorkload.toFixed(1) + ' SP', 12) +
-        pad((d.remainingCapacity > 0 ? '+' : '') + d.remainingCapacity.toFixed(1) + ' SP', 12) +
-        d.capacityStatus
+        pad((remaining > 0 ? '+' : '') + remaining.toFixed(1) + ' SP', 12) +
+        overviewStatus
       );
     });
     lines.push('');
@@ -2505,7 +2514,7 @@ function TeamOverviewModal({ assigneeList, stats, filteredData, overviewTab, set
       const inProg   = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'in progress').length;
       const done     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'done').length;
       const awaiting = myTickets.filter(t => { const s=(t['Status']||'').toLowerCase(); return s.includes('awaiting')||s.includes('testing')||s.includes('versioning'); }).length;
-      lines.push(assignee + ' [' + d.capacityStatus + ' - ' + d.activeWorkload.toFixed(1) + '/' + d.sprintCapacity + ' SP]');
+      lines.push(assignee + ' [' + d.activeWorkload.toFixed(1) + '/' + d.baseCapacity + ' SP]');
       lines.push('  To Do: ' + toDo + '  In Progress: ' + inProg + '  Done: ' + done + '  Awaiting: ' + awaiting);
       const order = { 'in progress': 0, 'to do': 1 };
       const sorted = [...myTickets].sort((a, b) => (order[(a['Status']||'').toLowerCase()]??2) - (order[(b['Status']||'').toLowerCase()]??2));
@@ -2545,14 +2554,21 @@ function TeamOverviewModal({ assigneeList, stats, filteredData, overviewTab, set
     const printWin = window.open('', '_blank');
     const rows = assigneeList.map(assignee => {
       const d = stats[assignee];
+      const cap = d.baseCapacity;
+      const utilization = cap > 0 ? (d.activeWorkload / cap) * 100 : 0;
+      let overviewStatus;
+      if (utilization <= 90) overviewStatus = 'Under-Utilized';
+      else if (utilization <= 110) overviewStatus = 'On Track';
+      else if (utilization <= 120) overviewStatus = 'At Risk';
+      else overviewStatus = 'Overloaded';
       const myTickets = (filteredData || []).filter(t => (t['Assignee'] || t['D'] || '') === assignee);
       const toDo     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'to do').length;
       const inProg   = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'in progress').length;
       const done     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'done').length;
       const awaiting = myTickets.filter(t => { const s=(t['Status']||'').toLowerCase(); return s.includes('awaiting')||s.includes('testing')||s.includes('versioning'); }).length;
-      const statusColor = d.capacityStatus === 'Has Capacity' ? '#d1fae5' : d.capacityStatus === 'Fully Allocated' ? '#fef3c7' : '#fee2e2';
+      const statusColor = overviewStatus === 'Overloaded' ? '#fee2e2' : overviewStatus === 'At Risk' ? '#fef3c7' : '#d1fae5';
       const ticketRows = myTickets.map(t => '<tr><td style="padding:4px 8px;font-family:monospace;font-size:11px;color:#2563eb">' + (t['Issue key']||t['Key']||'') + '</td><td style="padding:4px 8px;font-size:11px">' + (t['Summary']||'') + '</td><td style="padding:4px 8px;font-size:11px">' + (t['Project']||t['B']||'') + '</td><td style="padding:4px 8px;font-size:11px;text-align:center">' + (t['Story Points']||'') + '</td><td style="padding:4px 8px;font-size:11px">' + (t['Status']||'') + '</td></tr>').join('');
-      return '<div style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;page-break-inside:avoid"><div style="background:' + statusColor + ';padding:10px 14px;display:flex;justify-content:space-between;align-items:center"><div><strong style="font-size:13px">' + assignee + '</strong><span style="margin-left:10px;font-size:11px;color:#475569">' + d.capacityStatus + '</span></div><div style="font-size:12px">Active: <strong>' + d.activeWorkload.toFixed(1) + '</strong> / ' + d.sprintCapacity + ' SP | To Do: ' + toDo + ' In Prog: ' + inProg + ' Done: ' + done + ' Awaiting: ' + awaiting + '</div></div>' + (myTickets.length > 0 ? '<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0"><th style="padding:4px 8px;text-align:left;font-size:11px">Key</th><th style="padding:4px 8px;text-align:left;font-size:11px">Summary</th><th style="padding:4px 8px;text-align:left;font-size:11px">Project</th><th style="padding:4px 8px;text-align:center;font-size:11px">SP</th><th style="padding:4px 8px;text-align:left;font-size:11px">Status</th></tr></thead><tbody>' + ticketRows + '</tbody></table>' : '<p style="padding:8px 14px;font-size:11px;color:#94a3b8">No tickets</p>') + '</div>';
+      return '<div style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;page-break-inside:avoid"><div style="background:' + statusColor + ';padding:10px 14px;display:flex;justify-content:space-between;align-items:center"><div><strong style="font-size:13px">' + assignee + '</strong><span style="margin-left:10px;font-size:11px;color:#475569">' + overviewStatus + '</span></div><div style="font-size:12px">Active: <strong>' + d.activeWorkload.toFixed(1) + '</strong> / ' + cap + ' SP | To Do: ' + toDo + ' In Prog: ' + inProg + ' Done: ' + done + ' Awaiting: ' + awaiting + '</div></div>' + (myTickets.length > 0 ? '<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0"><th style="padding:4px 8px;text-align:left;font-size:11px">Key</th><th style="padding:4px 8px;text-align:left;font-size:11px">Summary</th><th style="padding:4px 8px;text-align:left;font-size:11px">Project</th><th style="padding:4px 8px;text-align:center;font-size:11px">SP</th><th style="padding:4px 8px;text-align:left;font-size:11px">Status</th></tr></thead><tbody>' + ticketRows + '</tbody></table>' : '<p style="padding:8px 14px;font-size:11px;color:#94a3b8">No tickets</p>') + '</div>';
     }).join('');
     printWin.document.write('<!DOCTYPE html><html><head><title>Team Overview</title><style>body{font-family:sans-serif;padding:24px;color:#1e293b}h1{font-size:18px;margin-bottom:4px}p.sub{color:#64748b;font-size:12px;margin-bottom:20px}@media print{body{padding:12px}}</style></head><body><h1>Team Overview</h1><p class="sub">Generated: ' + new Date().toLocaleString() + '</p>' + rows + '</body></html>');
     printWin.document.close();
@@ -2615,21 +2631,49 @@ function TeamOverviewModal({ assigneeList, stats, filteredData, overviewTab, set
             <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
               {assigneeList.map(assignee => {
                 const d = stats[assignee];
-                const active = d.activeWorkload, cap = d.sprintCapacity, remaining = d.remainingCapacity;
-                const pct = cap > 0 ? Math.min(100, (active / cap) * 100) : 0;
-                const statusColor = d.capacityStatus === 'Has Capacity' ? 'border-green-300 bg-green-50' : d.capacityStatus === 'Fully Allocated' ? 'border-amber-300 bg-amber-50' : 'border-red-300 bg-red-50';
-                const barColor    = d.capacityStatus === 'Has Capacity' ? 'bg-green-500' : d.capacityStatus === 'Fully Allocated' ? 'bg-amber-500' : 'bg-red-500';
+                // Team Overview uses FULL sprint capacity (no time decay)
+                const cap = d.baseCapacity;
+                const active = d.activeWorkload;
+                const remaining = cap - active;
+                const utilization = cap > 0 ? (active / cap) * 100 : 0;
+                const pct = Math.min(100, utilization);
+                // Status banding based on full-sprint comparison
+                let overviewStatus, statusColorCls, barColor, statusTextCls;
+                if (utilization <= 90) {
+                  overviewStatus = 'Under-Utilized';
+                  statusColorCls = 'border-green-300 bg-green-50';
+                  barColor = 'bg-green-500';
+                  statusTextCls = 'text-green-700';
+                } else if (utilization <= 110) {
+                  overviewStatus = 'On Track';
+                  statusColorCls = 'border-green-300 bg-green-50';
+                  barColor = 'bg-green-500';
+                  statusTextCls = 'text-green-700';
+                } else if (utilization <= 120) {
+                  overviewStatus = 'At Risk';
+                  statusColorCls = 'border-amber-300 bg-amber-50';
+                  barColor = 'bg-amber-500';
+                  statusTextCls = 'text-amber-700';
+                } else {
+                  overviewStatus = 'Overloaded';
+                  statusColorCls = 'border-red-300 bg-red-50';
+                  barColor = 'bg-red-500';
+                  statusTextCls = 'text-red-700';
+                }
                 const myTickets   = (filteredData || []).filter(t => (t['Assignee']||t['D']||'') === assignee);
+                // Terminal statuses excluded from active ticket count
+                const TERMINAL = ['done','cancelled','closed','rejected','won\'t do'];
+                const activeTickets = myTickets.filter(t => !TERMINAL.includes((t['Status']||'').toLowerCase()));
                 const toDo     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'to do').length;
                 const inProg   = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'in progress').length;
-                const done     = myTickets.filter(t => (t['Status']||'').toLowerCase() === 'done').length;
+                const done     = myTickets.filter(t => TERMINAL.includes((t['Status']||'').toLowerCase())).length;
                 const awaiting = myTickets.filter(t => { const s=(t['Status']||'').toLowerCase(); return s.includes('awaiting')||s.includes('testing')||s.includes('versioning'); }).length;
                 return (
-                  <div key={assignee} className={'rounded-xl border-2 p-4 ' + statusColor}>
+                  <div key={assignee} className={'rounded-xl border-2 p-4 ' + statusColorCls}>
                     <div className="flex items-start justify-between mb-3">
                       <div>
                         <div className="font-bold text-slate-900 text-sm">{assignee}</div>
-                        <div className={'text-xs font-semibold mt-0.5 ' + (d.capacityStatus === 'Has Capacity' ? 'text-green-700' : d.capacityStatus === 'Fully Allocated' ? 'text-amber-700' : 'text-red-700')}>{d.capacityStatus}</div>
+                        <div className={'text-xs font-semibold mt-0.5 ' + statusTextCls}>{overviewStatus}</div>
                       </div>
                       <div className="text-right">
                         <div className="text-lg font-bold text-slate-900">{active.toFixed(1)}<span className="text-xs font-normal text-slate-500"> / {cap} SP</span></div>
@@ -2647,7 +2691,7 @@ function TeamOverviewModal({ assigneeList, stats, filteredData, overviewTab, set
                       <div className="bg-white/60 rounded-lg py-1.5"><div className="text-sm font-bold text-green-700">{done}</div><div className="text-xs text-slate-500">Done</div></div>
                       <div className="bg-white/60 rounded-lg py-1.5"><div className="text-sm font-bold text-amber-700">{awaiting}</div><div className="text-xs text-slate-500">Awaiting</div></div>
                     </div>
-                    <div className="mt-2 text-xs text-slate-500 text-center">{myTickets.length} tickets total</div>
+                    <div className="mt-2 text-xs text-slate-500 text-center">{activeTickets.length} active tickets</div>
                   </div>
                 );
               })}
@@ -2671,15 +2715,24 @@ function TeamOverviewModal({ assigneeList, stats, filteredData, overviewTab, set
                 const d = stats[assignee];
                 const myTickets = (filteredData||[]).filter(t => (t['Assignee']||t['D']||'') === assignee);
                 if (!myTickets.length) return null;
-                const headerBg = d.capacityStatus === 'Has Capacity' ? 'bg-green-50' : d.capacityStatus === 'Fully Allocated' ? 'bg-amber-50' : 'bg-red-50';
+                // Full-sprint status for Team Overview tickets tab
+                const cap = d.baseCapacity;
+                const utilization = cap > 0 ? (d.activeWorkload / cap) * 100 : 0;
+                let overviewStatus;
+                if (utilization <= 90) overviewStatus = 'Under-Utilized';
+                else if (utilization <= 110) overviewStatus = 'On Track';
+                else if (utilization <= 120) overviewStatus = 'At Risk';
+                else overviewStatus = 'Overloaded';
+                const headerBg = overviewStatus === 'Overloaded' ? 'bg-red-50' : overviewStatus === 'At Risk' ? 'bg-amber-50' : 'bg-green-50';
+                const badgeCls = overviewStatus === 'Overloaded' ? 'bg-red-200 text-red-800' : overviewStatus === 'At Risk' ? 'bg-amber-200 text-amber-800' : 'bg-green-200 text-green-800';
                 return (
                   <div key={assignee} className="border border-slate-200 rounded-xl overflow-hidden">
                     <div className={headerBg + ' px-4 py-3 flex items-center justify-between'}>
                       <div className="flex items-center gap-3">
                         <span className="font-bold text-slate-800">{assignee}</span>
-                        <span className={'text-xs font-semibold px-2 py-0.5 rounded-full ' + (d.capacityStatus === 'Has Capacity' ? 'bg-green-200 text-green-800' : d.capacityStatus === 'Fully Allocated' ? 'bg-amber-200 text-amber-800' : 'bg-red-200 text-red-800')}>{d.capacityStatus}</span>
+                        <span className={'text-xs font-semibold px-2 py-0.5 rounded-full ' + badgeCls}>{overviewStatus}</span>
                       </div>
-                      <span className="text-xs text-slate-500">{d.activeWorkload.toFixed(1)} / {d.sprintCapacity} SP &nbsp;·&nbsp; {myTickets.length} tickets</span>
+                      <span className="text-xs text-slate-500">{d.activeWorkload.toFixed(1)} / {cap} SP &nbsp;·&nbsp; {myTickets.length} tickets</span>
                     </div>
                     <TicketTable tickets={myTickets} statusBadge={statusBadge} />
                   </div>
