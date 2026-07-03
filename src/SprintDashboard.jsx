@@ -3772,7 +3772,8 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
       result = result.filter(item => (item['Issue Type'] || 'Other') === typeFilter);
     }
     if (showNoStoryPoints) {
-      result = result.filter(item => (parseFloat(item['Story Points']) || 0) === 0);
+      // Match the same fields the export reads so points stored under an alternate key aren't misclassified
+      result = result.filter(item => (parseFloat(item['Story Points']) || parseFloat(item['Story points']) || parseFloat(item['Custom field (Story Points)']) || 0) === 0);
     }
     if (statusFilter !== 'all') {
       result = result.filter(item => item['Status'] === statusFilter);
@@ -3818,16 +3819,18 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
       headers.join(','),
       ...exportData.map(row => 
         headers.map(header => {
-          const value = row[header] || '';
-          // Escape quotes and wrap in quotes if contains comma
+          const value = row[header] ?? '';
+          // Escape quotes and wrap in quotes if it contains a comma, newline, or quote
           const escaped = String(value).replace(/"/g, '""');
-          return escaped.includes(',') || escaped.includes('\n') ? `"${escaped}"` : escaped;
+          return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
         }).join(',')
       )
     ].join('\n');
 
     // Download file
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    // Prepend a UTF-8 BOM so Excel reads non-Latin characters (e.g. Greek) correctly
+    // instead of falling back to the system ANSI codepage and producing mojibake.
+    const blob = new Blob(['﻿' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
@@ -3836,6 +3839,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const statusCounts = useMemo(() => {
