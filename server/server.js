@@ -58,10 +58,13 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health check
-app.get('/health', (req, res) => {
+// Health check — served at both /health (legacy) and /api/health so the
+// frontend probe works whether it's behind the Express backend or Vercel.
+const healthHandler = (req, res) => {
   res.json({ status: 'OK' });
-});
+};
+app.get('/health', healthHandler);
+app.get('/api/health', healthHandler);
 
 // PM2 Status endpoint
 app.get('/api/pm2-status', async (req, res) => {
@@ -465,6 +468,7 @@ app.use((req, res) => {
     availableEndpoints: [
       'GET /',
       'GET /health',
+      'GET /api/health',
       'GET /api/jira-config',
       'GET /api/jira/issues'
     ]

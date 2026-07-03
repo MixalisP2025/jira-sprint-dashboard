@@ -12,7 +12,7 @@ export default function ServerStatus() {
 
   const checkBackendHealth = async () => {
     try {
-      const response = await fetch(`${API_BASE.replace('/api', '')}/health`, { 
+      const response = await fetch(`${API_BASE}/health`, {
         method: 'GET',
         signal: AbortSignal.timeout(5000)
       });
