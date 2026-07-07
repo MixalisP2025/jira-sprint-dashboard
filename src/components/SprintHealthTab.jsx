@@ -150,6 +150,45 @@ function InsightBox({ color, children }) {
   );
 }
 
+// A plain-language "what this means + what to do" panel for charts
+function StatusAdvice({ narrative, advice, adviceColor = '#86efac' }) {
+  return (
+    <div style={{ marginTop: 14, padding: '12px 14px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#cbd5e1', marginBottom: 6 }}>📊 What this means</div>
+      <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.6 }}>{narrative}</div>
+      <div style={{ fontSize: 12, color: adviceColor, marginTop: 8, lineHeight: 1.6 }}>
+        <strong>✅ Recommended: </strong>{advice}
+      </div>
+    </div>
+  );
+}
+
+// Reusable dark modal (click backdrop or × to close)
+function Modal({ title, subtitle, onClose, children }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.72)', backdropFilter: 'blur(2px)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '48px 16px', overflowY: 'auto' }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 14, width: '100%', maxWidth: 760, boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '18px 22px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#f1f5f9' }}>{title}</div>
+            {subtitle && <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3 }}>{subtitle}</div>}
+          </div>
+          <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', color: '#94a3b8', fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '18px 22px', maxHeight: '65vh', overflowY: 'auto' }}>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const TOOLTIP_STYLE = {
   contentStyle: { background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 },
   labelStyle: { color: '#e2e8f0' },
@@ -188,6 +227,32 @@ function SprintVelocityTrend({ tickets = [], sprints = [], selectedProject, sele
   const trend = data.length >= 2 ? lastSprint.doneSP - data[data.length - 2].doneSP : 0;
   const trendColor = trend > 0 ? '#22c55e' : trend < 0 ? '#ef4444' : '#6b7280';
   const trendLabel = trend > 0 ? `↑ +${trend} SP vs prev` : trend < 0 ? `↓ ${trend} SP vs prev` : '= Same as prev';
+
+  // Plain-language status + recommendation
+  const latest = lastSprint ? lastSprint.doneSP : 0;
+  const nextTarget = Math.max(1, Math.round((latest + avgVelocity) / 2));
+  let vNarrative, vAdvice, vColor;
+  if (data.length === 0) {
+    vNarrative = 'No completed story points yet, so there is no velocity to measure.';
+    vAdvice = 'Make sure completed tickets carry story points — velocity is calculated from Done items with SP.';
+    vColor = '#93c5fd';
+  } else if (data.length < 2) {
+    vNarrative = `This is the first sprint with completed work (${latest} SP done). A velocity trend needs at least 2–3 sprints before it is meaningful.`;
+    vAdvice = 'Keep tracking. Once you have 3 sprints of history, use the rolling average as your planning baseline.';
+    vColor = '#93c5fd';
+  } else if (trend < 0 && latest < avgVelocity) {
+    vNarrative = `The latest sprint delivered ${latest} SP — ${Math.abs(trend)} SP lower than the previous sprint and below the ${avgVelocity} SP average. Throughput is slowing down.`;
+    vAdvice = `Find what changed (blockers, unplanned work, absences, or over-commitment). Plan the next sprint conservatively at ~${avgVelocity} SP and protect the team from mid-sprint scope changes.`;
+    vColor = '#fca5a5';
+  } else if (trend > 0) {
+    vNarrative = `The latest sprint delivered ${latest} SP — up ${trend} SP on the previous sprint${latest >= avgVelocity ? ' and at or above the average' : ', though still below the average'}. Momentum is positive.`;
+    vAdvice = `Good pace. Plan the next sprint around ~${nextTarget} SP, but don't overcommit — a sustainable, repeatable velocity beats one big sprint followed by a crash.`;
+    vColor = '#86efac';
+  } else {
+    vNarrative = `The latest sprint delivered ${latest} SP, in line with the ${avgVelocity} SP average. Delivery is steady and predictable.`;
+    vAdvice = `Predictable velocity is a healthy sign. Use ~${avgVelocity} SP as the commitment target for the next sprint.`;
+    vColor = '#86efac';
+  }
 
   return (
     <Card>
@@ -236,6 +301,7 @@ function SprintVelocityTrend({ tickets = [], sprints = [], selectedProject, sele
           </BarChart>
         </ResponsiveContainer>
       )}
+      <StatusAdvice narrative={vNarrative} advice={vAdvice} adviceColor={vColor} />
       {data.length >= 3 && (() => {
         const recent3   = data.slice(-3).map(d => d.doneSP);
         const older     = data.slice(0, -3).map(d => d.doneSP);
@@ -246,8 +312,8 @@ function SprintVelocityTrend({ tickets = [], sprints = [], selectedProject, sele
         return (
           <InsightBox color={improving ? '#86efac' : '#fca5a5'}>
             {improving
-              ? `📈 Team velocity has improved by ~${delta} SP/sprint over the last 3 sprints.`
-              : `📉 Team velocity has dropped by ~${Math.abs(delta)} SP/sprint over the last 3 sprints. Consider reviewing sprint scope or blockers.`}
+              ? `📈 Longer-term trend: velocity is up ~${delta} SP/sprint across the last 3 sprints vs earlier ones.`
+              : `📉 Longer-term trend: velocity is down ~${Math.abs(delta)} SP/sprint across the last 3 sprints vs earlier ones. Review recurring blockers or chronic over-commitment.`}
           </InsightBox>
         );
       })()}
@@ -257,11 +323,11 @@ function SprintVelocityTrend({ tickets = [], sprints = [], selectedProject, sele
 
 // ─── BurndownChart ────────────────────────────────────────────────────────────
 function BurndownChart({ tickets = [], selectedSprint = 'all', sprints = [] }) {
-  const { data, totalSP, doneSP, projShortfall, daysLeft } = useMemo(() => {
+  const { data, totalSP, doneSP, projShortfall, daysLeft, elapsed, totalDays, remainSP } = useMemo(() => {
     if (!selectedSprint || selectedSprint === 'all')
-      return { data: [], totalSP: 0, doneSP: 0, projShortfall: null, daysLeft: null };
+      return { data: [], totalSP: 0, doneSP: 0, projShortfall: null, daysLeft: null, elapsed: 0, totalDays: 0, remainSP: 0 };
     const dates = parseSprintDates(selectedSprint);
-    if (!dates) return { data: [], totalSP: 0, doneSP: 0, projShortfall: null, daysLeft: null };
+    if (!dates) return { data: [], totalSP: 0, doneSP: 0, projShortfall: null, daysLeft: null, elapsed: 0, totalDays: 0, remainSP: 0 };
     const { start, end } = dates;
     const today     = new Date();
     const totalDays = Math.max(1, workingDaysBetween(start, end));
@@ -281,11 +347,37 @@ function BurndownChart({ tickets = [], selectedSprint = 'all', sprints = [] }) {
     }));
     const projShortfall = daysLeft > 0 && actualPerDay > 0
       ? Math.max(0, Math.round(remainSP - actualPerDay * daysLeft)) : 0;
-    return { data, totalSP, doneSP, projShortfall, daysLeft };
+    return { data, totalSP, doneSP, projShortfall, daysLeft, elapsed, totalDays, remainSP };
   }, [tickets, selectedSprint]);
 
   const completionPct = totalSP > 0 ? Math.round((doneSP / totalSP) * 100) : 0;
   const onTrack       = projShortfall === 0;
+
+  // Plain-language status + recommendation for the burndown
+  const idealRemainNow = totalDays > 0 ? Math.round(totalSP - (totalSP / totalDays) * elapsed) : totalSP;
+  const behindBy       = Math.max(0, remainSP - idealRemainNow); // SP behind the ideal line
+  let bNarrative, bAdvice, bColor;
+  if (!selectedSprint || selectedSprint === 'all') {
+    bNarrative = 'A burndown compares work remaining against the ideal straight-line pace to sprint end, so you can see at a glance whether you are ahead or behind.';
+    bAdvice = 'Pick a specific sprint from the filter at the top to see its burndown and a tailored recommendation.';
+    bColor = '#93c5fd';
+  } else if (data.length === 0) {
+    bNarrative = 'The sprint name could not be parsed, so dates for the burndown are unavailable.';
+    bAdvice = 'Ensure the sprint name contains a date range in DD-MM-YY to DD-MM-YY format.';
+    bColor = '#93c5fd';
+  } else if (completionPct >= 100) {
+    bNarrative = `All ${totalSP} SP are complete. 🎉`;
+    bAdvice = 'Sprint goal met. Pull in the next priority items from the backlog or start sprint-review prep.';
+    bColor = '#86efac';
+  } else if (behindBy > 0 || projShortfall > 0) {
+    bNarrative = `${doneSP} of ${totalSP} SP done (${completionPct}%). You are about ${behindBy} SP behind the ideal line with ${daysLeft} working day(s) left, so at the current pace roughly ${projShortfall} SP won't finish by sprint end.`;
+    bAdvice = `Descope or defer ~${projShortfall} SP of lower-priority work now, unblock stalled tickets, and stop starting new items until in-progress ones close. Re-check tomorrow to confirm the gap is shrinking.`;
+    bColor = '#fca5a5';
+  } else {
+    bNarrative = `${doneSP} of ${totalSP} SP done (${completionPct}%), tracking at or ahead of the ideal line with ${daysLeft} working day(s) left.`;
+    bAdvice = 'On track. Hold the current pace and protect the team from new mid-sprint scope. If you finish early, pull the next item from the top of the backlog.';
+    bColor = '#86efac';
+  }
 
   return (
     <Card>
@@ -338,8 +430,7 @@ function BurndownChart({ tickets = [], selectedSprint = 'all', sprints = [] }) {
           </AreaChart>
         </ResponsiveContainer>
       )}
-      {projShortfall > 0 && <InsightBox color="#fbbf24">⚡ At current pace, ~<strong>{projShortfall} SP</strong> will likely not be completed by sprint end. Consider descoping lower-priority items.</InsightBox>}
-      {projShortfall === 0 && data.length > 0 && doneSP > 0 && <InsightBox color="#86efac">✅ Team is on track to complete all sprint work by the end date.</InsightBox>}
+      <StatusAdvice narrative={bNarrative} advice={bAdvice} adviceColor={bColor} />
     </Card>
   );
 }
@@ -828,7 +919,7 @@ function generateSprintReport({ tickets, sprints, selectedSprint, selectedAssign
       <h2>⚡ Focus Actions</h2>
       ${metrics.focusActions.length === 0
         ? '<div class="focus-item" style="color:#16a34a;">✅ No critical actions — sprint looks healthy</div>'
-        : metrics.focusActions.map(a => `<div class="focus-item"><span style="color:#f97316;font-size:15px;">⚠</span>${a}</div>`).join('')
+        : metrics.focusActions.map(a => `<div class="focus-item"><span style="color:#f97316;font-size:15px;">⚠</span>${typeof a === 'string' ? a : a.text}</div>`).join('')
       }
     </section>
     <section style="margin-bottom:0">
@@ -963,14 +1054,31 @@ const SprintHealthTab = ({ tickets = [], sprints = [], selectedSprint, selectedA
     const doneSP  = tickets.filter(t => isDone(getStatus(t))).reduce((sum, t) => sum + getSP(t), 0);
     const bugs    = tickets.filter(t => getType(t) === 'Bug').length;
     const bugRate = total > 0 ? Math.round((bugs / total) * 100) : 0;
-    const unassigned = tickets.filter(t => !t['Assignee'] || t['Assignee'] === 'Unassigned').length;
-    const spByAssignee = {};
+    const CAP = 16;
+    const unassignedTickets = tickets.filter(t => getAssignee(t) === 'Unassigned');
+    const unassigned = unassignedTickets.length;
+    const unassignedList = unassignedTickets
+      .map(t => ({ key: getKey(t), summary: getSummary(t), status: getStatus(t), project: getProject(t), sp: getSP(t) }))
+      .sort((a, b) => b.sp - a.sp);
+
+    // Active workload per assignee (In Progress + To Do), used to flag overloading
+    const activeByAssignee = {};
     tickets.forEach(t => {
       const a = getAssignee(t);
       const s = normStatus(getStatus(t));
-      if (s === 'in progress' || s === 'to do' || s === 'open' || s === 'new') spByAssignee[a] = (spByAssignee[a] || 0) + getSP(t);
+      if (s === 'in progress' || s === 'to do' || s === 'open' || s === 'new') {
+        if (!activeByAssignee[a]) activeByAssignee[a] = { name: a, inprog: 0, todo: 0, active: 0, count: 0 };
+        const sp = getSP(t);
+        activeByAssignee[a].active += sp;
+        activeByAssignee[a].count += 1;
+        if (s === 'in progress') activeByAssignee[a].inprog += sp; else activeByAssignee[a].todo += sp;
+      }
     });
-    const overloaded = Object.entries(spByAssignee).filter(([, sp]) => sp > 16).length;
+    const overloadedList = Object.values(activeByAssignee)
+      .filter(a => a.name !== 'Unassigned' && a.active > CAP)
+      .map(a => ({ ...a, overBy: a.active - CAP }))
+      .sort((a, b) => b.active - a.active);
+    const overloaded = overloadedList.length;
     let score = 100;
     if (completionRate < 30) score -= 20; else if (completionRate < 60) score -= 10;
     if (bugRate > 30) score -= 15; else if (bugRate > 15) score -= 7;
@@ -995,12 +1103,15 @@ const SprintHealthTab = ({ tickets = [], sprints = [], selectedSprint, selectedA
       name, rate: d.total > 0 ? Math.round((d.done / d.total) * 100) : 0, total: d.total, done: d.done, bugs: d.bugs,
     })).sort((a, b) => b.total - a.total);
     const focusActions = [];
-    if (overloaded > 0) focusActions.push(`${overloaded} assignee(s) overloaded — rebalance workload`);
-    if (unassigned > 0) focusActions.push(`${unassigned} unassigned ticket(s) — assign to team members`);
-    if (bugRate > 20) focusActions.push(`High bug rate (${bugRate}%) — prioritise bug fixes`);
-    if (completionRate < 40 && selectedSprint !== 'all') focusActions.push(`Low completion rate (${completionRate}%) — review sprint scope`);
-    return { total, done, inProgress, toDo, awaiting, completionRate, totalSP, doneSP, bugs, bugRate, unassigned, overloaded, score, burndownData, projectHealth, focusActions };
+    if (overloaded > 0) focusActions.push({ text: `${overloaded} assignee(s) overloaded — rebalance workload`, detail: 'overloaded' });
+    if (unassigned > 0) focusActions.push({ text: `${unassigned} unassigned ticket(s) — assign to team members`, detail: 'unassigned' });
+    if (bugRate > 20) focusActions.push({ text: `High bug rate (${bugRate}%) — prioritise bug fixes`, detail: null });
+    if (completionRate < 40 && selectedSprint !== 'all') focusActions.push({ text: `Low completion rate (${completionRate}%) — review sprint scope`, detail: null });
+    return { total, done, inProgress, toDo, awaiting, completionRate, totalSP, doneSP, bugs, bugRate, unassigned, overloaded, score, burndownData, projectHealth, focusActions, overloadedList, unassignedList };
   }, [tickets, sprints, selectedSprint]);
+
+  // Which detail modal is open: null | 'overloaded' | 'unassigned'
+  const [modal, setModal] = useState(null);
 
   if (!tickets.length) return <div className="flex items-center justify-center h-64 text-slate-400">No data loaded. Upload Jira data or refresh from Jira.</div>;
   if (!metrics) return null;
@@ -1093,7 +1204,18 @@ const SprintHealthTab = ({ tickets = [], sprints = [], selectedSprint, selectedA
           ) : (
             <ul className="space-y-2">
               {metrics.focusActions.map((action, i) => (
-                <li key={i} className="flex items-start gap-2 text-sm text-slate-300"><AlertCircle className="w-4 h-4 text-orange-400 mt-0.5 shrink-0" />{action}</li>
+                <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
+                  <AlertCircle className="w-4 h-4 text-orange-400 mt-0.5 shrink-0" />
+                  <span className="flex-1">{action.text}</span>
+                  {action.detail && (
+                    <button
+                      onClick={() => setModal(action.detail)}
+                      className="shrink-0 text-xs px-2 py-0.5 rounded border border-blue-500/40 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 transition-colors"
+                    >
+                      View →
+                    </button>
+                  )}
+                </li>
               ))}
             </ul>
           )}
@@ -1101,7 +1223,18 @@ const SprintHealthTab = ({ tickets = [], sprints = [], selectedSprint, selectedA
             <div className="text-slate-400">In Progress: <span className="text-white font-medium">{metrics.inProgress}</span></div>
             <div className="text-slate-400">To Do: <span className="text-white font-medium">{metrics.toDo}</span></div>
             <div className="text-slate-400">Awaiting: <span className="text-white font-medium">{metrics.awaiting}</span></div>
-            <div className="text-slate-400">Unassigned: <span className="text-white font-medium">{metrics.unassigned}</span></div>
+            {metrics.unassigned > 0 ? (
+              <button onClick={() => setModal('unassigned')} className="text-left text-slate-400 hover:text-blue-300 transition-colors">
+                Unassigned: <span className="text-white font-medium underline decoration-dotted">{metrics.unassigned}</span>
+              </button>
+            ) : (
+              <div className="text-slate-400">Unassigned: <span className="text-white font-medium">{metrics.unassigned}</span></div>
+            )}
+            {metrics.overloaded > 0 && (
+              <button onClick={() => setModal('overloaded')} className="text-left text-slate-400 hover:text-blue-300 transition-colors">
+                Overloaded: <span className="text-red-300 font-medium underline decoration-dotted">{metrics.overloaded}</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1113,6 +1246,74 @@ const SprintHealthTab = ({ tickets = [], sprints = [], selectedSprint, selectedA
       <AssigneeStaleBreakdown tickets={tickets} />
       <BlockedTicketDetector tickets={tickets} />
       <DailyStandupExport tickets={tickets} selectedSprint={selectedSprint} selectedProject={selectedProject} />
+
+      {/* ── Overloaded assignees modal ─────────────────────────────────────── */}
+      {modal === 'overloaded' && (
+        <Modal
+          title={`Overloaded Assignees (${metrics.overloadedList.length})`}
+          subtitle="Active workload = In Progress + To Do story points. Flagged when above the 16 SP capacity."
+          onClose={() => setModal(null)}
+        >
+          {metrics.overloadedList.length === 0 ? (
+            <div style={{ padding: '20px 0', textAlign: 'center', color: '#22c55e', fontSize: 13 }}>No assignees are currently overloaded. 🎉</div>
+          ) : (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px 90px', gap: 12, padding: '6px 10px', fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                <div>Assignee</div>
+                <div style={{ textAlign: 'right' }}>Active SP</div>
+                <div style={{ textAlign: 'right' }}>In Prog.</div>
+                <div style={{ textAlign: 'right' }}>To Do</div>
+                <div style={{ textAlign: 'right' }}>Over by</div>
+              </div>
+              {metrics.overloadedList.map(a => (
+                <div key={a.name} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px 90px 90px', gap: 12, padding: '10px', borderBottom: '1px solid rgba(255,255,255,0.04)', alignItems: 'center' }}>
+                  <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 500 }}>{a.name} <span style={{ color: '#6b7280', fontWeight: 400 }}>· {a.count} item{a.count !== 1 ? 's' : ''}</span></div>
+                  <div style={{ textAlign: 'right', fontSize: 13, fontWeight: 700, color: '#ef4444' }}>{a.active.toFixed(1)}</div>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: '#94a3b8' }}>{a.inprog.toFixed(1)}</div>
+                  <div style={{ textAlign: 'right', fontSize: 13, color: '#94a3b8' }}>{a.todo.toFixed(1)}</div>
+                  <div style={{ textAlign: 'right' }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#f97316', background: '#f9731618', border: '1px solid #f9731640', padding: '2px 8px', borderRadius: 4 }}>+{a.overBy.toFixed(1)}</span>
+                  </div>
+                </div>
+              ))}
+              <InsightBox color="#fca5a5">
+                💡 <strong>How to fix:</strong> Reassign or defer the excess SP from the most-loaded people to those with spare capacity (see the Capacity tab). Start with To Do items — they haven't begun yet, so moving them is cheapest. Aim to bring everyone at or below 16 SP of active work.
+              </InsightBox>
+            </>
+          )}
+        </Modal>
+      )}
+
+      {/* ── Unassigned tickets modal ───────────────────────────────────────── */}
+      {modal === 'unassigned' && (
+        <Modal
+          title={`Unassigned Tickets (${metrics.unassignedList.length})`}
+          subtitle="Tickets in scope with no assignee — they have no owner and can slip through the cracks."
+          onClose={() => setModal(null)}
+        >
+          {metrics.unassignedList.length === 0 ? (
+            <div style={{ padding: '20px 0', textAlign: 'center', color: '#22c55e', fontSize: 13 }}>Every ticket has an owner. 🎉</div>
+          ) : (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr 130px 120px 50px', gap: 12, padding: '6px 10px', fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                <div>Key</div><div>Summary</div><div>Project</div><div>Status</div><div style={{ textAlign: 'right' }}>SP</div>
+              </div>
+              {metrics.unassignedList.map(t => (
+                <div key={t.key} style={{ display: 'grid', gridTemplateColumns: '90px 1fr 130px 120px 50px', gap: 12, padding: '10px', borderBottom: '1px solid rgba(255,255,255,0.04)', alignItems: 'center' }}>
+                  <div style={{ fontSize: 12, color: '#60a5fa', fontWeight: 500 }}>{t.key}</div>
+                  <div style={{ fontSize: 12, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={t.summary}>{t.summary}</div>
+                  <div style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.project}</div>
+                  <div><span style={{ fontSize: 11, color: '#94a3b8', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', padding: '2px 7px', borderRadius: 4, whiteSpace: 'nowrap' }}>{t.status}</span></div>
+                  <div style={{ textAlign: 'right', fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>{t.sp > 0 ? t.sp : '—'}</div>
+                </div>
+              ))}
+              <InsightBox color="#93c5fd">
+                💡 <strong>How to fix:</strong> Assign each ticket to an owner in Jira (pick people with spare capacity from the Capacity tab). Tickets still without story points should also be estimated so they show up in velocity and burndown.
+              </InsightBox>
+            </>
+          )}
+        </Modal>
+      )}
     </div>
   );
 };
