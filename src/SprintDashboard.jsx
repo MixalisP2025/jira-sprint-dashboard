@@ -1651,7 +1651,7 @@ const SprintDashboard = () => {
         </div>
       </div>
 
-              <div className={`${activeTab === 'csr' || activeTab === 'csr-analytics' ? 'w-full px-4 py-6 space-y-6' : 'max-w-7xl mx-auto px-6 py-6 space-y-6'}`}>
+              <div className={`${activeTab === 'csr' || activeTab === 'csr-analytics' || activeTab === 'data' ? 'w-full px-4 py-6 space-y-6' : 'max-w-7xl mx-auto px-6 py-6 space-y-6'}`}>
 
 
         {activeTab === 'overview' && (
@@ -3722,6 +3722,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
   const [storiesOnly, setStoriesOnly] = useState(false);
   const [hideAwaitingTesting, setHideAwaitingTesting] = useState(false);
   const [hideAwaitingVersioning, setHideAwaitingVersioning] = useState(false);
+  const [showNoDueDate, setShowNoDueDate] = useState(false);
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const [flaggedTickets, setFlaggedTickets] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('flaggedTickets') || '[]')); }
@@ -3790,11 +3791,14 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
     if (hideAwaitingVersioning) {
       result = result.filter(item => item['Status'] !== 'Awaiting Versioning');
     }
+    if (showNoDueDate) {
+      result = result.filter(item => !String(item['Due Date'] || item['Due date'] || '').trim());
+    }
     if (showFlaggedOnly) {
       result = result.filter(item => flaggedTickets.has(item['Issue key'] || item['Key']));
     }
     return result;
-  }, [allData, showNoStoryPoints, statusFilter, typeFilter, hideDone, storiesOnly, hideAwaitingTesting, hideAwaitingVersioning, showFlaggedOnly, flaggedTickets]);
+  }, [allData, showNoStoryPoints, statusFilter, typeFilter, hideDone, storiesOnly, hideAwaitingTesting, hideAwaitingVersioning, showNoDueDate, showFlaggedOnly, flaggedTickets]);
 
   const exportToExcel = () => {
     // Prepare data for export
@@ -4017,6 +4021,16 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
               <span className="text-slate-700 text-sm font-medium select-none">No Story Points Only</span>
             </label>
 
+            <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
+              <input
+                type="checkbox"
+                checked={showNoDueDate}
+                onChange={() => setShowNoDueDate(!showNoDueDate)}
+                className="w-4 h-4 text-rose-600 rounded focus:ring-rose-500"
+              />
+              <span className="text-slate-700 text-sm font-medium select-none">No Due Date Only</span>
+            </label>
+
             <button
               onClick={() => setShowFlaggedOnly(!showFlaggedOnly)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${
@@ -4046,10 +4060,11 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                 <th className="px-3 py-3 text-center w-10">🚩</th>
                 <th className="px-4 py-3">Key</th>
                 <th className="px-4 py-3">Type</th>
-                <th className="px-4 py-3 w-1/3">Summary</th>
+                <th className="px-4 py-3">Summary</th>
                 <th className="px-4 py-3">Project</th>
                 <th className="px-4 py-3">Assignee</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-center">Due Date</th>
                 <th className="px-4 py-3 text-center">SP</th>
               </tr>
             </thead>
@@ -4058,10 +4073,11 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                 displayData.slice(0, 200).map((ticket, idx) => {
                   const key = ticket['Issue key'] || ticket['Key'];
                   const isFlagged = flaggedTickets.has(key);
-                  const sp = parseFloat(ticket['Story Points']) || 
+                  const sp = parseFloat(ticket['Story Points']) ||
                          parseFloat(ticket['Story points']) ||
                          parseFloat(ticket['Custom field (Story Points)']) ||
                          0;
+                  const dueDate = String(ticket['Due Date'] || ticket['Due date'] || '').trim();
                   return (
                     <tr key={idx} className={`transition-colors hover:bg-slate-50 ${isFlagged ? 'bg-orange-50' : 'bg-white'}`}>
                       <td className="px-3 py-3 text-center">
@@ -4080,7 +4096,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                         {ticket['Issue Type']}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="truncate max-w-md text-slate-800" title={ticket['Summary']}>{ticket['Summary']}</div>
+                        <div className="truncate max-w-[240px] text-slate-800" title={ticket['Summary']}>{ticket['Summary']}</div>
                       </td>
                       <td className="px-4 py-3 text-slate-600">
                         {ticket['Project'] || ticket['B']}
@@ -4090,13 +4106,20 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                       </td>
                       <td className="px-4 py-3">
                         <span className={`px-2 py-1 rounded-full text-xs font-bold whitespace-nowrap
-                          ${ticket['Status'] === 'Done' ? 'bg-green-100 text-green-800 border border-green-300' : 
+                          ${ticket['Status'] === 'Done' ? 'bg-green-100 text-green-800 border border-green-300' :
                             ticket['Status'] === 'In Progress' ? 'bg-blue-100 text-blue-800 border border-blue-300' :
                             ticket['Status'] === 'To Do' ? 'bg-slate-100 text-slate-700 border border-slate-300' :
                             'bg-amber-100 text-amber-800 border border-amber-300'}
                         `}>
                           {ticket['Status']}
                         </span>
+                      </td>
+                      <td className="px-4 py-3 text-center whitespace-nowrap">
+                        {dueDate ? (
+                          <span className="font-mono text-xs text-slate-700">{dueDate}</span>
+                        ) : (
+                          <span className="px-2 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-700 border border-rose-300">No due date</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-center font-mono font-bold text-slate-700">
                         {sp > 0 ? sp : '-'}
@@ -4106,7 +4129,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                 })
               ) : (
                 <tr>
-                  <td colSpan="8" className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan="9" className="px-4 py-8 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center">
                       <span className="text-3xl mb-2">{showFlaggedOnly ? '🚩' : '🔍'}</span>
                       <span className="font-medium">{showFlaggedOnly ? 'No flagged tickets' : 'No tickets found'}</span>
