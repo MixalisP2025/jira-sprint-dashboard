@@ -128,7 +128,8 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
           state: sprintState(sprint, today),
           sp: 0, doneSP: 0,
           loggedSec: 0, estimateSec: 0, remainSec: 0,
-          tickets: 0, ticketsWithLog: 0, ticketsWithSP: 0,
+          loggedOnEstSec: 0, // logged time only on tickets that carry an estimate (apples-to-apples)
+          tickets: 0, ticketsWithLog: 0, ticketsWithSP: 0, ticketsWithEst: 0,
         };
       }
       const row = map[sprint];
@@ -141,11 +142,16 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
       row.tickets += 1;
       if (getLoggedSec(t) > 0) row.ticketsWithLog += 1;
       if (sp > 0) row.ticketsWithSP += 1;
+      if (getEstimateSec(t) > 0) {
+        row.ticketsWithEst += 1;
+        row.loggedOnEstSec += getLoggedSec(t);
+      }
     }
 
     const rows = Object.values(map).map(r => {
       const loggedH = toHours(r.loggedSec);
       const estH = toHours(r.estimateSec);
+      const loggedOnEstH = toHours(r.loggedOnEstSec);
       return {
         ...r,
         loggedH: Math.round(loggedH * 10) / 10,
@@ -153,7 +159,9 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
         remainH: Math.round(toHours(r.remainSec) * 10) / 10,
         hoursPerSP: r.sp > 0 ? Math.round((loggedH / r.sp) * 10) / 10 : 0,
         // logged vs estimate variance %  (positive = over the estimate)
-        estVariancePct: estH > 0 ? Math.round(((loggedH - estH) / estH) * 100) : null,
+        // Apples-to-apples: compare estimate only against time logged on the
+        // same tickets that carry an estimate — not against all logged time.
+        estVariancePct: estH > 0 ? Math.round(((loggedOnEstH - estH) / estH) * 100) : null,
         logCoverage: r.tickets > 0 ? Math.round((r.ticketsWithLog / r.tickets) * 100) : 0,
       };
     });
@@ -172,20 +180,25 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
       acc.sp += r.sp;
       acc.loggedSec += r.loggedSec;
       acc.estimateSec += r.estimateSec;
+      acc.loggedOnEstSec += r.loggedOnEstSec;
       acc.remainSec += r.remainSec;
       acc.tickets += r.tickets;
       acc.ticketsWithLog += r.ticketsWithLog;
+      acc.ticketsWithEst += r.ticketsWithEst;
       return acc;
-    }, { sp: 0, loggedSec: 0, estimateSec: 0, remainSec: 0, tickets: 0, ticketsWithLog: 0 });
+    }, { sp: 0, loggedSec: 0, estimateSec: 0, loggedOnEstSec: 0, remainSec: 0, tickets: 0, ticketsWithLog: 0, ticketsWithEst: 0 });
 
     return { sprintRows: rows, totals };
   }, [tickets, today]);
 
   const totalLoggedH = fmtHnum(totals.loggedSec);
   const totalEstH = fmtHnum(totals.estimateSec);
+  const totalLoggedOnEstH = fmtHnum(totals.loggedOnEstSec);
   const avgHoursPerSP = totals.sp > 0 ? Math.round((toHours(totals.loggedSec) / totals.sp) * 10) / 10 : 0;
   const logCoverage = totals.tickets > 0 ? Math.round((totals.ticketsWithLog / totals.tickets) * 100) : 0;
-  const estVariancePct = totalEstH > 0 ? Math.round(((totalLoggedH - totalEstH) / totalEstH) * 100) : null;
+  const estCoverage = totals.tickets > 0 ? Math.round((totals.ticketsWithEst / totals.tickets) * 100) : 0;
+  // Apples-to-apples: estimate vs time logged on the SAME estimated tickets only
+  const estVariancePct = totalEstH > 0 ? Math.round(((totalLoggedOnEstH - totalEstH) / totalEstH) * 100) : null;
 
   // Chart data — one entry per sprint (SP vs logged hours + estimate)
   const chartData = sprintRows
@@ -262,11 +275,16 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
     adviceColor = '#fca5a5';
   } else if (avgHoursPerSP > 0) {
     const wide = estVariancePct !== null && Math.abs(estVariancePct) > 25;
-    narrative = `Across the current view, ${totals.sp} SP consumed ${totalLoggedH}h of logged work — about ${avgHoursPerSP}h per story point${totalEstH > 0 ? `, against ${totalEstH}h originally estimated (${estVariancePct >= 0 ? '+' : ''}${estVariancePct}%)` : ''}. ${logCoverage}% of tickets have logged time.`;
-    advice = wide
-      ? `Actuals differ from estimates by ${Math.abs(estVariancePct)}%. Use the ~${avgHoursPerSP}h/SP actual figure (not the original estimate) when forecasting the next sprint, and revisit how the team sizes points versus hours.`
-      : `Estimates and actuals are reasonably aligned. Use ~${avgHoursPerSP}h per story point as a sanity check when committing the next sprint's points against available capacity.`;
-    adviceColor = wide ? '#fca5a5' : '#86efac';
+    const estClause = estVariancePct !== null
+      ? ` On the ${estCoverage}% of tickets that carry an original estimate, actual logged time runs ${estVariancePct >= 0 ? '+' : ''}${estVariancePct}% against that estimate.`
+      : ' Almost no tickets carry an original estimate, so estimate accuracy can\'t be judged.';
+    narrative = `Across the current view, ${totals.sp} SP consumed ${totalLoggedH}h of logged work — about ${avgHoursPerSP}h per story point. ${logCoverage}% of tickets have logged time.${estClause}`;
+    advice = estVariancePct === null
+      ? `Use the ~${avgHoursPerSP}h/SP actual figure as your planning baseline, and start capturing original estimates so future sprints can be checked for estimate accuracy.`
+      : wide
+        ? `Actuals differ from estimates by ${Math.abs(estVariancePct)}% on estimated tickets. Use the ~${avgHoursPerSP}h/SP actual figure (not the original estimate) when forecasting the next sprint, and revisit how the team sizes points versus hours.`
+        : `Estimates and actuals are reasonably aligned on estimated tickets. Use ~${avgHoursPerSP}h per story point as a sanity check when committing the next sprint's points against available capacity.`;
+    adviceColor = estVariancePct === null ? '#93c5fd' : wide ? '#fca5a5' : '#86efac';
   } else {
     narrative = `${totalLoggedH}h logged but no story points are attached to these tickets, so an hours-per-point ratio can't be computed.`;
     advice = 'Add story points to estimated work so effort (hours) can be compared against sizing (points).';
@@ -293,7 +311,7 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
         <KpiTile icon={Layers} label="Story Points"      value={Math.round(totals.sp * 10) / 10} sub={`${totals.tickets} tickets in view`} color="#a855f7" />
         <KpiTile icon={Clock}  label="Time Logged"       value={`${totalLoggedH}h`} sub={`${logCoverage}% of tickets logged time`} color="#22c55e" />
-        <KpiTile icon={Timer}  label="Original Estimate" value={`${totalEstH}h`} sub={estVariancePct !== null ? `logged ${estVariancePct >= 0 ? '+' : ''}${estVariancePct}% vs estimate` : 'no estimates set'} color="#f59e0b" />
+        <KpiTile icon={Timer}  label="Original Estimate" value={`${totalEstH}h`} sub={estVariancePct !== null ? `actuals ${estVariancePct >= 0 ? '+' : ''}${estVariancePct}% vs est · ${estCoverage}% have est` : 'few/no estimates set'} color="#f59e0b" />
         <KpiTile icon={Gauge}  label="Hours / Story Point" value={avgHoursPerSP ? `${avgHoursPerSP}h` : '—'} sub="actual effort per SP" color="#60a5fa" />
       </div>
 
