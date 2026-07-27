@@ -35,6 +35,7 @@ export const JIRA_CONFIG = {
     'issuekey',
     'project',
     'resolution',
+    'resolutiondate',
     
     // Sprint and story points - CORRECTED TO YOUR JIRA INSTANCE
     'customfield_10010', // Sprint

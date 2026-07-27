@@ -480,6 +480,8 @@ export const jiraService = {
         'Priority': fields.priority?.name || '',
         'Status': fields.status?.name || '',
         'Resolution': fields.resolution?.name || '',
+        'Resolved': fields.resolutiondate || '',
+        'Resolution Date': fields.resolutiondate || '',
         'Created': fields.created || '',
         'Start date': fields.customfield_10052 || '', // CORRECTED: was 10017
         'Due date': fields.duedate || '',

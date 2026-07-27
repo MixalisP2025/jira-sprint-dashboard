@@ -17,6 +17,7 @@ const getKey      = t => t['Key'] || t['Issue key'] || '';
 const getSummary  = t => t['Summary'] || '';
 const getType     = t => t['Issue Type'] || '';
 const getLoggedSec = t => parseFloat(t['Time Spent']) || 0;
+const getResolved = t => t['Resolved'] || t['Resolution Date'] || t._rawFields?.resolutiondate || null;
 
 const SEC_PER_HOUR = 3600;
 const toHours = sec => (sec || 0) / SEC_PER_HOUR;
@@ -292,7 +293,7 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
 
   const scopeNote = (
     <div style={{ fontSize: 11.5, color: '#6b7280', margin: '0 2px 14px' }}>
-      Scope: <strong style={{ color: '#94a3b8' }}>last {windowN} completed sprints</strong> (ignores the sprint filter). Estimation quality is a trailing property of the team's practice, so it's measured across sprints, not within one.
+      Scope: <strong style={{ color: '#94a3b8' }}>last {windowN} completed sprints</strong> (ignores the sprint filter), tickets attributed by <strong style={{ color: '#94a3b8' }}>resolution date</strong>. Estimation quality is a trailing property of the team's practice, so it's measured across sprints, not within one.
     </div>
   );
 
@@ -846,9 +847,30 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
     return isDone(getStatus(t)) && getSP(t) > 0;
   };
 
-  // Eligible = completed + pointed + allowed type, AND belonging to a completed sprint in the window.
-  // (In-flight sprints are excluded entirely — early completers there are a self-selected easy subset.)
-  const eligible = tickets.filter(t => typeOk(t) && windowSet.has(getSprint(t)));
+  // Attribute a ticket to a COMPLETED sprint by its resolution date (not its sprint field):
+  //  • resolved inside a sprint window → that sprint (null if that sprint is still in-flight)
+  //  • resolved in a gap between sprints → the most recent completed sprint that ended before it
+  //  • no resolution date → fall back to the sprint-field name if it's a known completed sprint
+  const winContaining = d => windows.find(w => d >= w.start && d <= w.end) || null;
+  const attrSprintOf = t => {
+    const rd = getResolved(t);
+    const d = rd ? new Date(rd) : null;
+    if (d && !isNaN(d)) {
+      const c = winContaining(d);
+      if (c) return isCompleted(c) ? c.name : null; // resolved during an in-flight sprint → excluded
+      let best = null;
+      for (const w of completedSprints) if (w.end <= d && (!best || w.end > best.end)) best = w;
+      return best ? best.name : null;
+    }
+    const nm = getSprint(t);
+    const w = winMap.get(nm);
+    return w && isCompleted(w) ? nm : null;
+  };
+
+  // Eligible = completed + pointed + allowed type, attributed (by resolution date) to a
+  // completed sprint inside the window. In-flight sprints are excluded entirely — early
+  // completers there are a self-selected easy subset that biases the rate downward.
+  const eligible = tickets.filter(t => typeOk(t) && windowSet.has(attrSprintOf(t)));
 
   // Worklog-level aggregates (only populated in worklog mode)
   let totalWorklogs = 0, roundCount = 0, coveredTickets = 0;
@@ -861,7 +883,7 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
       const sp = getSP(t);
       const raw = t._rawFields || {};
       let hours = toHours(getLoggedSec(t));
-      let sprint = getSprint(t) || 'No Sprint';
+      let sprint = attrSprintOf(t) || getSprint(t) || 'No Sprint'; // resolution-date sprint (worklog mode may refine below)
       let carry;
 
       if (worklogMode && wlByKey.has(key)) {
@@ -908,13 +930,13 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
         .map(c => ({ ...c, share: totalWorklogs > 0 ? Math.round((c.count / totalWorklogs) * 100) : 0 }))
     : [];
 
-  // Per-completed-sprint contribution (for the accumulation countdown).
-  // Count by each ticket's ELIGIBLE (own) sprint, before any worklog reattribution.
-  const sampleBySprint = {};
-  for (const t of eligible) if (getLoggedSec(t) > 0) { const nm = getSprint(t); sampleBySprint[nm] = (sampleBySprint[nm] || 0) + 1; }
+  // Per-completed-sprint contribution (for the accumulation countdown), by resolution-date sprint.
+  const eligAttr = eligible.map(t => ({ t, nm: attrSprintOf(t), logged: getLoggedSec(t) > 0 }));
+  const sampleBySprint = {}, eligBySprint = {};
+  for (const e of eligAttr) { eligBySprint[e.nm] = (eligBySprint[e.nm] || 0) + 1; if (e.logged) sampleBySprint[e.nm] = (sampleBySprint[e.nm] || 0) + 1; }
   const contributing = windowSprints.map(w => ({
     name: w.name,
-    eligible: eligible.filter(t => getSprint(t) === w.name).length,
+    eligible: eligBySprint[w.name] || 0,
     sample: sampleBySprint[w.name] || 0,
   }));
 
@@ -924,8 +946,16 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
   const coverageFrac = eligibleN > 0 ? n / eligibleN : 0;
   const perSprintLogged = perSprintEligible * coverageFrac;
   const sprintsNeeded = perSprintLogged > 0 ? Math.max(1, Math.ceil((30 - n) / perSprintLogged)) : null;
+  // In-flight exclusions: Done+pointed tickets whose RESOLUTION date falls inside an in-flight sprint window
   const excluded = inflightSprints
-    .map(w => ({ name: w.name, endLabel: fmtDMY(w.end), eligible: tickets.filter(t => typeOk(t) && getSprint(t) === w.name).length }))
+    .map(w => ({
+      name: w.name, endLabel: fmtDMY(w.end),
+      eligible: tickets.filter(t => {
+        if (!typeOk(t)) return false;
+        const rd = getResolved(t); const d = rd ? new Date(rd) : null;
+        return d && !isNaN(d) && d >= w.start && d <= w.end;
+      }).length,
+    }))
     .filter(e => e.eligible > 0);
 
   const sampleKeys = sample.map(s => s.key);
