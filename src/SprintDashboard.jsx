@@ -1770,10 +1770,12 @@ const SprintDashboard = () => {
         )}
 
         {activeTab === 'time' && (
+          /* NB: pass the FULL dataset, not filteredData — the Estimation Quality panel
+             scopes itself by last-N completed sprints and must ignore the global sprint
+             filter. It applies the assignee/project filters internally. */
           <TimeTrackingTab
-            tickets={filteredData}
+            tickets={data}
             sprints={sprints}
-            selectedSprint={selectedSprint}
             selectedAssignee={selectedAssignee}
             selectedProject={selectedProject}
           />

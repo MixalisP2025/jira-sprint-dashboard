@@ -179,8 +179,9 @@ const tdL = { textAlign: 'left', padding: '9px 10px' };
 const tdR = { textAlign: 'right', padding: '9px 10px', fontVariantNumeric: 'tabular-nums' };
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', selectedAssignee = 'all', selectedProject = 'all' }) {
+export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all', selectedProject = 'all' }) {
   const today = useMemo(() => new Date(), []);
+  const isDev = !!(import.meta.env && import.meta.env.DEV);
 
   // Capacity-planning assumption (persisted). NOT treated as truth — only overlaid for the gap.
   const [spPerDay, setSpPerDay] = useState(() => {
@@ -192,20 +193,32 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
     return Number.isFinite(v) && v > 0 ? v : DEFAULT_HOURS_PER_DAY;
   });
   const [typeMode, setTypeMode] = useState('pool'); // 'pool' | 'story' | 'task' | 'bug'
+  const [windowN, setWindowN] = useState(() => {
+    const v = parseInt(localStorage.getItem('tt_windowN'), 10);
+    return [3, 6, 12].includes(v) ? v : 6;
+  });
+  const [preview, setPreview] = useState(false); // dev-only: render metrics below threshold
   const upd = (setter, keyName) => v => { const n = parseFloat(v); if (Number.isFinite(n) && n > 0) { setter(n); localStorage.setItem(keyName, String(n)); } };
+  const setWindow = n => { setWindowN(n); localStorage.setItem('tt_windowN', String(n)); };
 
   // Worklog-level data (fetched on demand). status: idle | loading | loaded | error
   const [wl, setWl] = useState({ status: 'idle', byKey: null, error: null, errorsCount: 0, truncated: false });
 
   const planningHoursPerSP = hoursPerDay / spPerDay;
-
   const worklog = wl.status === 'loaded' ? { byKey: wl.byKey } : null;
 
+  // Apply assignee/project filters here (the global SPRINT filter is deliberately ignored)
+  const scoped = useMemo(() => tickets.filter(t => {
+    if (selectedAssignee !== 'all' && getAssignee(t) !== selectedAssignee) return false;
+    if (selectedProject !== 'all' && getProject(t) !== selectedProject) return false;
+    return true;
+  }), [tickets, selectedAssignee, selectedProject]);
+
   const M = useMemo(
-    () => computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog),
+    () => computeMetrics(scoped, today, typeMode, planningHoursPerSP, worklog, windowN, preview && isDev),
     // worklog is derived from wl.byKey/wl.status (both listed); referencing the object would break memoization
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tickets, today, typeMode, planningHoursPerSP, wl.byKey, wl.status]
+    [scoped, today, typeMode, planningHoursPerSP, wl.byKey, wl.status, windowN, preview, isDev]
   );
 
   async function loadWorklogs() {
@@ -225,7 +238,7 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
   }
 
   const scopeLabel = [
-    selectedSprint !== 'all' ? selectedSprint : 'All sprints',
+    `last ${windowN} completed sprints`,
     selectedProject !== 'all' ? selectedProject : null,
     selectedAssignee !== 'all' ? selectedAssignee : null,
   ].filter(Boolean).join(' · ');
@@ -234,8 +247,17 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
 
   // ── Shared control bar ──
   const controls = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '12px 18px', marginBottom: 16 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '12px 18px', marginBottom: 8 }}>
       <span style={{ fontSize: 12, fontWeight: 600, color: '#cbd5e1' }}>⚙ Estimation scope</span>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94a3b8' }}>
+        Window
+        <select value={windowN} onChange={e => setWindow(parseInt(e.target.value, 10))}
+          style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#e2e8f0', padding: '5px 8px', fontSize: 12 }}>
+          <option value={3}>Last 3 completed sprints</option>
+          <option value={6}>Last 6 completed sprints</option>
+          <option value={12}>Last 12 completed sprints</option>
+        </select>
+      </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94a3b8' }}>
         Issue types
         <select value={typeMode} onChange={e => setTypeMode(e.target.value)}
@@ -246,6 +268,12 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
           <option value="bug">Bug only</option>
         </select>
       </label>
+      {isDev && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#fbbf24' }} title="Dev only — renders metrics below n=30 with a NOT RELIABLE badge">
+          <input type="checkbox" checked={preview} onChange={e => setPreview(e.target.checked)} />
+          Preview &lt;30 (dev)
+        </label>
+      )}
       <span style={{ width: 1, height: 22, background: 'rgba(255,255,255,0.12)' }} />
       <span style={{ fontSize: 12, fontWeight: 600, color: '#cbd5e1' }}>Capacity assumption</span>
       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8' }}>
@@ -259,6 +287,12 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
         h/day
       </label>
       <span style={{ fontSize: 12, color: '#e2e8f0' }}>= <strong>{f1(planningHoursPerSP)} h/SP</strong> planning constant</span>
+    </div>
+  );
+
+  const scopeNote = (
+    <div style={{ fontSize: 11.5, color: '#6b7280', margin: '0 2px 14px' }}>
+      Scope: <strong style={{ color: '#94a3b8' }}>last {windowN} completed sprints</strong> (ignores the sprint filter). Estimation quality is a trailing property of the team's practice, so it's measured across sprints, not within one.
     </div>
   );
 
@@ -304,6 +338,11 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
             : 'Sprint attribution uses each ticket’s current sprint field, so carryover work is credited to its latest sprint. Load worklog-level data for date-accurate attribution.'}
         </Banner>
       )}
+      {M.n > 0 && M.worklogMode && M.worklogsPerTicket !== null && M.worklogsPerTicket < 2 && (
+        <Banner color="#f59e0b" icon={<AlertTriangle size={15} />}>
+          <strong>Only {f1(M.worklogsPerTicket)} worklogs per ticket.</strong> With so few timestamps, sprint-window attribution by <em>worklog.started</em> has little to work with and carryover splitting is crude — most tickets resolve to a single date.
+        </Banner>
+      )}
       {M.n > 0 && !M.worklogMode && (
         <Banner color="#64748b" icon="ℹ">
           Ticket-level mode: worklogs attributed by each ticket’s <strong>assignee and sprint field</strong>, and round-number bias isn’t checked. Load worklog-level data above for author/date attribution.
@@ -312,23 +351,37 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
     </>
   );
 
-  // ── Gate: insufficient sample or low coverage ──
-  if (M.disabled) {
+  // ── Accumulation countdown (replaces the old "panel disabled" dead-end) ──
+  if (M.accumulating) {
     return (
       <div>
         {controls}
+        {scopeNote}
         {worklogBar}
         {banners}
-        <Card style={{ opacity: 0.85, border: '1px dashed rgba(255,255,255,0.15)' }}>
+        <AccumulationView M={M} windowN={windowN} typeLabel={typeLabel} isDev={isDev} preview={preview} setPreview={setPreview} />
+      </div>
+    );
+  }
+
+  // ── Coverage gate (not an error — a data-quality stop) ──
+  if (M.coverageGate) {
+    return (
+      <div>
+        {controls}
+        {scopeNote}
+        {worklogBar}
+        {banners}
+        <Card style={{ border: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.05)' }}>
           <CardHeader title="Story Point Estimation Quality" subtitle={`${scopeLabel} · ${typeLabel}`} />
-          <div style={{ textAlign: 'center', padding: '28px 12px' }}>
-            <AlertTriangle size={28} style={{ color: '#f59e0b', marginBottom: 10 }} />
-            <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0', marginBottom: 6 }}>Panel disabled — {M.disabled.reason}</div>
-            <div style={{ fontSize: 13, color: '#94a3b8', maxWidth: 560, margin: '0 auto', lineHeight: 1.6 }}>{M.disabled.detail}</div>
+          <div style={{ textAlign: 'center', padding: '24px 12px' }}>
+            <AlertTriangle size={26} style={{ color: '#f59e0b', marginBottom: 10 }} />
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0', marginBottom: 6 }}>Log coverage too low to measure ({M.logCoverage}%)</div>
+            <div style={{ fontSize: 13, color: '#94a3b8', maxWidth: 580, margin: '0 auto', lineHeight: 1.6 }}>{M.coverageGate.detail}</div>
             <div style={{ display: 'flex', gap: 22, justifyContent: 'center', marginTop: 20, flexWrap: 'wrap' }}>
               <MiniStat label="Completed pointed tickets" value={M.eligibleN} />
-              <MiniStat label="With logged time (sample n)" value={M.n} />
-              <MiniStat label="Log coverage" value={`${M.logCoverage}%`} />
+              <MiniStat label="With logged time (n)" value={M.n} />
+              <MiniStat label="Coverage / target" value={`${M.logCoverage}% / 70%`} />
             </div>
           </div>
         </Card>
@@ -343,8 +396,16 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
   return (
     <div>
       {controls}
+      {scopeNote}
       {worklogBar}
       {banners}
+
+      {M.notReliable && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
+          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.06em', color: '#fff', background: '#dc2626', padding: '3px 8px', borderRadius: 5 }}>NOT RELIABLE — n={M.n}</span>
+          <span style={{ fontSize: 12, color: '#fca5a5' }}>Dev preview: below the n≥30 / 70%-coverage threshold. Charts render for build/testing only; do not quote these numbers.</span>
+        </div>
+      )}
 
       {/* Headline metrics */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
@@ -548,6 +609,65 @@ function MiniStat({ label, value }) {
 function Disabled({ msg }) {
   return <div style={{ padding: '28px 0', textAlign: 'center', color: '#6b7280', fontSize: 13 }}>{msg}</div>;
 }
+
+// Accumulation countdown — the sample maturing toward n=30, framed as progress not error
+function AccumulationView({ M, windowN, typeLabel, isDev, preview, setPreview }) {
+  const a = M.accumulating;
+  const pct = Math.min(100, Math.round((M.n / 30) * 100));
+  return (
+    <Card style={{ border: '1px solid rgba(96,165,250,0.28)', background: 'rgba(96,165,250,0.05)' }}>
+      <CardHeader
+        title="Story Point Estimation Quality — accumulating"
+        subtitle={`${typeLabel} · last ${windowN} completed sprints`}
+        right={<div style={{ textAlign: 'right' }}><div style={{ fontSize: 22, fontWeight: 800, color: '#60a5fa' }}>{M.n}<span style={{ color: '#6b7280', fontSize: 14 }}> / 30</span></div><div style={{ fontSize: 11, color: '#6b7280' }}>sample tickets</div></div>}
+      />
+
+      {/* Progress bar */}
+      <div style={{ height: 12, background: 'rgba(255,255,255,0.06)', borderRadius: 7, overflow: 'hidden', marginBottom: 10 }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: 'linear-gradient(90deg,#3b82f6,#60a5fa)', transition: 'width 0.4s' }} />
+      </div>
+      <div style={{ fontSize: 13, color: '#cbd5e1', lineHeight: 1.6, marginBottom: 16 }}>
+        {a.perSprintEligible > 0 ? (
+          <>At ~<strong>{f1(a.perSprintEligible)}</strong> eligible {typeLabel} tickets per completed sprint{a.coverage < 100 ? ` (~${f1(a.perSprintSample)} with logged time)` : ''}, you need roughly <strong>{a.sprintsNeeded}</strong> more completed sprint{a.sprintsNeeded === 1 ? '' : 's'} to reach a reliable n=30.</>
+        ) : (
+          <>No completed sprints with eligible tickets are in the current window yet.</>
+        )}
+      </div>
+
+      {/* Contributing sprints */}
+      {a.contributing.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Contributing — {a.contributing.length} completed sprint(s) in window</div>
+          {a.contributing.map((s, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#94a3b8', padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+              <span style={{ color: '#22c55e' }}>✓ {s.name}</span>
+              <span>{s.sample} logged / {s.eligible} eligible</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Excluded in-flight sprints */}
+      {a.excluded.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Excluded — in progress</div>
+          {a.excluded.map((s, i) => (
+            <div key={i} style={{ fontSize: 12.5, color: '#fcd34d', padding: '3px 0' }}>
+              ⏳ {s.name} excluded — still in progress{s.endLabel ? ` (ends ${s.endLabel})` : ''} · {s.eligible} eligible ticket(s) held back
+            </div>
+          ))}
+        </div>
+      )}
+
+      {isDev && (
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 16, fontSize: 12, color: '#fbbf24', cursor: 'pointer' }}>
+          <input type="checkbox" checked={preview} onChange={e => setPreview(e.target.checked)} />
+          Dev: preview metrics below threshold (renders with a NOT RELIABLE badge)
+        </label>
+      )}
+    </Card>
+  );
+}
 function ScatterTip({ payload }) {
   if (!payload || !payload.length) return null;
   const p = payload[0].payload;
@@ -667,20 +787,41 @@ function WhatThisMeans({ M, gapPct, typeLabel }) {
 }
 
 // ─── Metrics engine ───────────────────────────────────────────────────────────
-function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog) {
+function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, windowN = 6, preview = false) {
   const allow = new Set(ALLOWED_TYPES);
   const wlByKey = worklog?.byKey || null;
   const worklogMode = !!wlByKey;
 
-  // Sprint windows (name → {start,end}) for worklog-date attribution
-  const windows = [];
-  const seenWin = new Set();
+  const fmtDMY = d => `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getFullYear()).slice(2)}`;
+
+  // Sprint windows (name → {start,end,state}). Prefer the REAL sprint metadata from
+  // _rawFields (startDate/endDate/state), falling back to date-in-name parsing.
+  const winMap = new Map();
   for (const t of tickets) {
-    const nm = getSprint(t);
-    if (!nm || seenWin.has(nm)) continue;
-    const d = parseSprintDates(nm);
-    if (d) { windows.push({ name: nm, start: d.start, end: d.end }); seenWin.add(nm); }
+    const raw = t._rawFields || {};
+    const arr = raw.customfield_10010 || raw.sprint;
+    const consider = (nm, sp) => {
+      if (!nm || winMap.has(nm)) return;
+      let start = null, end = null, state = null;
+      if (sp && typeof sp === 'object') {
+        state = sp.state ? String(sp.state).toLowerCase() : null;
+        if (sp.startDate) start = new Date(sp.startDate);
+        if (sp.endDate) end = new Date(sp.endDate);
+        if ((!end || isNaN(end)) && sp.completeDate) end = new Date(sp.completeDate);
+      }
+      if (!start || !end || isNaN(start) || isNaN(end)) {
+        const d = parseSprintDates(nm);
+        if (d) { if (!start || isNaN(start)) start = d.start; if (!end || isNaN(end)) end = d.end; }
+      }
+      if (start && end && !isNaN(start) && !isNaN(end)) winMap.set(nm, { name: nm, start, end, state });
+    };
+    if (Array.isArray(arr)) {
+      for (const sp of arr) consider(typeof sp === 'string' ? sp : sp?.name, sp);
+    } else {
+      consider(getSprint(t), null);
+    }
   }
+  const windows = [...winMap.values()];
   const windowFor = date => {
     const d = new Date(date);
     if (isNaN(d)) return null;
@@ -689,15 +830,25 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog) {
   };
   const ROUND_SECS = new Set([3600, 14400, 28800]); // 1h, 4h, 8h/1d (default 8h workday)
 
-  // Eligible = completed + pointed + allowed type (regardless of logging) — for coverage
-  const eligible = tickets.filter(t => {
+  // Completed = Jira state 'closed' (or, if state unknown, endDate < today). Take most recent windowN.
+  const isCompleted = w => (w.state ? w.state === 'closed' : w.end < today);
+  const isInflight = w => (w.state ? (w.state === 'active' || w.state === 'future') : w.end >= today);
+  const completedSprints = windows.filter(isCompleted).sort((a, b) => a.start - b.start);
+  const windowSprints = completedSprints.slice(-windowN);
+  const windowSet = new Set(windowSprints.map(w => w.name));
+  const inflightSprints = windows.filter(isInflight);
+
+  const typeOk = t => {
     const type = getType(t).toLowerCase();
     if (type === 'epic') return false;
     if (!allow.has(type)) return false;
     if (typeMode !== 'pool' && type !== typeMode) return false;
-    if (!isDone(getStatus(t))) return false;         // Done-only removes the in-progress SP/hours bias
-    return getSP(t) > 0;
-  });
+    return isDone(getStatus(t)) && getSP(t) > 0;
+  };
+
+  // Eligible = completed + pointed + allowed type, AND belonging to a completed sprint in the window.
+  // (In-flight sprints are excluded entirely — early completers there are a self-selected easy subset.)
+  const eligible = tickets.filter(t => typeOk(t) && windowSet.has(getSprint(t)));
 
   // Worklog-level aggregates (only populated in worklog mode)
   let totalWorklogs = 0, roundCount = 0, coveredTickets = 0;
@@ -748,6 +899,7 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog) {
   const carryoverRate = n > 0 ? Math.round((sample.filter(s => s.carry).length / n) * 100) : 0;
   const roundNumberBias = worklogMode && totalWorklogs > 0 ? Math.round((roundCount / totalWorklogs) * 100) : null;
   const worklogCoverage = worklogMode && n > 0 ? Math.round((coveredTickets / n) * 100) : 0;
+  const worklogsPerTicket = worklogMode && coveredTickets > 0 ? totalWorklogs / coveredTickets : null;
   const contributors = worklogMode
     ? Object.keys(contributorSec)
         .map(name => ({ name, hours: contributorSec[name] / SEC_PER_HOUR, count: contributorCount[name] }))
@@ -756,15 +908,51 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog) {
         .map(c => ({ ...c, share: totalWorklogs > 0 ? Math.round((c.count / totalWorklogs) * 100) : 0 }))
     : [];
 
-  const sampleKeys = sample.map(s => s.key);
-  const base = { n, eligibleN, logCoverage, carryoverRate, planningHoursPerSP, worklogMode, roundNumberBias, totalWorklogs, worklogCoverage, contributors, sampleKeys };
+  // Per-completed-sprint contribution (for the accumulation countdown).
+  // Count by each ticket's ELIGIBLE (own) sprint, before any worklog reattribution.
+  const sampleBySprint = {};
+  for (const t of eligible) if (getLoggedSec(t) > 0) { const nm = getSprint(t); sampleBySprint[nm] = (sampleBySprint[nm] || 0) + 1; }
+  const contributing = windowSprints.map(w => ({
+    name: w.name,
+    eligible: eligible.filter(t => getSprint(t) === w.name).length,
+    sample: sampleBySprint[w.name] || 0,
+  }));
 
-  // Gates
-  if (n < 30) {
-    return { ...base, disabled: { reason: 'insufficient sample', detail: `Need ≥30 completed, pointed, time-logged tickets for a headline metric. Have n=${n}${eligibleN > n ? ` (${eligibleN - n} eligible tickets have no logged time)` : ''}.` } };
+  const nCompletedInWindow = windowSprints.length;
+  const perSprintEligible = nCompletedInWindow > 0 ? eligibleN / nCompletedInWindow : 0;
+  const perSprintSample = nCompletedInWindow > 0 ? n / nCompletedInWindow : 0;
+  const coverageFrac = eligibleN > 0 ? n / eligibleN : 0;
+  const perSprintLogged = perSprintEligible * coverageFrac;
+  const sprintsNeeded = perSprintLogged > 0 ? Math.max(1, Math.ceil((30 - n) / perSprintLogged)) : null;
+  const excluded = inflightSprints
+    .map(w => ({ name: w.name, endLabel: fmtDMY(w.end), eligible: tickets.filter(t => typeOk(t) && getSprint(t) === w.name).length }))
+    .filter(e => e.eligible > 0);
+
+  const sampleKeys = sample.map(s => s.key);
+  const base = {
+    n, eligibleN, logCoverage, carryoverRate, planningHoursPerSP,
+    worklogMode, roundNumberBias, totalWorklogs, worklogCoverage, worklogsPerTicket, contributors, sampleKeys,
+    windowN, nCompletedInWindow,
+  };
+
+  // Accumulation countdown (not an error) — sample not yet mature
+  if (n < 30 && !preview) {
+    return {
+      ...base,
+      accumulating: {
+        perSprintEligible, perSprintSample, coverage: logCoverage,
+        sprintsNeeded, contributing, excluded,
+      },
+    };
   }
-  if (logCoverage < 70) {
-    return { ...base, disabled: { reason: 'low log coverage', detail: `Only ${logCoverage}% of the ${eligibleN} completed pointed tickets have any logged time (need ~70%). Figures would be dominated by whoever logs, not by the work. Improve worklog discipline first.` } };
+  // Coverage gate — enough tickets, but too few log time to trust the rate
+  if (logCoverage < 70 && !preview) {
+    return { ...base, coverageGate: { detail: `Only ${logCoverage}% of the ${eligibleN} completed, pointed tickets in the window have logged time (need ~70%). The rate would reflect whoever logs, not the work. Improve worklog discipline before relying on these numbers.` } };
+  }
+  const notReliable = preview && (n < 30 || logCoverage < 70);
+  if (n < 3) {
+    // Even preview can't compute meaningful stats
+    return { ...base, accumulating: { perSprintEligible, perSprintSample, coverage: logCoverage, sprintsNeeded, contributing, excluded } };
   }
 
   // Headline
@@ -872,7 +1060,7 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog) {
   const backtest = { rows: btRows, mdape: btRows.length ? median(btRows.map(r => Math.abs(r.errorPct))) : NaN };
 
   return {
-    ...base, disabled: null,
+    ...base, accumulating: null, coverageGate: null, notReliable,
     medianHoursPerSP, iqr, medianCI, spreadFactor, spreadCI,
     discrimination, discriminationCI, hitRate, hitRateCI, mdape, mdapeCI,
     buckets, monotonic, overlaps, scatter, outliers, drift, backtest,
