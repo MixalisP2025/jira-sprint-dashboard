@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   ScatterChart, Scatter, ComposedChart, Line, BarChart, Bar,
   XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -6,6 +6,7 @@ import {
 } from 'recharts';
 import { Gauge, Layers, Activity, Target, AlertTriangle, Microscope, Users } from 'lucide-react';
 import { jiraService } from '../utils/jiraService';
+import { loadEligibilityFromDB, pingDB } from '../utils/dbSync';
 
 // ─── Jira field accessors ─────────────────────────────────────────────────────
 const getStatus   = t => t['Status'] || '';
@@ -248,6 +249,24 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
   // Worklog-level data (fetched on demand). status: idle | loading | loaded | error
   const [wl, setWl] = useState({ status: 'idle', byKey: null, error: null, errorsCount: 0, truncated: false });
 
+  // Allocation from the Allocation tab (eligibility map: { assignee: [projectKeys] }).
+  // Seeded from localStorage (written by AllocationTab), refined from the DB when reachable.
+  const [eligibility, setEligibility] = useState(() => {
+    try { const raw = localStorage.getItem('assigneeEligibility'); return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+  });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (await pingDB()) {
+          const db = await loadEligibilityFromDB();
+          if (db && Object.keys(db).length && !cancelled) setEligibility(db);
+        }
+      } catch { /* offline — localStorage seed stands */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const planningHoursPerSP = hoursPerDay / spPerDay;
   const worklog = wl.status === 'loaded' ? { byKey: wl.byKey } : null;
 
@@ -258,12 +277,12 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
     return true;
   }), [tickets, selectedAssignee, selectedProject]);
 
-  const cfg = { spPerDay, hoursPerDay, planningHoursPerSP, scaleType, hoursPerIdealDay };
+  const cfg = { spPerDay, hoursPerDay, planningHoursPerSP, scaleType, hoursPerIdealDay, eligibility, selectedProject };
   const M = useMemo(
     () => computeMetrics(scoped, today, typeMode, cfg, worklog, windowN, preview && isDev),
     // worklog derived from wl.byKey/wl.status; cfg is a fresh object each render so its primitives are listed instead
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scoped, today, typeMode, spPerDay, hoursPerDay, scaleType, hoursPerIdealDay, wl.byKey, wl.status, windowN, preview, isDev]
+    [scoped, today, typeMode, spPerDay, hoursPerDay, scaleType, hoursPerIdealDay, eligibility, selectedProject, wl.byKey, wl.status, windowN, preview, isDev]
   );
   const effScaleType = M.scaleType; // resolved (auto → detected)
 
@@ -290,6 +309,9 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
   ].filter(Boolean).join(' · ');
 
   const typeLabel = typeMode === 'pool' ? 'Story + Task + Bug' : typeMode[0].toUpperCase() + typeMode.slice(1);
+  const allocLabel = M.allocationAssumed
+    ? 'assumes full allocation — verify'
+    : `allocation from Allocation tab (~${M.effectiveFTE} FTE of ${M.numContributors})${M.allocationPartial ? ', some defaulted to 100%' : ''}`;
 
   // ── Shared control bar ──
   const controls = (
@@ -482,14 +504,14 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
       {/* A1 — logging completeness suppression banner */}
       {M.suppressAbsolute && (
         <Banner color="#ef4444" icon={<AlertTriangle size={15} />}>
-          <strong>Worklogs capture only {pctI(M.loggingCompleteness * 100)}% of working time{M.allocationAssumed ? ' (assuming full allocation — likely lower)' : ''}.</strong> Absolute-hour conclusions are suppressed: no h/SP capacity recommendation, and MdAPE is not an accuracy claim. Use <strong>throughput</strong> (below) for capacity planning. The rank-based findings — discrimination, monotonicity, bucket overlap — are unaffected by uniform under-logging and remain valid.
+          <strong>Worklogs capture only {pctI(M.loggingCompleteness * 100)}% of working time ({allocLabel}).</strong> Absolute-hour conclusions are suppressed: no h/SP capacity recommendation, and MdAPE is not an accuracy claim. Use <strong>throughput</strong> (below) for capacity planning. The rank-based findings — discrimination, monotonicity, bucket overlap — are unaffected by uniform under-logging and remain valid.
         </Banner>
       )}
 
       {/* Headline metrics */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
         <KpiTile icon={Layers} label="Sample" value={`n=${M.n}`} sub={`completed, pointed, time-logged · ${M.logCoverage}% coverage`} color="#a855f7" />
-        <KpiTile icon={Activity} label="Logging completeness" value={M.loggingCompleteness !== null ? `${pctI(M.loggingCompleteness * 100)}%` : '—'} sub={M.allocationAssumed ? 'assumes full allocation — verify' : 'of available working time'} color={M.suppressAbsolute ? '#ef4444' : '#22c55e'} />
+        <KpiTile icon={Activity} label="Logging completeness" value={M.loggingCompleteness !== null ? `${pctI(M.loggingCompleteness * 100)}%` : '—'} sub={allocLabel} color={M.suppressAbsolute ? '#ef4444' : '#22c55e'} />
         <KpiTile icon={Gauge} label="Throughput" value={M.deliveredSPPerPersonDay ? `${f2(M.deliveredSPPerPersonDay)} SP/pd` : '—'} sub={M.throughputMultiple ? `assumption ${f1(M.throughputMultiple)}× observed · implies ${f1(M.impliedCapacityHoursPerSP)} h/SP` : 'completed SP per person-day'} color="#38bdf8" />
         <KpiTile icon={Gauge} label="Median h / SP" value={`${f1(M.medianHoursPerSP)}h`} sub={M.suppressAbsolute ? `recorded, not effort · IQR ${f1(M.iqr[0])}–${f1(M.iqr[1])}` : `IQR ${f1(M.iqr[0])}–${f1(M.iqr[1])}h · ${ciTxt(M.medianCI, 'h')}`} color="#60a5fa" />
         <KpiTile icon={Activity} label="Spread factor" value={`×${f1(M.spreadFactor)}`} sub={`typical ticket within this factor · ${ciTxt(M.spreadCI)}`} color={spreadColor} />
@@ -508,7 +530,7 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
         <Card>
           <CardHeader
             title="Throughput — completed SP per person-day"
-            subtitle={`Logging-immune capacity signal (completed points ÷ calendar person-days). ${M.allocationAssumed ? 'Assumes full allocation — verify against the Allocation tab.' : ''} Blue line = your ${f1(M.spPerDay)} SP/day assumption.`}
+            subtitle={`Logging-immune capacity signal (completed points ÷ allocation-weighted person-days · ${allocLabel}). Blue line = your ${f1(M.spPerDay)} SP/day assumption.`}
             right={
               <div style={{ textAlign: 'right' }}>
                 <div style={{ color: '#6b7280', fontSize: 12 }}>Observed</div>
@@ -950,7 +972,8 @@ function WhatThisMeans({ M, typeLabel }) {
   const flagBits = M.worklogMode
     ? `worklog-level: ${M.totalWorklogs} worklogs, ${M.roundNumberBias}% round numbers${M.carryoverRate > 25 ? `, ${M.carryoverRate}% carried over` : ''}`
     : `ticket-level attribution; round-number bias not checked${M.carryoverRate > 25 ? `, ${M.carryoverRate}% carried over` : ''}`;
-  lines.push(`Sample: ${M.n} completed, pointed, time-logged ${typeLabel} tickets (${M.logCoverage}% log coverage). ${flagBits}. Worklogs capture ~${M.loggingCompleteness !== null ? pctI(M.loggingCompleteness * 100) : '?'}% of working time${M.allocationAssumed ? ' (assumes full allocation — verify)' : ''}.`);
+  const allocNote = M.allocationAssumed ? ' (assumes full allocation — verify)' : ` (allocation from Allocation tab, ~${M.effectiveFTE} FTE)`;
+  lines.push(`Sample: ${M.n} completed, pointed, time-logged ${typeLabel} tickets (${M.logCoverage}% log coverage). ${flagBits}. Worklogs capture ~${M.loggingCompleteness !== null ? pctI(M.loggingCompleteness * 100) : '?'}% of working time${allocNote}.`);
 
   // 2. capacity from THROUGHPUT (logging-immune), not from logged h/SP
   if (M.deliveredSPPerPersonDay) {
@@ -1018,6 +1041,19 @@ function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, pre
   const hoursPerDay = cfg?.hoursPerDay ?? 8;
   const hoursPerIdealDay = cfg?.hoursPerIdealDay ?? 8;
   const planningHoursPerSP = cfg?.planningHoursPerSP ?? (hoursPerDay / spPerDay);
+  const eligibility = cfg?.eligibility || {};
+  const selectedProject = cfg?.selectedProject ?? 'all';
+  const hasEligibility = Object.keys(eligibility).length > 0;
+  // allocationPct(person) — fraction of their working time on the analysed scope, from the
+  // Allocation tab's eligibility map (even split across each person's eligible projects).
+  // Returns null when we have no eligibility row for that person (caller falls back to 100%).
+  const allocationPctOf = name => {
+    const elig = eligibility[name];
+    if (!elig || !elig.length) return null;
+    if (selectedProject === 'all') return 1;              // whole tracked portfolio is in scope
+    const projects = elig.includes(selectedProject) ? elig.length : elig.length + 1;
+    return 1 / projects;                                   // this project is one of their shares
+  };
   const allow = new Set(ALLOWED_TYPES);
   const wlByKey = worklog?.byKey || null;
   const worklogMode = !!wlByKey;
@@ -1211,9 +1247,12 @@ function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, pre
   const throughputRows = windowSprints.map(w => {
     const wEligible = eligible.filter(t => attrSprintOf(t) === w.name);
     const completedSP = wEligible.reduce((a, t) => a + getSP(t), 0);
-    const contribs = new Set(wEligible.map(getAssignee)).size || 0;
+    const names = [...new Set(wEligible.map(getAssignee))];
+    const contribs = names.length || 0;
     const wd = businessDays(w.start, w.end) || 1;
-    const personDays = wd * (contribs || 1); // allocationPct assumed 100% (no allocation data wired)
+    // person-days weighted by each contributor's allocation to this scope (100% fallback)
+    const allocFTE = names.reduce((a, nm) => a + (allocationPctOf(nm) ?? 1), 0) || (contribs || 1);
+    const personDays = wd * allocFTE;
     const committedSP = committedSPForSprint(w.name);
     return {
       name: w.name, label: shortSprintLabel(w.name), completedSP, committedSP, contribs, workingDays: wd, personDays,
@@ -1229,14 +1268,23 @@ function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, pre
   const totCommittedSP = throughputRows.reduce((a, r) => a + r.committedSP, 0);
   const completionRate = totCommittedSP > 0 ? totCompletedSP / totCommittedSP : null;
 
-  // ── A1. Logging completeness: logged hours ÷ available capacity hours (allocation assumed 100%) ──
+  // ── A1. Logging completeness: logged hours ÷ available capacity hours (allocation from Allocation tab) ──
   const workingDaysInWindow = windowSprints.reduce((a, w) => a + businessDays(w.start, w.end), 0);
   const contributorNames = worklogMode ? Object.keys(contributorSec) : [...new Set(sample.map(s => s.assignee))];
   const numContributors = contributorNames.length || 1;
   const totalLoggedHours = sample.reduce((a, s) => a + s.hours, 0);
-  const capacityHours = numContributors * workingDaysInWindow * hoursPerDay; // × allocationPct(=1)
+  // Sum each contributor's allocated capacity; fall back to 100% where eligibility is unknown.
+  let missingAlloc = 0;
+  const effectiveFTE = contributorNames.reduce((a, name) => {
+    const p = allocationPctOf(name);
+    if (p === null) missingAlloc += 1;
+    return a + (p === null ? 1 : p);
+  }, 0);
+  const capacityHours = (effectiveFTE || numContributors) * workingDaysInWindow * hoursPerDay;
   const loggingCompleteness = capacityHours > 0 ? totalLoggedHours / capacityHours : null;
-  const allocationAssumed = true; // no per-person allocation data available
+  const allocationAssumed = !hasEligibility;                 // true only if we had NO eligibility data
+  const allocationPartial = hasEligibility && missingAlloc > 0;
+  const effectiveFTEval = Math.round(effectiveFTE * 10) / 10;
   const suppressAbsolute = loggingCompleteness !== null && loggingCompleteness < 0.70;
 
   const sampleKeys = sample.map(s => s.key);
@@ -1245,7 +1293,8 @@ function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, pre
     worklogMode, roundNumberBias, totalWorklogs, worklogCoverage, worklogsPerTicket, contributors, sampleKeys,
     windowN, nCompletedInWindow, detectedScale, scaleType,
     // A1/A2/A3
-    loggingCompleteness, allocationAssumed, suppressAbsolute, numContributors, totalLoggedHours, capacityHours,
+    loggingCompleteness, allocationAssumed, allocationPartial, effectiveFTE: effectiveFTEval, suppressAbsolute,
+    numContributors, totalLoggedHours, capacityHours,
     deliveredSPPerPersonDay, impliedCapacityHoursPerSP, throughputMultiple, throughputRows, completionRate,
   };
 
