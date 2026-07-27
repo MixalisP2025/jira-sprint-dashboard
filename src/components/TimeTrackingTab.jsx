@@ -4,7 +4,8 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, ReferenceLine, Cell,
 } from 'recharts';
-import { Gauge, Layers, Activity, Target, AlertTriangle } from 'lucide-react';
+import { Gauge, Layers, Activity, Target, AlertTriangle, Microscope, Users } from 'lucide-react';
+import { jiraService } from '../utils/jiraService';
 
 // ─── Jira field accessors ─────────────────────────────────────────────────────
 const getStatus   = t => t['Status'] || '';
@@ -169,6 +170,9 @@ function KpiTile({ icon: Icon, label, value, sub, color = '#60a5fa' }) {
   );
 }
 
+const btnPrimary = { background: '#3b82f6', border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, color: '#fff' };
+const btnGhost = { background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 8, padding: '7px 13px', cursor: 'pointer', fontSize: 12, color: '#94a3b8' };
+
 const thL = { textAlign: 'left', padding: '8px 10px', fontWeight: 600 };
 const thR = { textAlign: 'right', padding: '8px 10px', fontWeight: 600 };
 const tdL = { textAlign: 'left', padding: '9px 10px' };
@@ -190,12 +194,35 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
   const [typeMode, setTypeMode] = useState('pool'); // 'pool' | 'story' | 'task' | 'bug'
   const upd = (setter, keyName) => v => { const n = parseFloat(v); if (Number.isFinite(n) && n > 0) { setter(n); localStorage.setItem(keyName, String(n)); } };
 
+  // Worklog-level data (fetched on demand). status: idle | loading | loaded | error
+  const [wl, setWl] = useState({ status: 'idle', byKey: null, error: null, errorsCount: 0, truncated: false });
+
   const planningHoursPerSP = hoursPerDay / spPerDay;
 
+  const worklog = wl.status === 'loaded' ? { byKey: wl.byKey } : null;
+
   const M = useMemo(
-    () => computeMetrics(tickets, today, typeMode, planningHoursPerSP),
-    [tickets, today, typeMode, planningHoursPerSP]
+    () => computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog),
+    // worklog is derived from wl.byKey/wl.status (both listed); referencing the object would break memoization
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tickets, today, typeMode, planningHoursPerSP, wl.byKey, wl.status]
   );
+
+  async function loadWorklogs() {
+    try {
+      setWl(s => ({ ...s, status: 'loading', error: null }));
+      const keys = M.sampleKeys || [];
+      const res = await jiraService.getWorklogs(keys);
+      const byKey = new Map();
+      for (const w of res.worklogs) {
+        if (!byKey.has(w.issueKey)) byKey.set(w.issueKey, []);
+        byKey.get(w.issueKey).push(w);
+      }
+      setWl({ status: 'loaded', byKey, error: null, errorsCount: res.errors?.length || 0, truncated: !!res.truncatedKeyList });
+    } catch (e) {
+      setWl(s => ({ ...s, status: 'error', error: e.message || String(e) }));
+    }
+  }
 
   const scopeLabel = [
     selectedSprint !== 'all' ? selectedSprint : 'All sprints',
@@ -235,22 +262,53 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
     </div>
   );
 
-  // ── Data-quality banners (always shown, above everything) ──
+  // ── Worklog-level load bar ──
+  const worklogBar = M.n > 0 && (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', background: wl.status === 'loaded' ? 'rgba(34,197,94,0.06)' : 'rgba(96,165,250,0.06)', border: `1px solid ${wl.status === 'loaded' ? 'rgba(34,197,94,0.28)' : 'rgba(96,165,250,0.28)'}`, borderRadius: 12, padding: '12px 18px', marginBottom: 16 }}>
+      <Microscope size={18} style={{ color: wl.status === 'loaded' ? '#22c55e' : '#60a5fa', flexShrink: 0 }} />
+      {wl.status === 'loaded' ? (
+        <>
+          <span style={{ fontSize: 12.5, color: '#e2e8f0' }}>
+            <strong>Worklog-level mode.</strong> {M.totalWorklogs} worklogs · {M.worklogCoverage}% of sampled tickets covered · attributed by author &amp; date.
+            {M.roundNumberBias !== null && <> Round numbers: <strong style={{ color: M.roundNumberBias > 50 ? '#fca5a5' : '#86efac' }}>{M.roundNumberBias}%</strong>.</>}
+            {wl.errorsCount > 0 && <span style={{ color: '#fcd34d' }}> {wl.errorsCount} ticket(s) failed to load.</span>}
+          </span>
+          <button onClick={loadWorklogs} style={btnGhost}>↻ Refresh</button>
+        </>
+      ) : wl.status === 'loading' ? (
+        <span style={{ fontSize: 12.5, color: '#93c5fd' }}>Fetching individual worklogs for {M.sampleKeys.length} tickets… this can take a few seconds.</span>
+      ) : (
+        <>
+          <span style={{ fontSize: 12.5, color: '#cbd5e1' }}>
+            Upgrade to <strong>worklog-level</strong> attribution: author &amp; per-date sprint windows, true carryover, and round-number bias. Fetches individual worklogs for {M.sampleKeys.length} sampled tickets.
+          </span>
+          <button onClick={loadWorklogs} style={btnPrimary}>🔬 Load worklog-level data</button>
+          {wl.status === 'error' && <span style={{ fontSize: 12, color: '#fca5a5' }}>Failed: {wl.error}</span>}
+        </>
+      )}
+    </div>
+  );
+
+  // ── Data-quality banners (mode-aware) ──
   const banners = (
     <>
-      {M.n > 0 && M.roundNumberBiasUnavailable && (
-        <Banner color="#6b7280" icon="ℹ">
-          <strong>Round-number bias check unavailable.</strong> It needs individual worklog durations (1h/4h/8h buckets), which aren't fetched yet — only aggregate time-per-ticket is. All logged-hours figures here are ticket-level totals; treat them as coarse.
+      {M.n > 0 && M.worklogMode && M.roundNumberBias > 50 && (
+        <Banner color="#f59e0b" icon={<AlertTriangle size={15} />}>
+          <strong>{M.roundNumberBias}% of worklogs are round numbers (1h/4h/8h/1d).</strong> Logged time is being estimated at entry, not measured. Treat every hours figure here as coarse — precision beyond ~half a day is illusory.
         </Banner>
       )}
       {M.n > 0 && M.carryoverRate > 25 && (
         <Banner color="#f59e0b" icon={<AlertTriangle size={15} />}>
-          <strong>{M.carryoverRate}% of sampled tickets span more than one sprint.</strong> Sprint attribution below uses each ticket's current sprint field (not per-worklog dates), so carryover work is credited to its latest sprint. Drift/backtest by sprint are approximate.
+          <strong>{M.carryoverRate}% of sampled tickets span more than one sprint.</strong> {M.worklogMode
+            ? 'Each ticket is credited to the sprint where most of its worklog time landed. Drift/backtest handle carryover from the actual worklog dates.'
+            : 'Sprint attribution uses each ticket’s current sprint field, so carryover work is credited to its latest sprint. Load worklog-level data for date-accurate attribution.'}
         </Banner>
       )}
-      <Banner color="#64748b" icon="ℹ">
-        Worklogs are attributed by each ticket's <strong>assignee and sprint field</strong>, not by individual worklog author/date (worklog-level data isn't fetched yet). Multi-person and carried-over tickets are approximated.
-      </Banner>
+      {M.n > 0 && !M.worklogMode && (
+        <Banner color="#64748b" icon="ℹ">
+          Ticket-level mode: worklogs attributed by each ticket’s <strong>assignee and sprint field</strong>, and round-number bias isn’t checked. Load worklog-level data above for author/date attribution.
+        </Banner>
+      )}
     </>
   );
 
@@ -259,6 +317,7 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
     return (
       <div>
         {controls}
+        {worklogBar}
         {banners}
         <Card style={{ opacity: 0.85, border: '1px dashed rgba(255,255,255,0.15)' }}>
           <CardHeader title="Story Point Estimation Quality" subtitle={`${scopeLabel} · ${typeLabel}`} />
@@ -284,6 +343,7 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
   return (
     <div>
       {controls}
+      {worklogBar}
       {banners}
 
       {/* Headline metrics */}
@@ -334,6 +394,32 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
 
       {/* Per-bucket table */}
       <BucketTable M={M} />
+
+      {/* Contributors (worklog-level author attribution) */}
+      {M.worklogMode && M.contributors.length > 0 && (
+        <Card>
+          <CardHeader title="Logged hours by contributor" subtitle="From worklog authors — corrects the multi-person misattribution of assignee-based views" right={<Users size={16} style={{ color: '#60a5fa' }} />} />
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 420 }}>
+              <thead>
+                <tr style={{ color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: 10 }}>
+                  <th style={thL}>Contributor</th><th style={thR}>Hours logged</th><th style={thR}>Worklogs</th><th style={thR}>Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {M.contributors.map((c, i) => (
+                  <tr key={c.name + i} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <td style={{ ...tdL, color: '#e2e8f0' }}>{c.name}</td>
+                    <td style={{ ...tdR, color: '#86efac', fontWeight: 600 }}>{f1(c.hours)}h</td>
+                    <td style={{ ...tdR, color: '#94a3b8' }}>{c.count}</td>
+                    <td style={{ ...tdR, color: '#94a3b8' }}>{c.share}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* B. Calibration drift */}
       <Card>
@@ -537,7 +623,10 @@ function BucketTable({ M }) {
 function WhatThisMeans({ M, gapPct, typeLabel }) {
   const lines = [];
   // 1. sample + coverage + flags
-  lines.push(`Sample: ${M.n} completed, pointed, time-logged ${typeLabel} tickets (${M.logCoverage}% log coverage${M.carryoverRate > 25 ? `, ${M.carryoverRate}% carried over` : ''}). Round-number bias isn't checked (needs worklog-level data).`);
+  const flagBits = M.worklogMode
+    ? `worklog-level: ${M.totalWorklogs} worklogs, ${M.roundNumberBias}% round numbers${M.carryoverRate > 25 ? `, ${M.carryoverRate}% carried over` : ''}`
+    : `ticket-level attribution; round-number bias not checked${M.carryoverRate > 25 ? `, ${M.carryoverRate}% carried over` : ''}`;
+  lines.push(`Sample: ${M.n} completed, pointed, time-logged ${typeLabel} tickets (${M.logCoverage}% log coverage). ${flagBits}.`);
   // 2. calibration gap (bias)
   const gapWord = Math.abs(gapPct) < 10 ? 'close to' : gapPct >= 0 ? 'above' : 'below';
   lines.push(`Observed rate: median ${f1(M.medianHoursPerSP)} h/SP (IQR ${f1(M.iqr[0])}–${f1(M.iqr[1])}). That is ${gapPct >= 0 ? '+' : ''}${pctI(gapPct)}% ${gapWord} your ${f1(M.planningHoursPerSP)} h/SP capacity constant. This is a calibration gap (bias), NOT an estimation error — it's fixed by changing one planning number, and says nothing about estimate quality.`);
@@ -578,8 +667,27 @@ function WhatThisMeans({ M, gapPct, typeLabel }) {
 }
 
 // ─── Metrics engine ───────────────────────────────────────────────────────────
-function computeMetrics(tickets, today, typeMode, planningHoursPerSP) {
+function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog) {
   const allow = new Set(ALLOWED_TYPES);
+  const wlByKey = worklog?.byKey || null;
+  const worklogMode = !!wlByKey;
+
+  // Sprint windows (name → {start,end}) for worklog-date attribution
+  const windows = [];
+  const seenWin = new Set();
+  for (const t of tickets) {
+    const nm = getSprint(t);
+    if (!nm || seenWin.has(nm)) continue;
+    const d = parseSprintDates(nm);
+    if (d) { windows.push({ name: nm, start: d.start, end: d.end }); seenWin.add(nm); }
+  }
+  const windowFor = date => {
+    const d = new Date(date);
+    if (isNaN(d)) return null;
+    const w = windows.find(x => d >= x.start && d <= x.end);
+    return w ? w.name : null;
+  };
+  const ROUND_SECS = new Set([3600, 14400, 28800]); // 1h, 4h, 8h/1d (default 8h workday)
 
   // Eligible = completed + pointed + allowed type (regardless of logging) — for coverage
   const eligible = tickets.filter(t => {
@@ -591,17 +699,46 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP) {
     return getSP(t) > 0;
   });
 
+  // Worklog-level aggregates (only populated in worklog mode)
+  let totalWorklogs = 0, roundCount = 0, coveredTickets = 0;
+  const contributorSec = {}, contributorCount = {};
+
   const sample = eligible
     .filter(t => getLoggedSec(t) > 0)
     .map(t => {
+      const key = getKey(t);
       const sp = getSP(t);
-      const hours = toHours(getLoggedSec(t));
       const raw = t._rawFields || {};
-      const sf = raw.customfield_10010 || raw.sprint;
+      let hours = toHours(getLoggedSec(t));
+      let sprint = getSprint(t) || 'No Sprint';
+      let carry;
+
+      if (worklogMode && wlByKey.has(key)) {
+        const wls = wlByKey.get(key);
+        coveredTickets += 1;
+        let sec = 0;
+        const perWin = {};
+        for (const w of wls) {
+          totalWorklogs += 1;
+          sec += w.seconds || 0;
+          if (ROUND_SECS.has(w.seconds)) roundCount += 1;
+          contributorSec[w.author] = (contributorSec[w.author] || 0) + (w.seconds || 0);
+          contributorCount[w.author] = (contributorCount[w.author] || 0) + 1;
+          const win = w.started ? windowFor(w.started) : null;
+          if (win) perWin[win] = (perWin[win] || 0) + (w.seconds || 0);
+        }
+        if (sec > 0) hours = sec / SEC_PER_HOUR; // trust summed worklogs over aggregate
+        const touched = Object.keys(perWin);
+        if (touched.length) sprint = touched.sort((a, b) => perWin[b] - perWin[a])[0];
+        carry = touched.length > 1;
+      } else {
+        const sf = raw.customfield_10010 || raw.sprint;
+        carry = Array.isArray(sf) && sf.length > 1;
+      }
+
       return {
-        key: getKey(t), summary: getSummary(t), assignee: getAssignee(t), project: getProject(t),
-        sprint: getSprint(t) || 'No Sprint', sp, hours, hoursPerSP: hours / sp,
-        carry: Array.isArray(sf) && sf.length > 1,
+        key, summary: getSummary(t), assignee: getAssignee(t), project: getProject(t),
+        sprint, sp, hours, hoursPerSP: hours / sp, carry,
       };
     });
 
@@ -609,8 +746,18 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP) {
   const eligibleN = eligible.length;
   const logCoverage = eligibleN > 0 ? Math.round((n / eligibleN) * 100) : 0;
   const carryoverRate = n > 0 ? Math.round((sample.filter(s => s.carry).length / n) * 100) : 0;
+  const roundNumberBias = worklogMode && totalWorklogs > 0 ? Math.round((roundCount / totalWorklogs) * 100) : null;
+  const worklogCoverage = worklogMode && n > 0 ? Math.round((coveredTickets / n) * 100) : 0;
+  const contributors = worklogMode
+    ? Object.keys(contributorSec)
+        .map(name => ({ name, hours: contributorSec[name] / SEC_PER_HOUR, count: contributorCount[name] }))
+        .sort((a, b) => b.hours - a.hours)
+        .slice(0, 15)
+        .map(c => ({ ...c, share: totalWorklogs > 0 ? Math.round((c.count / totalWorklogs) * 100) : 0 }))
+    : [];
 
-  const base = { n, eligibleN, logCoverage, carryoverRate, planningHoursPerSP, roundNumberBiasUnavailable: true };
+  const sampleKeys = sample.map(s => s.key);
+  const base = { n, eligibleN, logCoverage, carryoverRate, planningHoursPerSP, worklogMode, roundNumberBias, totalWorklogs, worklogCoverage, contributors, sampleKeys };
 
   // Gates
   if (n < 30) {

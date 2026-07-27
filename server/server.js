@@ -453,6 +453,74 @@ app.get('/api/jira/sprints/:boardId', async (req, res) => {
   }
 });
 
+// Small promise-pool concurrency limiter (avoids p-limit ESM/CJS friction)
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (idx < items.length) {
+      const i = idx++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+// Fetch individual worklogs (author + started + duration) for a set of issue keys.
+// Used by the Estimation Quality panel for worklog-level attribution & round-number bias.
+app.get('/api/jira/worklogs', async (req, res) => {
+  try {
+    let keys = String(req.query.keys || '').split(',').map(k => k.trim()).filter(Boolean);
+    if (!keys.length) {
+      return res.status(400).json({ error: 'keys query param required (comma-separated issue keys)' });
+    }
+    const MAX_KEYS = 800;
+    const truncatedKeyList = keys.length > MAX_KEYS;
+    if (truncatedKeyList) keys = keys.slice(0, MAX_KEYS);
+
+    const auth = Buffer.from(`${JIRA_CONFIG.email}:${JIRA_CONFIG.apiToken}`).toString('base64');
+    const headers = { Authorization: `Basic ${auth}`, Accept: 'application/json' };
+
+    const worklogs = [];
+    const errors = [];
+
+    await mapLimit(keys, 6, async (key) => {
+      try {
+        let startAt = 0;
+        const pageSize = 1000;
+        let total = Infinity;
+        while (startAt < total) {
+          const r = await axios.get(
+            `${JIRA_CONFIG.baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}/worklog`,
+            { headers, params: { startAt, maxResults: pageSize }, timeout: 30000 }
+          );
+          const batch = r.data.worklogs || [];
+          total = Number.isFinite(r.data.total) ? r.data.total : batch.length;
+          for (const w of batch) {
+            worklogs.push({
+              issueKey: key,
+              author: w.author?.displayName || w.author?.name || 'Unknown',
+              authorAccountId: w.author?.accountId || null,
+              started: w.started || null,
+              seconds: w.timeSpentSeconds || 0,
+            });
+          }
+          startAt += pageSize;
+          if (!batch.length) break;
+        }
+      } catch (e) {
+        errors.push({ key, message: e.response?.status ? `HTTP ${e.response.status}` : e.message });
+      }
+    });
+
+    res.json({ worklogs, count: worklogs.length, keysRequested: keys.length, truncatedKeyList, errors });
+  } catch (error) {
+    console.error('Error fetching worklogs:', error.message);
+    res.status(500).json({ error: 'Failed to fetch worklogs', message: error.message });
+  }
+});
+
 // Serve React app for all non-API routes (must be after all API routes)
 if (hasDist) {
   app.get('*', (req, res) => {
