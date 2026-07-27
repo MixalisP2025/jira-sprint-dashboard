@@ -4,7 +4,7 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, Legend,
 } from 'recharts';
-import { Clock, Timer, Gauge, Layers } from 'lucide-react';
+import { Clock, Timer, Gauge, Layers, CalendarDays } from 'lucide-react';
 
 // ─── Jira field accessors ─────────────────────────────────────────────────────
 const getStatus   = t => t['Status'] || '';
@@ -24,6 +24,11 @@ const getRemainSec   = t => parseFloat(t['Remaining Estimate']) || 0;
 const SEC_PER_HOUR = 3600;
 const toHours = sec => (sec || 0) / SEC_PER_HOUR;
 const fmtHnum = sec => Math.round(toHours(sec) * 10) / 10;
+
+// Story-point ⇆ effort conversion (user-configurable, sensible defaults)
+const DEFAULT_SP_PER_DAY = 2;    // 2 story points ≈ 1 working day
+const DEFAULT_HOURS_PER_DAY = 8; // 1 working day ≈ 8 hours
+const round1 = n => Math.round((n || 0) * 10) / 10;
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
 const normStatus = (s = '') => s.toLowerCase().trim();
@@ -116,6 +121,21 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
   const today = useMemo(() => new Date(), []);
   const [expandTickets, setExpandTickets] = useState(false);
 
+  // SP→days conversion, persisted so the PM's chosen ratio sticks across sessions
+  const [spPerDay, setSpPerDay] = useState(() => {
+    const v = parseFloat(localStorage.getItem('tt_spPerDay'));
+    return Number.isFinite(v) && v > 0 ? v : DEFAULT_SP_PER_DAY;
+  });
+  const [hoursPerDay, setHoursPerDay] = useState(() => {
+    const v = parseFloat(localStorage.getItem('tt_hoursPerDay'));
+    return Number.isFinite(v) && v > 0 ? v : DEFAULT_HOURS_PER_DAY;
+  });
+  const updateSpPerDay = v => { const n = parseFloat(v); if (Number.isFinite(n) && n > 0) { setSpPerDay(n); localStorage.setItem('tt_spPerDay', String(n)); } };
+  const updateHoursPerDay = v => { const n = parseFloat(v); if (Number.isFinite(n) && n > 0) { setHoursPerDay(n); localStorage.setItem('tt_hoursPerDay', String(n)); } };
+
+  const spToDays = sp => sp / spPerDay;
+  const hoursToDays = h => h / hoursPerDay;
+
   // Per-sprint aggregation across the current filter scope
   const { sprintRows, totals } = useMemo(() => {
     const map = {};
@@ -200,6 +220,11 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
   // Apples-to-apples: estimate vs time logged on the SAME estimated tickets only
   const estVariancePct = totalEstH > 0 ? Math.round(((totalLoggedOnEstH - totalEstH) / totalEstH) * 100) : null;
 
+  // Story points expressed as working days, and logged time as working days
+  const plannedDays = round1(spToDays(totals.sp));               // effort the points imply
+  const loggedDays  = round1(hoursToDays(toHours(totals.loggedSec))); // effort actually logged
+  const daysVariancePct = plannedDays > 0 ? Math.round(((loggedDays - plannedDays) / plannedDays) * 100) : null;
+
   // Chart data — one entry per sprint (SP vs logged hours + estimate)
   const chartData = sprintRows
     .filter(r => r.sp > 0 || r.loggedH > 0)
@@ -278,7 +303,10 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
     const estClause = estVariancePct !== null
       ? ` On the ${estCoverage}% of tickets that carry an original estimate, actual logged time runs ${estVariancePct >= 0 ? '+' : ''}${estVariancePct}% against that estimate.`
       : ' Almost no tickets carry an original estimate, so estimate accuracy can\'t be judged.';
-    narrative = `Across the current view, ${totals.sp} SP consumed ${totalLoggedH}h of logged work — about ${avgHoursPerSP}h per story point. ${logCoverage}% of tickets have logged time.${estClause}`;
+    const daysClause = daysVariancePct !== null
+      ? ` At ${spPerDay} SP/day and ${hoursPerDay}h/day, the points imply ~${plannedDays} working days of effort, while ${loggedDays} days were actually logged (${daysVariancePct >= 0 ? '+' : ''}${daysVariancePct}%).`
+      : '';
+    narrative = `Across the current view, ${totals.sp} SP consumed ${totalLoggedH}h of logged work — about ${avgHoursPerSP}h per story point. ${logCoverage}% of tickets have logged time.${daysClause}${estClause}`;
     advice = estVariancePct === null
       ? `Use the ~${avgHoursPerSP}h/SP actual figure as your planning baseline, and start capturing original estimates so future sprints can be checked for estimate accuracy.`
       : wide
@@ -307,12 +335,30 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
 
   return (
     <div>
+      {/* Conversion control */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '12px 18px', marginBottom: 16 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: '#cbd5e1' }}>⚙ Effort conversion</span>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94a3b8' }}>
+          <input type="number" min="0.1" step="0.5" value={spPerDay} onChange={e => updateSpPerDay(e.target.value)}
+            style={{ width: 60, background: '#0f172a', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#e2e8f0', padding: '5px 8px', fontSize: 13 }} />
+          story points = <strong style={{ color: '#e2e8f0' }}>1 day</strong>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94a3b8' }}>
+          <strong style={{ color: '#e2e8f0' }}>1 day</strong> =
+          <input type="number" min="0.5" step="0.5" value={hoursPerDay} onChange={e => updateHoursPerDay(e.target.value)}
+            style={{ width: 60, background: '#0f172a', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#e2e8f0', padding: '5px 8px', fontSize: 13 }} />
+          hours
+        </label>
+        <span style={{ fontSize: 11, color: '#6b7280' }}>Used to express points and logged time as working days.</span>
+      </div>
+
       {/* KPI summary */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
-        <KpiTile icon={Layers} label="Story Points"      value={Math.round(totals.sp * 10) / 10} sub={`${totals.tickets} tickets in view`} color="#a855f7" />
-        <KpiTile icon={Clock}  label="Time Logged"       value={`${totalLoggedH}h`} sub={`${logCoverage}% of tickets logged time`} color="#22c55e" />
+        <KpiTile icon={Layers} label="Story Points"      value={Math.round(totals.sp * 10) / 10} sub={`${totals.tickets} tickets · ${plannedDays}d planned`} color="#a855f7" />
+        <KpiTile icon={CalendarDays} label="Planned Days (SP)" value={`${plannedDays}d`} sub={`${totals.sp} SP ÷ ${spPerDay}/day`} color="#c084fc" />
+        <KpiTile icon={Clock}  label="Time Logged"       value={`${totalLoggedH}h`} sub={`${loggedDays}d · ${logCoverage}% of tickets logged`} color="#22c55e" />
         <KpiTile icon={Timer}  label="Original Estimate" value={`${totalEstH}h`} sub={estVariancePct !== null ? `actuals ${estVariancePct >= 0 ? '+' : ''}${estVariancePct}% vs est · ${estCoverage}% have est` : 'few/no estimates set'} color="#f59e0b" />
-        <KpiTile icon={Gauge}  label="Hours / Story Point" value={avgHoursPerSP ? `${avgHoursPerSP}h` : '—'} sub="actual effort per SP" color="#60a5fa" />
+        <KpiTile icon={Gauge}  label="Logged vs Planned" value={daysVariancePct !== null ? `${daysVariancePct >= 0 ? '+' : ''}${daysVariancePct}%` : '—'} sub={`${loggedDays}d logged vs ${plannedDays}d planned`} color={daysVariancePct !== null && Math.abs(daysVariancePct) > 25 ? '#fca5a5' : '#60a5fa'} />
       </div>
 
       {/* SP vs Time chart */}
@@ -352,10 +398,10 @@ export default function TimeTrackingTab({ tickets = [], selectedSprint = 'all', 
       </Card>
 
       {/* Per-sprint table: active + past */}
-      <SprintTable title="Active Sprints" subtitle="Sprints in progress today" rows={activeRows} highlight />
-      <SprintTable title="Past Sprints" subtitle="Completed sprints — historical estimate accuracy" rows={pastRows} />
+      <SprintTable title="Active Sprints" subtitle="Sprints in progress today" rows={activeRows} highlight spPerDay={spPerDay} hoursPerDay={hoursPerDay} />
+      <SprintTable title="Past Sprints" subtitle="Completed sprints — historical estimate accuracy" rows={pastRows} spPerDay={spPerDay} hoursPerDay={hoursPerDay} />
       {activeRows.length === 0 && pastRows.length === 0 && (
-        <SprintTable title="All Sprints" subtitle="Sprint dates could not be parsed to classify active vs past" rows={sprintRows} />
+        <SprintTable title="All Sprints" subtitle="Sprint dates could not be parsed to classify active vs past" rows={sprintRows} spPerDay={spPerDay} hoursPerDay={hoursPerDay} />
       )}
 
       {/* Per-assignee breakdown */}
@@ -441,20 +487,22 @@ const tdL = { textAlign: 'left', padding: '9px 10px' };
 const tdR = { textAlign: 'right', padding: '9px 10px', fontVariantNumeric: 'tabular-nums' };
 
 // ─── Per-sprint comparison table ──────────────────────────────────────────────
-function SprintTable({ title, subtitle, rows, highlight = false }) {
+function SprintTable({ title, subtitle, rows, highlight = false, spPerDay = DEFAULT_SP_PER_DAY, hoursPerDay = DEFAULT_HOURS_PER_DAY }) {
   if (!rows || rows.length === 0) return null;
   return (
     <Card style={highlight ? { border: '1px solid rgba(34,197,94,0.25)', background: 'rgba(34,197,94,0.04)' } : {}}>
       <CardHeader title={title} subtitle={subtitle} />
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 760 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 920 }}>
           <thead>
             <tr style={{ color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: 10 }}>
               <th style={thL}>Sprint</th>
               <th style={thR}>Tickets</th>
               <th style={thR}>SP</th>
+              <th style={thR}>SP → Days</th>
               <th style={thR}>Est</th>
               <th style={thR}>Logged</th>
+              <th style={thR}>Logged Days</th>
               <th style={thR}>Remaining</th>
               <th style={thR}>h / SP</th>
               <th style={thR}>Logged vs Est</th>
@@ -464,6 +512,8 @@ function SprintTable({ title, subtitle, rows, highlight = false }) {
           <tbody>
             {rows.map((r, i) => {
               const meta = STATE_META[r.state] || STATE_META.unknown;
+              const spDays = spPerDay > 0 ? round1(r.sp / spPerDay) : 0;
+              const loggedDays = hoursPerDay > 0 ? round1(r.loggedH / hoursPerDay) : 0;
               return (
                 <tr key={r.sprint + i} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                   <td style={{ ...tdL }}>
@@ -472,8 +522,10 @@ function SprintTable({ title, subtitle, rows, highlight = false }) {
                   </td>
                   <td style={{ ...tdR, color: '#94a3b8' }}>{r.tickets}</td>
                   <td style={{ ...tdR, color: '#c4b5fd', fontWeight: 600 }}>{Math.round(r.sp * 10) / 10}</td>
+                  <td style={{ ...tdR, color: '#c084fc', fontWeight: 600 }}>{spDays > 0 ? `${spDays}d` : '—'}</td>
                   <td style={{ ...tdR, color: '#94a3b8' }}>{r.estH > 0 ? `${r.estH}h` : '—'}</td>
                   <td style={{ ...tdR, color: '#86efac', fontWeight: 600 }}>{r.loggedH > 0 ? `${r.loggedH}h` : '—'}</td>
+                  <td style={{ ...tdR, color: '#86efac' }}>{loggedDays > 0 ? `${loggedDays}d` : '—'}</td>
                   <td style={{ ...tdR, color: '#94a3b8' }}>{r.remainH > 0 ? `${r.remainH}h` : '—'}</td>
                   <td style={{ ...tdR, color: '#e2e8f0' }}>{r.hoursPerSP > 0 ? `${r.hoursPerSP}h` : '—'}</td>
                   <td style={{ ...tdR }}>
