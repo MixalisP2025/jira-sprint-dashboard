@@ -52,6 +52,10 @@ export const JIRA_CONFIG = {
     // Time tracking
     'timeoriginalestimate',
     'aggregatetimeoriginalestimate', // Σ Original Estimate
+    'timespent',                     // Time logged / worklog (actual)
+    'aggregatetimespent',            // Σ Time logged (incl. sub-tasks)
+    'timeestimate',                  // Remaining estimate
+    'timetracking',                  // Full time-tracking object (fallback)
     
     // Custom fields - CORRECTED TO YOUR JIRA INSTANCE
     'customfield_10001', // Team (was 10007)

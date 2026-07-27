@@ -14,6 +14,7 @@ import FilterPanel from './components/FilterPanel';
 import JiraRefreshButton from './components/JiraRefreshButton';
 import ServerStatus from './components/ServerStatus';
 import SprintHealthTab from './components/SprintHealthTab';
+import TimeTrackingTab from './components/TimeTrackingTab';
 import AllocationTab from './components/AllocationTab';
 import CSRTicketsTab from './components/CSRTicketsTab';
 import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
@@ -1395,6 +1396,7 @@ const SprintDashboard = () => {
     risks: { icon: Shield, label: 'Risk Register' },
     capacity: { icon: Users, label: 'Capacity' },
     health: { icon: TrendingUp, label: 'Health' },
+    time: { icon: Clock, label: 'Time Tracking' },
     sprints: { icon: Target, label: 'Sprints' },
     projects: { icon: Briefcase, label: 'Projects' },
     timeline: { icon: BarChart3, label: 'Timeline' },
@@ -1759,6 +1761,16 @@ const SprintDashboard = () => {
 
         {activeTab === 'health' && (
           <SprintHealthTab
+            tickets={filteredData}
+            sprints={sprints}
+            selectedSprint={selectedSprint}
+            selectedAssignee={selectedAssignee}
+            selectedProject={selectedProject}
+          />
+        )}
+
+        {activeTab === 'time' && (
+          <TimeTrackingTab
             tickets={filteredData}
             sprints={sprints}
             selectedSprint={selectedSprint}
@@ -3810,6 +3822,9 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
       'Assignee': ticket['Assignee'] || ticket['D'] || 'Unassigned',
       'Status': ticket['Status'],
       'Story Points': parseFloat(ticket['Story Points']) || parseFloat(ticket['Story points']) || parseFloat(ticket['Custom field (Story Points)']) || 0,
+      'Original Estimate (h)': Math.round(((parseFloat(ticket['Original Estimate']) || 0) / 3600) * 10) / 10,
+      'Time Logged (h)': Math.round(((parseFloat(ticket['Time Spent']) || 0) / 3600) * 10) / 10,
+      'Remaining Estimate (h)': Math.round(((parseFloat(ticket['Remaining Estimate']) || 0) / 3600) * 10) / 10,
       'Sprint': ticket['Sprint'] || ticket['G'] || '',
       'Priority': ticket['Priority'] || '',
       'Created': ticket['Created'] || '',
@@ -4066,6 +4081,8 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-center">Due Date</th>
                 <th className="px-4 py-3 text-center">SP</th>
+                <th className="px-4 py-3 text-center">Est (h)</th>
+                <th className="px-4 py-3 text-center">Logged (h)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
@@ -4078,6 +4095,8 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                          parseFloat(ticket['Custom field (Story Points)']) ||
                          0;
                   const dueDate = String(ticket['Due Date'] || ticket['Due date'] || '').trim();
+                  const estH = Math.round(((parseFloat(ticket['Original Estimate']) || 0) / 3600) * 10) / 10;
+                  const loggedH = Math.round(((parseFloat(ticket['Time Spent']) || 0) / 3600) * 10) / 10;
                   return (
                     <tr key={idx} className={`transition-colors hover:bg-slate-50 ${isFlagged ? 'bg-orange-50' : 'bg-white'}`}>
                       <td className="px-3 py-3 text-center">
@@ -4124,12 +4143,18 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                       <td className="px-4 py-3 text-center font-mono font-bold text-slate-700">
                         {sp > 0 ? sp : '-'}
                       </td>
+                      <td className="px-4 py-3 text-center font-mono text-amber-700">
+                        {estH > 0 ? estH : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-center font-mono font-semibold text-green-700">
+                        {loggedH > 0 ? loggedH : '-'}
+                      </td>
                     </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan="9" className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan="11" className="px-4 py-8 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center">
                       <span className="text-3xl mb-2">{showFlaggedOnly ? '🚩' : '🔍'}</span>
                       <span className="font-medium">{showFlaggedOnly ? 'No flagged tickets' : 'No tickets found'}</span>

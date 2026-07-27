@@ -471,9 +471,19 @@ export const jiraService = {
         'Escalate to 2nd Level Support': fields.customfield_10352 || '', // CORRECTED: was 10012
         'Awaiting Versioning': fields.customfield_10481 || '', // CORRECTED: was 10013
         'Allocation status': fields.customfield_10515 || '', // CORRECTED: was 10014
-        'Original Estimate': fields.timeoriginalestimate || 0,
+        'Original Estimate': toNumber(fields.timeoriginalestimate)
+          ?? toNumber(fields.timetracking?.originalEstimateSeconds) ?? 0,
         'Σ Original Estimate': fields.aggregatetimeoriginalestimate || 0,
-        
+
+        // Time tracking (all values in SECONDS, as Jira returns them)
+        // Prefer explicit fields, fall back to the timetracking object if present.
+        'Time Spent': toNumber(fields.timespent)
+          ?? toNumber(fields.timetracking?.timeSpentSeconds) ?? 0,
+        'Σ Time Spent': toNumber(fields.aggregatetimespent)
+          ?? toNumber(fields.timespent) ?? 0,
+        'Remaining Estimate': toNumber(fields.timeestimate)
+          ?? toNumber(fields.timetracking?.remainingEstimateSeconds) ?? 0,
+
         // Raw fields object for debugging
         _rawFields: fields
       };
