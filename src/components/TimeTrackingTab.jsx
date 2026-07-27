@@ -104,6 +104,40 @@ function keyJitter(key) {
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
   return ((Math.abs(h) % 1000) / 1000 - 0.5) * 0.5;
 }
+// Business (Mon–Fri) days between two dates, inclusive of both ends.
+function businessDays(start, end) {
+  if (!start || !end) return 0;
+  const a = new Date(start), b = new Date(end);
+  a.setHours(0, 0, 0, 0); b.setHours(0, 0, 0, 0);
+  if (b < a) return 0;
+  let count = 0;
+  const cur = new Date(a);
+  while (cur <= b) { const d = cur.getDay(); if (d !== 0 && d !== 6) count++; cur.setDate(cur.getDate() + 1); }
+  return count;
+}
+// Standard normal CDF (Abramowitz & Stegun 7.1.26)
+function normCdf(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989422804014327 * Math.exp(-z * z / 2);
+  const p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  return z >= 0 ? 1 - p : p;
+}
+// Mann–Kendall trend test on an ordered series → {S, z, p, trending, direction}
+function mannKendall(values) {
+  const nn = values.length;
+  if (nn < 4) return { S: 0, z: 0, p: 1, trending: false, direction: 0 };
+  let S = 0;
+  for (let i = 0; i < nn - 1; i++) for (let j = i + 1; j < nn; j++) S += Math.sign(values[j] - values[i]);
+  const varS = nn * (nn - 1) * (2 * nn + 5) / 18;
+  const z = S > 0 ? (S - 1) / Math.sqrt(varS) : S < 0 ? (S + 1) / Math.sqrt(varS) : 0;
+  const p = 2 * (1 - normCdf(Math.abs(z)));
+  return { S, z, p, trending: p < 0.10, direction: Math.sign(S) };
+}
+// Guess whether the SP field is a relative scale or day-denominated ideal-days
+function detectScaleType(spValues) {
+  return spValues.some(v => v > 0 && v < 1) ? 'ideal_days' : 'relative';
+}
+const ROUND_WORKLOG_SECS = new Set([3600, 14400, 28800]); // 1h / 4h / 8h (=1d default)
 
 // ─── Sprint date parsing ──────────────────────────────────────────────────────
 function parseSprintDates(name) {
@@ -199,8 +233,17 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
     return [3, 6, 12].includes(v) ? v : 6;
   });
   const [preview, setPreview] = useState(false); // dev-only: render metrics below threshold
+  // Scale semantics (B): 'relative' (Fibonacci etc.) vs 'ideal_days' (SP is day-denominated)
+  const [scaleType, setScaleType] = useState(() => localStorage.getItem('tt_scaleType') || 'auto');
+  const [hoursPerIdealDay, setHoursPerIdealDay] = useState(() => {
+    const v = parseFloat(localStorage.getItem('tt_hoursPerIdealDay'));
+    return Number.isFinite(v) && v > 0 ? v : 8;
+  });
+  const [missFloorH, setMissFloorH] = useState(2);   // E: absolute-error floor for the misses list
+  const [missSort, setMissSort] = useState('abs');   // 'abs' | 'ratio'
   const upd = (setter, keyName) => v => { const n = parseFloat(v); if (Number.isFinite(n) && n > 0) { setter(n); localStorage.setItem(keyName, String(n)); } };
   const setWindow = n => { setWindowN(n); localStorage.setItem('tt_windowN', String(n)); };
+  const setScale = v => { setScaleType(v); localStorage.setItem('tt_scaleType', v); };
 
   // Worklog-level data (fetched on demand). status: idle | loading | loaded | error
   const [wl, setWl] = useState({ status: 'idle', byKey: null, error: null, errorsCount: 0, truncated: false });
@@ -215,12 +258,14 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
     return true;
   }), [tickets, selectedAssignee, selectedProject]);
 
+  const cfg = { spPerDay, hoursPerDay, planningHoursPerSP, scaleType, hoursPerIdealDay };
   const M = useMemo(
-    () => computeMetrics(scoped, today, typeMode, planningHoursPerSP, worklog, windowN, preview && isDev),
-    // worklog is derived from wl.byKey/wl.status (both listed); referencing the object would break memoization
+    () => computeMetrics(scoped, today, typeMode, cfg, worklog, windowN, preview && isDev),
+    // worklog derived from wl.byKey/wl.status; cfg is a fresh object each render so its primitives are listed instead
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scoped, today, typeMode, planningHoursPerSP, wl.byKey, wl.status, windowN, preview, isDev]
+    [scoped, today, typeMode, spPerDay, hoursPerDay, scaleType, hoursPerIdealDay, wl.byKey, wl.status, windowN, preview, isDev]
   );
+  const effScaleType = M.scaleType; // resolved (auto → detected)
 
   async function loadWorklogs() {
     try {
@@ -288,12 +333,36 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
         h/day
       </label>
       <span style={{ fontSize: 12, color: '#e2e8f0' }}>= <strong>{f1(planningHoursPerSP)} h/SP</strong> planning constant</span>
+      <span style={{ width: 1, height: 22, background: 'rgba(255,255,255,0.12)' }} />
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8' }} title="Confirm how the SP field is denominated — do not leave on a wrong guess">
+        Scale
+        <select value={scaleType} onChange={e => setScale(e.target.value)}
+          style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#e2e8f0', padding: '5px 8px', fontSize: 12 }}>
+          <option value="auto">Auto — detected: {M.detectedScale === 'ideal_days' ? 'ideal-days' : 'relative'}</option>
+          <option value="relative">Relative (Fibonacci)</option>
+          <option value="ideal_days">Ideal-days</option>
+        </select>
+      </label>
+      {effScaleType === 'ideal_days' && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#94a3b8' }}>
+          <input type="number" min="0.5" step="0.5" value={hoursPerIdealDay} onChange={e => upd(setHoursPerIdealDay, 'tt_hoursPerIdealDay')(e.target.value)}
+            style={{ width: 56, background: '#0f172a', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#e2e8f0', padding: '5px 8px', fontSize: 13 }} />
+          h/ideal-day
+        </label>
+      )}
     </div>
+  );
+
+  // B3/B4 — contradiction between the capacity constant and a day-denominated scale
+  const scaleContradiction = effScaleType === 'ideal_days' && Math.abs(planningHoursPerSP - hoursPerIdealDay) / hoursPerIdealDay > 0.15 && (
+    <Banner color="#f97316" icon={<AlertTriangle size={15} />}>
+      <strong>Config contradiction.</strong> The SP field is set to <em>ideal-days</em> (1 SP ≈ {f1(hoursPerIdealDay)}h of ideal work), but the capacity constant is <strong>{f1(planningHoursPerSP)} h/SP</strong> ({f1(spPerDay)} SP/day × {f1(hoursPerDay)} h/day). One SP can't be both a full day and {f1(planningHoursPerSP)}h. Confirm the scale with the team that set it before trusting either number.
+    </Banner>
   );
 
   const scopeNote = (
     <div style={{ fontSize: 11.5, color: '#6b7280', margin: '0 2px 14px' }}>
-      Scope: <strong style={{ color: '#94a3b8' }}>last {windowN} completed sprints</strong> (ignores the sprint filter), tickets attributed by <strong style={{ color: '#94a3b8' }}>resolution date</strong>. Estimation quality is a trailing property of the team's practice, so it's measured across sprints, not within one.
+      Scope: <strong style={{ color: '#94a3b8' }}>last {windowN} completed sprints</strong> (ignores the sprint filter), tickets attributed by <strong style={{ color: '#94a3b8' }}>resolution date</strong>, {effScaleType === 'ideal_days' ? 'ideal-days scale' : 'relative scale'}. {M.worklogMode ? <>Tickets filtered by <strong style={{ color: '#94a3b8' }}>assignee</strong>; hours attributed by <strong style={{ color: '#94a3b8' }}>worklog author</strong>.</> : 'Ticket-level hours (assignee).'} Estimation quality is a trailing property of practice, measured across sprints, not within one.
     </div>
   );
 
@@ -360,6 +429,7 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
         {scopeNote}
         {worklogBar}
         {banners}
+        {scaleContradiction}
         <AccumulationView M={M} windowN={windowN} typeLabel={typeLabel} isDev={isDev} preview={preview} setPreview={setPreview} />
       </div>
     );
@@ -373,6 +443,7 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
         {scopeNote}
         {worklogBar}
         {banners}
+        {scaleContradiction}
         <Card style={{ border: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.05)' }}>
           <CardHeader title="Story Point Estimation Quality" subtitle={`${scopeLabel} · ${typeLabel}`} />
           <div style={{ textAlign: 'center', padding: '24px 12px' }}>
@@ -390,7 +461,6 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
     );
   }
 
-  const gapPct = M.planningHoursPerSP > 0 ? (M.medianHoursPerSP / M.planningHoursPerSP - 1) * 100 : null;
   const discColor = M.discrimination >= 0.7 ? '#22c55e' : M.discrimination >= 0.4 ? '#f59e0b' : '#ef4444';
   const spreadColor = M.spreadFactor < 1.5 ? '#22c55e' : M.spreadFactor <= 2.0 ? '#f59e0b' : '#ef4444';
 
@@ -400,6 +470,7 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
       {scopeNote}
       {worklogBar}
       {banners}
+        {scaleContradiction}
 
       {M.notReliable && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
@@ -408,23 +479,65 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
         </div>
       )}
 
+      {/* A1 — logging completeness suppression banner */}
+      {M.suppressAbsolute && (
+        <Banner color="#ef4444" icon={<AlertTriangle size={15} />}>
+          <strong>Worklogs capture only {pctI(M.loggingCompleteness * 100)}% of working time{M.allocationAssumed ? ' (assuming full allocation — likely lower)' : ''}.</strong> Absolute-hour conclusions are suppressed: no h/SP capacity recommendation, and MdAPE is not an accuracy claim. Use <strong>throughput</strong> (below) for capacity planning. The rank-based findings — discrimination, monotonicity, bucket overlap — are unaffected by uniform under-logging and remain valid.
+        </Banner>
+      )}
+
       {/* Headline metrics */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
         <KpiTile icon={Layers} label="Sample" value={`n=${M.n}`} sub={`completed, pointed, time-logged · ${M.logCoverage}% coverage`} color="#a855f7" />
-        <KpiTile icon={Gauge} label="Median h / SP" value={`${f1(M.medianHoursPerSP)}h`} sub={`IQR ${f1(M.iqr[0])}–${f1(M.iqr[1])}h · ${ciTxt(M.medianCI, 'h')}`} color="#60a5fa" />
+        <KpiTile icon={Activity} label="Logging completeness" value={M.loggingCompleteness !== null ? `${pctI(M.loggingCompleteness * 100)}%` : '—'} sub={M.allocationAssumed ? 'assumes full allocation — verify' : 'of available working time'} color={M.suppressAbsolute ? '#ef4444' : '#22c55e'} />
+        <KpiTile icon={Gauge} label="Throughput" value={M.deliveredSPPerPersonDay ? `${f2(M.deliveredSPPerPersonDay)} SP/pd` : '—'} sub={M.throughputMultiple ? `assumption ${f1(M.throughputMultiple)}× observed · implies ${f1(M.impliedCapacityHoursPerSP)} h/SP` : 'completed SP per person-day'} color="#38bdf8" />
+        <KpiTile icon={Gauge} label="Median h / SP" value={`${f1(M.medianHoursPerSP)}h`} sub={M.suppressAbsolute ? `recorded, not effort · IQR ${f1(M.iqr[0])}–${f1(M.iqr[1])}` : `IQR ${f1(M.iqr[0])}–${f1(M.iqr[1])}h · ${ciTxt(M.medianCI, 'h')}`} color="#60a5fa" />
         <KpiTile icon={Activity} label="Spread factor" value={`×${f1(M.spreadFactor)}`} sub={`typical ticket within this factor · ${ciTxt(M.spreadCI)}`} color={spreadColor} />
         <KpiTile icon={Target} label="Discrimination" value={f2(M.discrimination) ?? '—'} sub={`SP↔hours rank corr · ${ciTxt(M.discriminationCI)}`} color={discColor} />
         <KpiTile icon={Gauge} label="Hit rate (±50%)" value={`${pctI(M.hitRate)}%`} sub={`within ±50% of predicted · ${ciTxt(M.hitRateCI)}`} color="#22c55e" />
-        <KpiTile icon={Activity} label="MdAPE" value={`${pctI(M.mdape)}%`} sub={`median abs. % error (in-sample) · ${ciTxt(M.mdapeCI)}`} color="#f59e0b" />
+        <KpiTile icon={Activity} label="MdAPE (ticket-level)" value={`${pctI(M.mdape)}%`} sub={M.suppressAbsolute ? 'not an accuracy claim (under-logged)' : `in-sample · ${ciTxt(M.mdapeCI)}`} color="#f59e0b" />
+        {M.estimateRatio && (
+          <KpiTile icon={Target} label="Estimate ratio" value={`×${f1(M.estimateRatio.median)}`} sub={`logged ÷ (SP × ${f1(M.hoursPerIdealDay)}h ideal-day) · spread ×${f1(M.estimateRatio.spread)}`} color="#c084fc" />
+        )}
       </div>
 
-      <WhatThisMeans M={M} gapPct={gapPct} typeLabel={typeLabel} />
+      <WhatThisMeans M={M} typeLabel={typeLabel} />
+
+      {/* A2. Throughput — the capacity metric (logging-immune) */}
+      {M.throughputRows.length > 0 && (
+        <Card>
+          <CardHeader
+            title="Throughput — completed SP per person-day"
+            subtitle={`Logging-immune capacity signal (completed points ÷ calendar person-days). ${M.allocationAssumed ? 'Assumes full allocation — verify against the Allocation tab.' : ''} Blue line = your ${f1(M.spPerDay)} SP/day assumption.`}
+            right={
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ color: '#6b7280', fontSize: 12 }}>Observed</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: '#38bdf8' }}>{f2(M.deliveredSPPerPersonDay)} SP/pd</div>
+                {M.throughputMultiple && <div style={{ fontSize: 11, color: M.throughputMultiple > 1.3 ? '#fca5a5' : '#94a3b8' }}>assumption {f1(M.throughputMultiple)}× observed</div>}
+              </div>
+            }
+          />
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={M.throughputRows} margin={{ top: 8, right: 12, left: -20, bottom: 0 }}>
+              <CartesianGrid vertical={false} stroke="rgba(255,255,255,0.05)" />
+              <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+              <Tooltip {...TOOLTIP_STYLE} formatter={(v, n) => [`${f2(v)} SP/pd`, n]} labelFormatter={l => l} />
+              <ReferenceLine y={M.spPerDay} stroke="#3b82f6" strokeDasharray="5 3" label={{ value: `assumption ${f1(M.spPerDay)}`, fill: '#60a5fa', fontSize: 10, position: 'right' }} />
+              <Bar dataKey="deliveredSPPerPersonDay" name="delivered SP/person-day" radius={[3, 3, 0, 0]} maxBarSize={40} fill="#38bdf8" fillOpacity={0.85} />
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: 11.5, color: '#6b7280', marginTop: 10 }}>
+            This is the number the Capacity tab should consume — it needs only completed points and calendar days, so it survives incomplete worklogs. Implied capacity ≈ {f1(M.impliedCapacityHoursPerSP)} h/SP.
+          </div>
+        </Card>
+      )}
 
       {/* A. Calibration scatter */}
       <Card>
         <CardHeader
           title="Calibration — logged hours vs story points"
-          subtitle={`${scopeLabel} · log scale · ray = ${f1(M.medianHoursPerSP)} h/SP median, shaded band = ±50%`}
+          subtitle={`${scopeLabel} · log–log · ray = ${f1(M.medianHoursPerSP)} h/SP median, band = ±50% · ${M.worklogMode ? 'tickets filtered by assignee, hours attributed by worklog author' : 'ticket-level hours'}`}
           right={
             <div style={{ display: 'flex', gap: 14, fontSize: 11, alignItems: 'center' }}>
               {[['#22c55e', 'Within ±50%'], ['#f87171', 'Miss']].map(([c, l]) => (
@@ -438,9 +551,9 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
         <ResponsiveContainer width="100%" height={320}>
           <ScatterChart margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
             <CartesianGrid stroke="rgba(255,255,255,0.05)" />
-            <XAxis type="number" dataKey="x" name="SP" domain={[0, M.scatter.maxX]} ticks={M.scatter.spValues}
+            <XAxis type="number" dataKey="x" name="SP" scale="log" domain={M.scatter.xDomain} ticks={M.scatter.spValues} allowDataOverflow
               tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false}
-              label={{ value: 'Story points', position: 'insideBottom', offset: -4, fill: '#6b7280', fontSize: 11 }} />
+              label={{ value: 'Story points (log)', position: 'insideBottom', offset: -4, fill: '#6b7280', fontSize: 11 }} />
             <YAxis type="number" dataKey="y" name="Hours" scale="log" domain={M.scatter.yDomain} allowDataOverflow
               tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false}
               label={{ value: 'Logged hours (log)', angle: -90, position: 'insideLeft', fill: '#6b7280', fontSize: 11 }} />
@@ -487,8 +600,14 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
       <Card>
         <CardHeader
           title="Calibration drift — median h/SP by sprint"
-          subtitle="Last 8 completed sprints (buckets with n≥5). Blue dashed line = capacity planning constant."
+          subtitle={`${M.drift.length} of last 8 completed sprints${M.driftExcluded > 0 ? ` (${M.driftExcluded} excluded: n<5)` : ''}. Blue dashed line = capacity planning constant.`}
         />
+        {M.driftTrend.trending && M.drift.length >= 3 && (
+          <Banner color="#f59e0b" icon={<AlertTriangle size={15} />}>
+            <strong>Rate is trending, not stationary</strong> (Mann–Kendall p={f2(M.driftTrend.p)}). A trailing {M.windowN}-sprint median systematically {M.driftTrend.direction < 0 ? 'over' : 'under'}-predicts. Use a shorter window or exponential weighting (α≈0.5).
+            {M.windowN > 3 && <> <button onClick={() => setWindow(3)} style={{ ...btnGhost, marginLeft: 8, padding: '3px 10px' }}>Switch to 3-sprint window</button></>}
+          </Banner>
+        )}
         {M.drift.length < 3 ? (
           <Disabled msg={`Needs ≥3 completed sprints with ≥5 sampled tickets each (have ${M.drift.length}).`} />
         ) : (
@@ -509,58 +628,112 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
         )}
       </Card>
 
-      {/* C. Outlier list */}
-      <Card>
-        <CardHeader title="Biggest estimation misses" subtitle="Top 10 tickets by |log-ratio| — the retro artifact" />
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
-            <thead>
-              <tr style={{ color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: 10 }}>
-                <th style={thL}>Key</th><th style={thL}>Summary</th><th style={thL}>Assignee</th>
-                <th style={thR}>SP</th><th style={thR}>Logged</th><th style={thR}>Predicted</th><th style={thR}>Ratio</th>
-              </tr>
-            </thead>
-            <tbody>
-              {M.outliers.map((o, i) => (
-                <tr key={o.key + i} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                  <td style={{ ...tdL, color: '#60a5fa', fontWeight: 500, whiteSpace: 'nowrap' }}>{o.key}</td>
-                  <td style={{ ...tdL, color: '#e2e8f0', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={o.summary}>{o.summary}</td>
-                  <td style={{ ...tdL, color: '#94a3b8', whiteSpace: 'nowrap' }}>{o.assignee}</td>
-                  <td style={{ ...tdR, color: '#c4b5fd' }}>{o.sp}</td>
-                  <td style={{ ...tdR, color: '#86efac', fontWeight: 600 }}>{f1(o.logged)}h</td>
-                  <td style={{ ...tdR, color: '#94a3b8' }}>{f1(o.predicted)}h</td>
-                  <td style={{ ...tdR, color: o.logRatio > 0 ? '#fca5a5' : '#93c5fd', fontWeight: 600 }}>
-                    {o.logRatio > 0 ? '×' : '÷'}{f1(Math.exp(Math.abs(o.logRatio)))}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+      {/* C. Misses list (E — abs-error floor, sort toggle, placeholder flag) */}
+      {(() => {
+        const floored = M.missesAll.filter(o => o.absErr >= missFloorH);
+        const sorted = [...floored].sort((a, b) => missSort === 'abs' ? b.absErr - a.absErr : Math.abs(b.logRatio) - Math.abs(a.logRatio));
+        const top = sorted.slice(0, 10);
+        const dropped = M.missesAll.length - floored.length;
+        return (
+          <Card>
+            <CardHeader
+              title="Biggest estimation misses"
+              subtitle={`Top 10 by ${missSort === 'abs' ? 'absolute hours missed' : '|log-ratio|'} · excluding misses under ${missFloorH}h absolute error (${dropped} hidden)`}
+              right={
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 11 }}>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    {['abs', 'ratio'].map(s => (
+                      <button key={s} onClick={() => setMissSort(s)} style={{ ...(missSort === s ? btnPrimary : btnGhost), padding: '4px 9px', fontSize: 11 }}>{s === 'abs' ? 'By hours' : 'By ratio'}</button>
+                    ))}
+                  </div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#94a3b8' }}>
+                    floor
+                    <input type="number" min="0" step="0.5" value={missFloorH} onChange={e => setMissFloorH(Math.max(0, parseFloat(e.target.value) || 0))}
+                      style={{ width: 46, background: '#0f172a', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: '#e2e8f0', padding: '4px 6px', fontSize: 12 }} />h
+                  </label>
+                </div>
+              }
+            />
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 760 }}>
+                <thead>
+                  <tr style={{ color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: 10 }}>
+                    <th style={thL}>Key</th><th style={thL}>Summary</th><th style={thL}>Assignee</th>
+                    <th style={thR}>SP</th><th style={thR}>Logged</th><th style={thR}>Predicted</th><th style={thR}>Abs err</th><th style={thR}>Ratio</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {top.length === 0 ? (
+                    <tr><td colSpan={8} style={{ ...tdL, color: '#6b7280', padding: '16px 10px' }}>No misses above the {missFloorH}h floor.</td></tr>
+                  ) : top.map((o, i) => (
+                    <tr key={o.key + i} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                      <td style={{ ...tdL, color: '#60a5fa', fontWeight: 500, whiteSpace: 'nowrap' }}>{o.key}</td>
+                      <td style={{ ...tdL, color: '#e2e8f0', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={o.summary}>
+                        {o.placeholder && <span title="Whole logged time is one round-number worklog — probably a placeholder, not a measurement" style={{ marginRight: 5 }}>⚠️</span>}{o.summary}
+                      </td>
+                      <td style={{ ...tdL, color: '#94a3b8', whiteSpace: 'nowrap' }}>{o.assignee}</td>
+                      <td style={{ ...tdR, color: '#c4b5fd' }}>{o.sp}</td>
+                      <td style={{ ...tdR, color: '#86efac', fontWeight: 600 }}>{f1(o.logged)}h</td>
+                      <td style={{ ...tdR, color: '#94a3b8' }}>{f1(o.predicted)}h</td>
+                      <td style={{ ...tdR, color: '#e2e8f0', fontWeight: 600 }}>{f1(o.absErr)}h</td>
+                      <td style={{ ...tdR, color: o.logRatio > 0 ? '#fca5a5' : '#93c5fd', fontWeight: 600 }}>{o.logRatio > 0 ? '×' : '÷'}{f1(Math.exp(Math.abs(o.logRatio)))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {top.some(o => o.placeholder) && (
+              <div style={{ fontSize: 11.5, color: '#fcd34d', marginTop: 10 }}>⚠️ = entire logged time is a single round-number worklog (1h/4h/8h) — likely a placeholder, not a measurement; don't let it drive the retro.</div>
+            )}
+          </Card>
+        );
+      })()}
 
-      {/* Section 5. Out-of-sample backtest */}
+      {/* Section 5. Out-of-sample backtest (D — dual base, sign consistency, n≥4 gate) */}
       <Card>
         <CardHeader
           title="Out-of-sample forecast test"
-          subtitle="Each sprint predicted from PRIOR sprints' rate only — the honest accuracy measure"
+          subtitle="Each sprint predicted from PRIOR sprints' rate only. Committed base includes carryover; completed base is estimation error only."
           right={M.backtest.rows.length > 0 && (
             <div style={{ textAlign: 'right' }}>
-              <div style={{ color: '#6b7280', fontSize: 12 }}>Backtest MdAPE</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: M.backtest.mdape > 40 ? '#ef4444' : M.backtest.mdape > 20 ? '#f59e0b' : '#22c55e' }}>{pctI(M.backtest.mdape)}%</div>
+              {M.backtest.enoughForHeadline ? (
+                M.backtest.signConsistency === 1 ? (
+                  <>
+                    <div style={{ color: '#6b7280', fontSize: 12 }}>Systematic bias (sprint-level)</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: '#ef4444' }}>{M.backtest.systematicDir < 0 ? 'Over' : 'Under'}-predicting</div>
+                    <div style={{ fontSize: 11, color: '#94a3b8' }}>median {pctI(M.backtest.medianError)}% · all {M.backtest.rows.length} same sign</div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ color: '#6b7280', fontSize: 12 }}>Backtest MdAPE (sprint-level)</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: M.backtest.mdape > 40 ? '#ef4444' : M.backtest.mdape > 20 ? '#f59e0b' : '#22c55e' }}>{pctI(M.backtest.mdape)}%</div>
+                    <div style={{ fontSize: 11, color: '#94a3b8' }}>sign consistency {pctI(M.backtest.signConsistency * 100)}%</div>
+                  </>
+                )
+              ) : (
+                <>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: '#f59e0b' }}>{M.backtest.rows.length} of 4</div>
+                  <div style={{ fontSize: 11, color: '#6b7280' }}>sprints needed for a headline</div>
+                </>
+              )}
             </div>
           )}
         />
         {M.backtest.rows.length === 0 ? (
-          <Disabled msg="Needs ≥4 completed sprints (each forecast uses ≥3 prior sprints)." />
+          <Disabled msg="Needs ≥4 completed sprints (each forecast uses ≥3 prior sprints). Widen the window." />
         ) : (
           <>
+            {!M.backtest.enoughForHeadline && (
+              <Banner color="#f59e0b" icon={<AlertTriangle size={15} />}>
+                Only {M.backtest.rows.length} evaluated sprint(s) — below the n≥4 gate. The table is shown, but no MdAPE headline: the median of {M.backtest.rows.length} same-signed error(s) is a bias estimate, not a dispersion. Widen the window for more history.
+              </Banner>
+            )}
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={M.backtest.rows} margin={{ top: 8, right: 12, left: -18, bottom: 0 }}>
                 <CartesianGrid vertical={false} stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} unit="%" />
-                <Tooltip {...TOOLTIP_STYLE} formatter={v => [`${v >= 0 ? '+' : ''}${pctI(v)}%`, 'forecast error']} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={v => [`${v >= 0 ? '+' : ''}${pctI(v)}%`, 'error (committed base)']} />
                 <ReferenceLine y={0} stroke="rgba(255,255,255,0.25)" />
                 <Bar dataKey="errorPct" radius={[3, 3, 0, 0]} maxBarSize={40}>
                   {M.backtest.rows.map((r, i) => (
@@ -570,26 +743,30 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
               </BarChart>
             </ResponsiveContainer>
             <div style={{ overflowX: 'auto', marginTop: 12 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 640 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
                 <thead>
                   <tr style={{ color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontSize: 10 }}>
-                    <th style={thL}>Sprint</th><th style={thR}>Prior rate (h/SP)</th><th style={thR}>Committed SP</th>
-                    <th style={thR}>Predicted h</th><th style={thR}>Actual h</th><th style={thR}>Error</th>
+                    <th style={thL}>Sprint</th><th style={thR}>Prior rate</th><th style={thR}>Committed SP</th><th style={thR}>Completed SP</th>
+                    <th style={thR}>Actual h</th><th style={thR} title="Forecast from committed SP — includes carryover effects">Err (committed)</th><th style={thR} title="Forecast from completed SP — estimation error only">Err (completed)</th>
                   </tr>
                 </thead>
                 <tbody>
                   {M.backtest.rows.map((r, i) => (
                     <tr key={r.sprint + i} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                      <td style={{ ...tdL, color: '#e2e8f0', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.sprint}>{r.sprint}</td>
+                      <td style={{ ...tdL, color: '#e2e8f0', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.sprint}>{r.sprint}</td>
                       <td style={{ ...tdR, color: '#94a3b8' }}>{f1(r.rate)}</td>
                       <td style={{ ...tdR, color: '#c4b5fd' }}>{f1(r.committedSP)}</td>
-                      <td style={{ ...tdR, color: '#94a3b8' }}>{f1(r.predicted)}h</td>
+                      <td style={{ ...tdR, color: '#c4b5fd' }}>{f1(r.completedSP)}</td>
                       <td style={{ ...tdR, color: '#86efac', fontWeight: 600 }}>{f1(r.actual)}h</td>
-                      <td style={{ ...tdR, color: Math.abs(r.errorPct) > 25 ? '#fca5a5' : '#86efac', fontWeight: 600 }}>{r.errorPct >= 0 ? '+' : ''}{pctI(r.errorPct)}%</td>
+                      <td style={{ ...tdR, color: r.errorPct !== null && Math.abs(r.errorPct) > 25 ? '#fca5a5' : '#94a3b8', fontWeight: 600 }}>{r.errorPct === null ? '—' : `${r.errorPct >= 0 ? '+' : ''}${pctI(r.errorPct)}%`}</td>
+                      <td style={{ ...tdR, color: r.errorCompletedPct !== null && Math.abs(r.errorCompletedPct) > 25 ? '#fca5a5' : '#86efac', fontWeight: 600 }}>{r.errorCompletedPct === null ? '—' : `${r.errorCompletedPct >= 0 ? '+' : ''}${pctI(r.errorCompletedPct)}%`}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </div>
+            <div style={{ fontSize: 11.5, color: '#6b7280', marginTop: 10 }}>
+              Sprint-level backtest error is expected to be lower than the {pctI(M.mdape)}% ticket-level in-sample MdAPE — ticket errors partially cancel on aggregation. Don't read the two as the same measure.
             </div>
           </>
         )}
@@ -716,9 +893,17 @@ function BucketTable({ M }) {
         </table>
       </div>
 
-      {/* Monotonicity + overlap checks */}
+      {/* C3 — effective scale coverage */}
+      {M.bucketCoverage && M.bucketCoverage.qualifying > 0 && (
+        <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 14, lineHeight: 1.6 }}>
+          Discrimination is measured across <strong style={{ color: '#e2e8f0' }}>{M.bucketCoverage.qualifying} qualifying bucket{M.bucketCoverage.qualifying === 1 ? '' : 's'}</strong> (n≥5) spanning {M.bucketCoverage.spanLo}–{M.bucketCoverage.spanHi} SP, holding {M.bucketCoverage.ticketsInQualifying} of {M.n} tickets.
+          {M.bucketCoverage.lowN.length > 0 && <> The {M.bucketCoverage.lowN.map(b => `${b.sp} (n=${b.n})`).join(' / ')} bucket{M.bucketCoverage.lowN.length === 1 ? '' : 's'} contribute to the correlation but not to per-bucket statistics — {M.bucketCoverage.lowNTickets} ticket{M.bucketCoverage.lowNTickets === 1 ? '' : 's'} carrying the top of the range invisibly.</>}
+        </div>
+      )}
+
+      {/* Monotonicity (hours + rate) + overlap checks */}
       <div style={{ marginTop: 16, display: 'grid', gap: 8 }}>
-        <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Monotonicity — do medians strictly increase?</div>
+        <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Monotonicity — median hours (do larger estimates take longer?)</div>
         {M.monotonic.length === 0 ? (
           <div style={{ fontSize: 12, color: '#6b7280' }}>Not enough adjacent buckets (n≥5) to check.</div>
         ) : M.monotonic.map((m, i) => (
@@ -726,51 +911,91 @@ function BucketTable({ M }) {
             {m.pass ? '✓' : '✗'} {m.from} → {m.to}: {m.pass ? 'PASS' : `FAIL — ${m.detail}`}
           </div>
         ))}
+        {M.monotonicRate && M.monotonicRate.length > 0 && (
+          <>
+            <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 8 }}>Monotonicity — median h/SP (a non-monotonic rate is what breaks forecasting)</div>
+            {M.monotonicRate.map((m, i) => (
+              <div key={i} style={{ fontSize: 12.5, color: m.pass ? '#86efac' : '#fca5a5' }}>
+                {m.pass ? '✓' : '✗'} {m.from} → {m.to}: {m.pass ? 'PASS' : 'FAIL'} — {m.detail}
+              </div>
+            ))}
+          </>
+        )}
         {M.overlaps.length > 0 && (
           <>
             <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 8 }}>Adjacent-bucket overlap — are neighbouring sizes distinguishable?</div>
             {M.overlaps.map((o, i) => (
               <div key={i} style={{ fontSize: 12.5, color: o.pct > 30 ? '#fca5a5' : '#94a3b8' }}>
-                {o.pct > 30 ? '⚠' : '·'} {o.pct}% of {o.to}-pointers took less than the {o.from}-pointer median{o.pct > 30 ? ' — sizes not distinguishable, consider collapsing the scale' : ''}
+                {o.pct > 30 ? '⚠' : '·'} {o.pct}% of {o.to}-pointers took less than the {o.from}-pointer median
               </div>
             ))}
           </>
         )}
+        {M.collapseText && M.collapseText.length > 0 && M.collapseText.map((t, i) => (
+          <div key={`c${i}`} style={{ fontSize: 12.5, color: '#fcd34d', marginTop: 4, padding: '7px 10px', background: 'rgba(250,204,21,0.08)', border: '1px solid rgba(250,204,21,0.25)', borderRadius: 7 }}>
+            💡 {t}
+          </div>
+        ))}
       </div>
     </Card>
   );
 }
 
-function WhatThisMeans({ M, gapPct, typeLabel }) {
+function WhatThisMeans({ M, typeLabel }) {
   const lines = [];
-  // 1. sample + coverage + flags
+  const suppressed = M.suppressAbsolute;
+  const noise = M.spreadFactor > 2.0 || M.discrimination < 0.4;
+
+  // 1. sample + completeness + flags
   const flagBits = M.worklogMode
     ? `worklog-level: ${M.totalWorklogs} worklogs, ${M.roundNumberBias}% round numbers${M.carryoverRate > 25 ? `, ${M.carryoverRate}% carried over` : ''}`
     : `ticket-level attribution; round-number bias not checked${M.carryoverRate > 25 ? `, ${M.carryoverRate}% carried over` : ''}`;
-  lines.push(`Sample: ${M.n} completed, pointed, time-logged ${typeLabel} tickets (${M.logCoverage}% log coverage). ${flagBits}.`);
-  // 2. calibration gap (bias)
-  const gapWord = Math.abs(gapPct) < 10 ? 'close to' : gapPct >= 0 ? 'above' : 'below';
-  lines.push(`Observed rate: median ${f1(M.medianHoursPerSP)} h/SP (IQR ${f1(M.iqr[0])}–${f1(M.iqr[1])}). That is ${gapPct >= 0 ? '+' : ''}${pctI(gapPct)}% ${gapWord} your ${f1(M.planningHoursPerSP)} h/SP capacity constant. This is a calibration gap (bias), NOT an estimation error — it's fixed by changing one planning number, and says nothing about estimate quality.`);
-  // 3. consistency (noise)
+  lines.push(`Sample: ${M.n} completed, pointed, time-logged ${typeLabel} tickets (${M.logCoverage}% log coverage). ${flagBits}. Worklogs capture ~${M.loggingCompleteness !== null ? pctI(M.loggingCompleteness * 100) : '?'}% of working time${M.allocationAssumed ? ' (assumes full allocation — verify)' : ''}.`);
+
+  // 2. capacity from THROUGHPUT (logging-immune), not from logged h/SP
+  if (M.deliveredSPPerPersonDay) {
+    lines.push(`Capacity (from throughput, not worklogs): the team completes ~${f2(M.deliveredSPPerPersonDay)} SP per person-day, implying ~${f1(M.impliedCapacityHoursPerSP)} h of capacity per point. Your ${f1(M.spPerDay)} SP/day assumption is ${f1(M.throughputMultiple)}× that — ${M.throughputMultiple > 1.3 ? 'materially optimistic' : M.throughputMultiple < 0.77 ? 'conservative' : 'about right'}.${M.completionRate !== null ? ` Committed→completed rate ~${pctI(M.completionRate * 100)}%.` : ''}`);
+  }
+  // absolute-hours line only when logging is complete enough to trust it
+  if (!suppressed) {
+    lines.push(`Recorded rate: median ${f1(M.medianHoursPerSP)} h/SP (IQR ${f1(M.iqr[0])}–${f1(M.iqr[1])}). With ~${pctI((M.loggingCompleteness || 1) * 100)}% logging completeness this is close to effort, but it is hours RECORDED per point — use throughput above for capacity.`);
+  } else {
+    lines.push(`Absolute-hour figures (median h/SP, MdAPE) are suppressed: at ~${pctI(M.loggingCompleteness * 100)}% logging they understate effort by an unknown factor. The rank-based findings below are unaffected by uniform under-logging.`);
+  }
+
+  // 3. consistency (rank-based, always valid)
   const spreadWord = M.spreadFactor < 1.5 ? 'tight' : M.spreadFactor <= 2.0 ? 'workable' : 'wide — points carry little information';
   const discWord = M.discrimination >= 0.7 ? 'strong: larger estimates reliably take longer' : M.discrimination >= 0.4 ? 'weak: larger estimates only loosely take longer' : 'near-noise: story points barely predict effort';
-  lines.push(`Consistency (the real question): spread factor ×${f1(M.spreadFactor)} (${ciTxt(M.spreadCI)}) — a typical ticket lands within this factor of prediction, ${spreadWord}. Discrimination ${f2(M.discrimination)} (${ciTxt(M.discriminationCI)}) — ${discWord}.`);
-  // 4. monotonicity failures
-  const fails = M.monotonic.filter(m => !m.pass);
-  if (fails.length) lines.push(`Monotonicity failures: ${fails.map(m => `${m.from}→${m.to}`).join(', ')} — larger estimates took less time on median. Concrete retro items.`);
-  // 5. backtest reality
-  if (M.backtest.rows.length) lines.push(`Out-of-sample: forecasting each sprint from prior sprints only was off by a median ${pctI(M.backtest.mdape)}% (MdAPE). This is the number to quote for "how good is our estimating".`);
+  lines.push(`Consistency (rank-based, valid at any logging level): spread ×${f1(M.spreadFactor)} (${ciTxt(M.spreadCI)}) — ${spreadWord}. Discrimination ${f2(M.discrimination)} (${ciTxt(M.discriminationCI)}) — ${discWord}.`);
 
-  // Recommendation — exactly one
+  // 4. monotonicity (hours + rate)
+  const hFails = M.monotonic.filter(m => !m.pass);
+  const rFails = M.monotonicRate.filter(m => !m.pass);
+  if (hFails.length) lines.push(`Median-hours monotonicity fails at ${hFails.map(m => `${m.from}→${m.to}`).join(', ')}.`);
+  if (rFails.length) lines.push(`Median h/SP is non-monotonic at ${rFails.map(m => `${m.from}→${m.to}`).join(', ')} — a non-monotonic rate is what breaks forecasting even when hours rise.`);
+
+  // 5. drift + backtest
+  if (M.driftTrend.trending) lines.push(`Rate is trending (Mann–Kendall p=${f2(M.driftTrend.p)}), not stationary — a trailing ${M.windowN}-sprint median systematically ${M.driftTrend.direction < 0 ? 'over-predicts' : 'under-predicts'}. Consider a 3-sprint window or exponential weighting.`);
+  if (M.backtest.enoughForHeadline) {
+    if (M.backtest.signConsistency === 1) lines.push(`Out-of-sample: every evaluated sprint erred the SAME direction — the forecast is systematically ${M.backtest.systematicDir < 0 ? 'over' : 'under'}-predicting (median ${pctI(M.backtest.medianError)}%), a bias not a spread.`);
+    else if (!suppressed) lines.push(`Out-of-sample MdAPE ${pctI(M.backtest.mdape)}% (sprint-level).`);
+  } else if (M.backtest.rows.length) {
+    lines.push(`Backtest not yet conclusive — ${M.backtest.rows.length} of 4 evaluated sprints (widen the window for more).`);
+  }
+
+  // Recommendation — exactly one of: use-throughput/collect / tighten / recalibrate-capacity / healthy
   let rec, recColor;
-  if (M.spreadFactor > 2.0 || M.discrimination < 0.4) {
-    rec = `Tighten estimation practice. The problem is noise, not the planning constant — recalibrating won't help. Re-point using reference stories, break down anything ≥8 SP, and work the miss list above in retro.`;
+  if (suppressed) {
+    rec = `Do NOT recalibrate from logged hours — they capture only ~${pctI(M.loggingCompleteness * 100)}% of effort. Set capacity from throughput (~${f2(M.deliveredSPPerPersonDay)} SP/person-day; your assumption is ${f1(M.throughputMultiple)}× optimistic) and wire that into the Capacity tab. The estimation signal is ${noise ? 'weak — also tighten estimation practice (re-point with reference stories, split ≥8-SP items)' : 'healthy (discrimination ' + f2(M.discrimination) + ') — leave the scale alone'}.`;
     recColor = '#fca5a5';
-  } else if (Math.abs(gapPct) > 20) {
-    rec = `Recalibrate the capacity constant to ~${f1(M.medianHoursPerSP)} h/SP. Estimates are internally consistent; only the planning assumption is off. This is a one-number fix, not an estimation problem.`;
+  } else if (noise) {
+    rec = `Tighten estimation practice — the problem is noise (spread ×${f1(M.spreadFactor)}, discrimination ${f2(M.discrimination)}), which recalibration can't fix. Re-point with reference stories, split anything ≥8 SP, and work the miss list in retro.`;
+    recColor = '#fca5a5';
+  } else if (M.throughputMultiple && (M.throughputMultiple > 1.3 || M.throughputMultiple < 0.77)) {
+    rec = `Recalibrate the CAPACITY assumption toward observed throughput (~${f2(M.deliveredSPPerPersonDay)} SP/person-day), not toward logged h/SP. Estimates are internally consistent; only the planning assumption is off.`;
     recColor = '#fcd34d';
   } else {
-    rec = `No structural action needed — estimates are consistent (spread ×${f1(M.spreadFactor)}, discrimination ${f2(M.discrimination)}) and the planning constant is within ${pctI(Math.abs(gapPct))}% of observed. Keep monitoring drift and the backtest.`;
+    rec = `No structural action — estimates are consistent (spread ×${f1(M.spreadFactor)}, discrimination ${f2(M.discrimination)}) and the capacity assumption is within range of observed throughput. Keep monitoring drift and the backtest.`;
     recColor = '#86efac';
   }
 
@@ -788,7 +1013,11 @@ function WhatThisMeans({ M, gapPct, typeLabel }) {
 }
 
 // ─── Metrics engine ───────────────────────────────────────────────────────────
-function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, windowN = 6, preview = false) {
+function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, preview = false) {
+  const spPerDay = cfg?.spPerDay ?? 2;
+  const hoursPerDay = cfg?.hoursPerDay ?? 8;
+  const hoursPerIdealDay = cfg?.hoursPerIdealDay ?? 8;
+  const planningHoursPerSP = cfg?.planningHoursPerSP ?? (hoursPerDay / spPerDay);
   const allow = new Set(ALLOWED_TYPES);
   const wlByKey = worklog?.byKey || null;
   const worklogMode = !!wlByKey;
@@ -884,7 +1113,7 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
       const raw = t._rawFields || {};
       let hours = toHours(getLoggedSec(t));
       let sprint = attrSprintOf(t) || getSprint(t) || 'No Sprint'; // resolution-date sprint (worklog mode may refine below)
-      let carry;
+      let carry, placeholder = false;
 
       if (worklogMode && wlByKey.has(key)) {
         const wls = wlByKey.get(key);
@@ -904,6 +1133,8 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
         const touched = Object.keys(perWin);
         if (touched.length) sprint = touched.sort((a, b) => perWin[b] - perWin[a])[0];
         carry = touched.length > 1;
+        // E3: whole logged time is a single round-number worklog → probably a placeholder, not a measurement
+        placeholder = wls.length === 1 && ROUND_WORKLOG_SECS.has(wls[0].seconds);
       } else {
         const sf = raw.customfield_10010 || raw.sprint;
         carry = Array.isArray(sf) && sf.length > 1;
@@ -911,7 +1142,7 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
 
       return {
         key, summary: getSummary(t), assignee: getAssignee(t), project: getProject(t),
-        sprint, sp, hours, hoursPerSP: hours / sp, carry,
+        sprint, sp, hours, hoursPerSP: hours / sp, carry, placeholder,
       };
     });
 
@@ -958,11 +1189,64 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
     }))
     .filter(e => e.eligible > 0);
 
+  // ── Scale semantics (B) ──
+  const distinctSP = [...new Set(sample.map(s => s.sp))].sort((a, b) => a - b);
+  const detectedScale = detectScaleType(distinctSP);
+  const scaleType = (cfg?.scaleType && cfg.scaleType !== 'auto') ? cfg.scaleType : detectedScale;
+
+  // ── A2. Throughput (logging-immune): completed SP per person-day, by completed sprint ──
+  const committedSPForSprint = name => {
+    let sp = 0;
+    for (const t of tickets) {
+      if (getSP(t) <= 0) continue;
+      const type = getType(t).toLowerCase();
+      if (type === 'epic' || !allow.has(type) || (typeMode !== 'pool' && type !== typeMode)) continue;
+      const raw = t._rawFields || {};
+      const arr = raw.customfield_10010 || raw.sprint;
+      const names = Array.isArray(arr) ? arr.map(s => (typeof s === 'string' ? s : s?.name)) : [getSprint(t)];
+      if (names.includes(name)) sp += getSP(t);
+    }
+    return sp;
+  };
+  const throughputRows = windowSprints.map(w => {
+    const wEligible = eligible.filter(t => attrSprintOf(t) === w.name);
+    const completedSP = wEligible.reduce((a, t) => a + getSP(t), 0);
+    const contribs = new Set(wEligible.map(getAssignee)).size || 0;
+    const wd = businessDays(w.start, w.end) || 1;
+    const personDays = wd * (contribs || 1); // allocationPct assumed 100% (no allocation data wired)
+    const committedSP = committedSPForSprint(w.name);
+    return {
+      name: w.name, label: shortSprintLabel(w.name), completedSP, committedSP, contribs, workingDays: wd, personDays,
+      deliveredSPPerPersonDay: personDays > 0 ? completedSP / personDays : 0,
+      completionRate: committedSP > 0 ? completedSP / committedSP : null,
+    };
+  }).filter(r => r.completedSP > 0);
+  const totCompletedSP = throughputRows.reduce((a, r) => a + r.completedSP, 0);
+  const totPersonDays = throughputRows.reduce((a, r) => a + r.personDays, 0);
+  const deliveredSPPerPersonDay = totPersonDays > 0 ? totCompletedSP / totPersonDays : 0;
+  const impliedCapacityHoursPerSP = deliveredSPPerPersonDay > 0 ? hoursPerDay / deliveredSPPerPersonDay : null;
+  const throughputMultiple = deliveredSPPerPersonDay > 0 ? spPerDay / deliveredSPPerPersonDay : null; // assumption ÷ observed
+  const totCommittedSP = throughputRows.reduce((a, r) => a + r.committedSP, 0);
+  const completionRate = totCommittedSP > 0 ? totCompletedSP / totCommittedSP : null;
+
+  // ── A1. Logging completeness: logged hours ÷ available capacity hours (allocation assumed 100%) ──
+  const workingDaysInWindow = windowSprints.reduce((a, w) => a + businessDays(w.start, w.end), 0);
+  const contributorNames = worklogMode ? Object.keys(contributorSec) : [...new Set(sample.map(s => s.assignee))];
+  const numContributors = contributorNames.length || 1;
+  const totalLoggedHours = sample.reduce((a, s) => a + s.hours, 0);
+  const capacityHours = numContributors * workingDaysInWindow * hoursPerDay; // × allocationPct(=1)
+  const loggingCompleteness = capacityHours > 0 ? totalLoggedHours / capacityHours : null;
+  const allocationAssumed = true; // no per-person allocation data available
+  const suppressAbsolute = loggingCompleteness !== null && loggingCompleteness < 0.70;
+
   const sampleKeys = sample.map(s => s.key);
   const base = {
-    n, eligibleN, logCoverage, carryoverRate, planningHoursPerSP,
+    n, eligibleN, logCoverage, carryoverRate, planningHoursPerSP, spPerDay, hoursPerDay, hoursPerIdealDay,
     worklogMode, roundNumberBias, totalWorklogs, worklogCoverage, worklogsPerTicket, contributors, sampleKeys,
-    windowN, nCompletedInWindow,
+    windowN, nCompletedInWindow, detectedScale, scaleType,
+    // A1/A2/A3
+    loggingCompleteness, allocationAssumed, suppressAbsolute, numContributors, totalLoggedHours, capacityHours,
+    deliveredSPPerPersonDay, impliedCapacityHoursPerSP, throughputMultiple, throughputRows, completionRate,
   };
 
   // Accumulation countdown (not an error) — sample not yet mature
@@ -999,6 +1283,14 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
   const apes = sample.map(s => Math.abs(s.hours - medianHoursPerSP * s.sp) / s.hours);
   const mdape = median(apes) * 100;
 
+  // B2. estimateRatio — only meaningful when SP is day-denominated (ideal_days)
+  let estimateRatio = null;
+  if (scaleType === 'ideal_days' && hoursPerIdealDay > 0) {
+    const ers = sample.map(s => s.hours / (s.sp * hoursPerIdealDay));
+    const medER = median(ers);
+    estimateRatio = { median: medER, spread: Math.exp(stdevSample(ers.map(v => Math.log(v / medER)))), ci: bootstrapCI(ers, median) };
+  }
+
   // Bootstrap CIs
   const medianCI = bootstrapCI(hpsp, median);
   const spreadCI = bootstrapCI(logRatios, a => Math.exp(stdevSample(a)));
@@ -1025,40 +1317,79 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
     };
   });
 
-  // Monotonicity + overlap (adjacent buckets, both n≥5)
+  // Monotonicity (median hours AND median h/SP — C1) + overlap (adjacent buckets, both n≥5)
   const enoughB = buckets.filter(b => b.enough);
-  const monotonic = [], overlaps = [];
+  const monotonic = [], monotonicRate = [], overlaps = [];
   for (let i = 1; i < enoughB.length; i++) {
     const lo = enoughB[i - 1], hi = enoughB[i];
     const pass = hi.medianHours > lo.medianHours;
     monotonic.push({ from: `${lo.sp}`, to: `${hi.sp}`, pass, detail: pass ? '' : `${hi.sp}-pointers median ${f1(hi.medianHours)}h vs ${lo.sp}-pointers ${f1(lo.medianHours)}h` });
+    // C1 — a non-monotonic rate (h/SP) is what actually breaks forecasting
+    const ratePass = hi.medianHoursPerSP >= lo.medianHoursPerSP;
+    monotonicRate.push({ from: `${lo.sp}`, to: `${hi.sp}`, pass: ratePass, detail: `${lo.sp}: ${f1(lo.medianHoursPerSP)} h/SP → ${hi.sp}: ${f1(hi.medianHoursPerSP)} h/SP` });
     const hiItems = bySp[hi.sp];
     const belowLoMedian = hiItems.filter(x => x.hours < lo.medianHours).length;
     overlaps.push({ from: `${lo.sp}`, to: `${hi.sp}`, pct: Math.round((belowLoMedian / hiItems.length) * 100) });
   }
 
-  // Scatter
+  // C2 — concrete collapse suggestion: runs of adjacent enough-buckets with >30% overlap,
+  // extended down to include any smaller (sub-1 SP) buckets clustered with them.
+  const collapseSuggestions = [];
+  {
+    let run = null;
+    for (let i = 0; i < overlaps.length; i++) {
+      const o = overlaps[i];
+      if (o.pct > 30) { if (!run) run = [o.from]; run.push(o.to); }
+      else if (run) { collapseSuggestions.push(run); run = null; }
+    }
+    if (run) collapseSuggestions.push(run);
+  }
+  const smallBuckets = buckets.filter(b => b.sp < 1).map(b => `${b.sp}`);
+  const collapseText = collapseSuggestions.map(grp => {
+    const set = new Set(grp);
+    // pull any sub-1 SP buckets adjacent to the low end into the same recommendation
+    if (grp.some(v => parseFloat(v) <= 0.5)) smallBuckets.forEach(s => set.add(s));
+    const names = [...set].map(parseFloat).sort((a, b) => a - b).join(' / ');
+    return `${names} are not distinguishable in outcome — collapse to a single bucket.`;
+  });
+
+  // C3 — effective scale coverage
+  const lowNBuckets = buckets.filter(b => !b.enough).map(b => ({ sp: b.sp, n: b.n }));
+  const bucketCoverage = {
+    qualifying: enoughB.length,
+    spanLo: enoughB.length ? enoughB[0].sp : null,
+    spanHi: enoughB.length ? enoughB[enoughB.length - 1].sp : null,
+    ticketsInQualifying: enoughB.reduce((a, b) => a + b.n, 0),
+    lowN: lowNBuckets,
+    lowNTickets: lowNBuckets.reduce((a, b) => a + b.n, 0),
+  };
+
+  // Scatter (log–log: multiplicative jitter so sub-1 SP points don't collide or go negative)
   const allHours = sample.map(s => s.hours);
   const yDomain = [Math.max(0.1, Math.min(...allHours) * 0.7), Math.max(...allHours) * 1.4];
-  const maxX = Math.max(...spValues) + 1;
+  const minSP = Math.min(...spValues), maxSP = Math.max(...spValues);
+  const xDomain = [Math.max(0.05, minSP * 0.7), maxSP * 1.3];
   const hits = [], misses = [];
   for (const s of sample) {
     const predicted = medianHoursPerSP * s.sp;
     const miss = Math.abs(s.hours - predicted) > 0.5 * predicted;
-    const pt = { x: s.sp + keyJitter(s.key), y: s.hours, sp: s.sp, key: s.key, summary: s.summary, assignee: s.assignee };
+    const pt = { x: s.sp * Math.exp(keyJitter(s.key) * 0.5), y: s.hours, sp: s.sp, key: s.key, summary: s.summary, assignee: s.assignee };
     (miss ? misses : hits).push(pt);
   }
-  const rayXs = [spValues[0], ...spValues, maxX].filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => a - b);
+  const rayXs = [xDomain[0], ...spValues, xDomain[1]].filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => a - b);
   const ray = rayXs.map(x => ({ x, y: medianHoursPerSP * x }));
   const bandHi = rayXs.map(x => ({ x, y: 1.5 * medianHoursPerSP * x }));
   const bandLo = rayXs.map(x => ({ x, y: 0.5 * medianHoursPerSP * x }));
-  const scatter = { hits, misses, ray, bandHi, bandLo, yDomain, maxX, spValues };
+  const scatter = { hits, misses, ray, bandHi, bandLo, yDomain, xDomain, spValues };
 
-  // Outliers
-  const outliers = [...sample]
-    .map(s => ({ key: s.key, summary: s.summary, assignee: s.assignee, sp: s.sp, logged: s.hours, predicted: medianHoursPerSP * s.sp, logRatio: Math.log(s.hoursPerSP / medianHoursPerSP) }))
-    .sort((a, b) => Math.abs(b.logRatio) - Math.abs(a.logRatio))
-    .slice(0, 10);
+  // Misses (E) — full list with absolute error + placeholder flag; component applies floor/sort/top-N
+  const missesAll = sample.map(s => {
+    const predicted = medianHoursPerSP * s.sp;
+    return {
+      key: s.key, summary: s.summary, assignee: s.assignee, sp: s.sp, logged: s.hours, predicted,
+      logRatio: Math.log(s.hoursPerSP / medianHoursPerSP), absErr: Math.abs(s.hours - predicted), placeholder: s.placeholder,
+    };
+  });
 
   // Sprint ordering (completed only)
   const sprintNames = [...new Set(sample.map(s => s.sprint))]
@@ -1066,33 +1397,55 @@ function computeMetrics(tickets, today, typeMode, planningHoursPerSP, worklog, w
     .sort((a, b) => parseSprintDates(a).start - parseSprintDates(b).start);
 
   // Drift (last 8 completed sprints, bucket n≥5)
+  const completedSprintsInSample = sprintNames.length;
   const drift = sprintNames.map(name => {
     const items = sample.filter(s => s.sprint === name);
     if (items.length < 5) return null;
     const perSp = items.map(i => i.hoursPerSP);
     return { label: shortSprintLabel(name), n: items.length, median: median(perSp), p25: quantile(perSp, 0.25), p75: quantile(perSp, 0.75) };
   }).filter(Boolean).slice(-8);
+  // D1 — directional drift via Mann–Kendall on the median-rate series
+  const driftTrend = mannKendall(drift.map(d => d.median));
+  const driftExcluded = Math.min(completedSprintsInSample, 8) - drift.length;
 
-  // Backtest: predict each sprint from PRIOR sprints only (≥3 prior)
+  // Backtest: predict each sprint from PRIOR sprints only (≥3 prior).
+  // Two forecast bases (A3): committed SP (includes carryover) and completed SP (estimation error only).
   const btRows = [];
   for (let i = 3; i < sprintNames.length; i++) {
+    const name = sprintNames[i];
     const priorNames = new Set(sprintNames.slice(0, i));
     const priorItems = sample.filter(s => priorNames.has(s.sprint));
-    const curItems = sample.filter(s => s.sprint === sprintNames[i]);
+    const curItems = sample.filter(s => s.sprint === name);
     if (priorItems.length < 5 || curItems.length < 3) continue;
     const rate = median(priorItems.map(s => s.hoursPerSP));
-    const committedSP = curItems.reduce((a, s) => a + s.sp, 0);
-    const predicted = committedSP * rate;
+    const completedSP = eligible.filter(t => attrSprintOf(t) === name).reduce((a, t) => a + getSP(t), 0);
+    const committedSP = committedSPForSprint(name);
     const actual = curItems.reduce((a, s) => a + s.hours, 0);
-    if (predicted <= 0) continue;
-    btRows.push({ sprint: sprintNames[i], label: shortSprintLabel(sprintNames[i]), rate, committedSP, predicted, actual, errorPct: ((actual - predicted) / predicted) * 100 });
+    const predCommitted = committedSP * rate;
+    const predCompleted = completedSP * rate;
+    if (predCommitted <= 0 && predCompleted <= 0) continue;
+    btRows.push({
+      sprint: name, label: shortSprintLabel(name), rate, committedSP, completedSP, actual,
+      predicted: predCommitted, errorPct: predCommitted > 0 ? ((actual - predCommitted) / predCommitted) * 100 : null,
+      errorCompletedPct: predCompleted > 0 ? ((actual - predCompleted) / predCompleted) * 100 : null,
+    });
   }
-  const backtest = { rows: btRows, mdape: btRows.length ? median(btRows.map(r => Math.abs(r.errorPct))) : NaN };
+  const signs = btRows.map(r => Math.sign(r.errorPct)).filter(s => s !== 0);
+  const signConsistency = signs.length ? Math.max(signs.filter(s => s > 0).length, signs.filter(s => s < 0).length) / signs.length : null;
+  const backtest = {
+    rows: btRows,
+    mdape: btRows.length ? median(btRows.map(r => Math.abs(r.errorPct))) : NaN,
+    medianError: btRows.length ? median(btRows.map(r => r.errorPct)) : NaN,
+    signConsistency,
+    systematicDir: signConsistency === 1 && signs.length ? Math.sign(signs[0]) : 0,
+    enoughForHeadline: btRows.length >= 4,
+  };
 
   return {
     ...base, accumulating: null, coverageGate: null, notReliable,
     medianHoursPerSP, iqr, medianCI, spreadFactor, spreadCI,
-    discrimination, discriminationCI, hitRate, hitRateCI, mdape, mdapeCI,
-    buckets, monotonic, overlaps, scatter, outliers, drift, backtest,
+    discrimination, discriminationCI, hitRate, hitRateCI, mdape, mdapeCI, estimateRatio,
+    buckets, monotonic, monotonicRate, overlaps, collapseText, bucketCoverage,
+    scatter, missesAll, drift, driftTrend, driftExcluded, backtest,
   };
 }
