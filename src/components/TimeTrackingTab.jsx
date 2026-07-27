@@ -277,12 +277,32 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
     return true;
   }), [tickets, selectedAssignee, selectedProject]);
 
-  const cfg = { spPerDay, hoursPerDay, planningHoursPerSP, scaleType, hoursPerIdealDay, eligibility, selectedProject };
+  // allocationPct by actual completed-SP share per project (logging-immune; avoids the
+  // circularity that an hours-based share would introduce with logging completeness).
+  // For each person: completed pointed SP on the selected project ÷ their total across all projects.
+  const allocationByName = useMemo(() => {
+    if (selectedProject === 'all') return {};
+    const allow = new Set(ALLOWED_TYPES);
+    const total = {}, proj = {};
+    for (const t of tickets) {
+      if (!isDone(getStatus(t))) continue;
+      const sp = getSP(t); if (sp <= 0) continue;
+      const type = getType(t).toLowerCase(); if (type === 'epic' || !allow.has(type)) continue;
+      const name = getAssignee(t);
+      total[name] = (total[name] || 0) + sp;
+      if (getProject(t) === selectedProject) proj[name] = (proj[name] || 0) + sp;
+    }
+    const map = {};
+    for (const name in total) { const p = proj[name] || 0; map[name] = p > 0 ? p / total[name] : null; }
+    return map;
+  }, [tickets, selectedProject]);
+
+  const cfg = { spPerDay, hoursPerDay, planningHoursPerSP, scaleType, hoursPerIdealDay, eligibility, selectedProject, allocationByName };
   const M = useMemo(
     () => computeMetrics(scoped, today, typeMode, cfg, worklog, windowN, preview && isDev),
     // worklog derived from wl.byKey/wl.status; cfg is a fresh object each render so its primitives are listed instead
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scoped, today, typeMode, spPerDay, hoursPerDay, scaleType, hoursPerIdealDay, eligibility, selectedProject, wl.byKey, wl.status, windowN, preview, isDev]
+    [scoped, today, typeMode, spPerDay, hoursPerDay, scaleType, hoursPerIdealDay, eligibility, selectedProject, allocationByName, wl.byKey, wl.status, windowN, preview, isDev]
   );
   const effScaleType = M.scaleType; // resolved (auto → detected)
 
@@ -309,9 +329,11 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
   ].filter(Boolean).join(' · ');
 
   const typeLabel = typeMode === 'pool' ? 'Story + Task + Bug' : typeMode[0].toUpperCase() + typeMode.slice(1);
-  const allocLabel = M.allocationAssumed
-    ? 'assumes full allocation — verify'
-    : `allocation from Allocation tab (~${M.effectiveFTE} FTE of ${M.numContributors})${M.allocationPartial ? ', some defaulted to 100%' : ''}`;
+  const allocLabel = M.allocationBasis === 'portfolio'
+    ? 'whole portfolio in scope (100%)'
+    : M.allocationAssumed
+      ? 'assumes full allocation — verify'
+      : `allocation by ${M.allocationBasis === 'sp-share' ? 'completed-SP share' : 'Allocation-tab eligibility'} (~${M.effectiveFTE} FTE of ${M.numContributors})${M.allocationPartial ? ', some defaulted to 100%' : ''}`;
 
   // ── Shared control bar ──
   const controls = (
@@ -972,7 +994,7 @@ function WhatThisMeans({ M, typeLabel }) {
   const flagBits = M.worklogMode
     ? `worklog-level: ${M.totalWorklogs} worklogs, ${M.roundNumberBias}% round numbers${M.carryoverRate > 25 ? `, ${M.carryoverRate}% carried over` : ''}`
     : `ticket-level attribution; round-number bias not checked${M.carryoverRate > 25 ? `, ${M.carryoverRate}% carried over` : ''}`;
-  const allocNote = M.allocationAssumed ? ' (assumes full allocation — verify)' : ` (allocation from Allocation tab, ~${M.effectiveFTE} FTE)`;
+  const allocNote = M.allocationBasis === 'portfolio' ? '' : M.allocationAssumed ? ' (assumes full allocation — verify)' : ` (allocation by ${M.allocationBasis === 'sp-share' ? 'completed-SP share' : 'eligibility'}, ~${M.effectiveFTE} FTE)`;
   lines.push(`Sample: ${M.n} completed, pointed, time-logged ${typeLabel} tickets (${M.logCoverage}% log coverage). ${flagBits}. Worklogs capture ~${M.loggingCompleteness !== null ? pctI(M.loggingCompleteness * 100) : '?'}% of working time${allocNote}.`);
 
   // 2. capacity from THROUGHPUT (logging-immune), not from logged h/SP
@@ -1042,17 +1064,21 @@ function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, pre
   const hoursPerIdealDay = cfg?.hoursPerIdealDay ?? 8;
   const planningHoursPerSP = cfg?.planningHoursPerSP ?? (hoursPerDay / spPerDay);
   const eligibility = cfg?.eligibility || {};
+  const allocationByName = cfg?.allocationByName || {};
   const selectedProject = cfg?.selectedProject ?? 'all';
+  const hasAllocation = selectedProject !== 'all' && Object.keys(allocationByName).length > 0;
   const hasEligibility = Object.keys(eligibility).length > 0;
-  // allocationPct(person) — fraction of their working time on the analysed scope, from the
-  // Allocation tab's eligibility map (even split across each person's eligible projects).
-  // Returns null when we have no eligibility row for that person (caller falls back to 100%).
+  // allocationPct(person) — fraction of their working time on the analysed scope.
+  //  1. primary: completed-SP share on this project vs all their projects (logging-immune)
+  //  2. fallback: even split across their eligible projects (Allocation tab)
+  //  3. else null → caller uses 100%
   const allocationPctOf = name => {
+    if (selectedProject === 'all') return 1;               // whole tracked portfolio is in scope
+    const share = allocationByName[name];
+    if (share != null) return share;
     const elig = eligibility[name];
-    if (!elig || !elig.length) return null;
-    if (selectedProject === 'all') return 1;              // whole tracked portfolio is in scope
-    const projects = elig.includes(selectedProject) ? elig.length : elig.length + 1;
-    return 1 / projects;                                   // this project is one of their shares
+    if (elig && elig.length) return 1 / (elig.includes(selectedProject) ? elig.length : elig.length + 1);
+    return null;
   };
   const allow = new Set(ALLOWED_TYPES);
   const wlByKey = worklog?.byKey || null;
@@ -1282,8 +1308,9 @@ function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, pre
   }, 0);
   const capacityHours = (effectiveFTE || numContributors) * workingDaysInWindow * hoursPerDay;
   const loggingCompleteness = capacityHours > 0 ? totalLoggedHours / capacityHours : null;
-  const allocationAssumed = !hasEligibility;                 // true only if we had NO eligibility data
-  const allocationPartial = hasEligibility && missingAlloc > 0;
+  const allocationAssumed = selectedProject === 'all' || (!hasAllocation && !hasEligibility);
+  const allocationPartial = !allocationAssumed && missingAlloc > 0;
+  const allocationBasis = selectedProject === 'all' ? 'portfolio' : (hasAllocation ? 'sp-share' : 'eligibility');
   const effectiveFTEval = Math.round(effectiveFTE * 10) / 10;
   const suppressAbsolute = loggingCompleteness !== null && loggingCompleteness < 0.70;
 
@@ -1293,7 +1320,7 @@ function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, pre
     worklogMode, roundNumberBias, totalWorklogs, worklogCoverage, worklogsPerTicket, contributors, sampleKeys,
     windowN, nCompletedInWindow, detectedScale, scaleType,
     // A1/A2/A3
-    loggingCompleteness, allocationAssumed, allocationPartial, effectiveFTE: effectiveFTEval, suppressAbsolute,
+    loggingCompleteness, allocationAssumed, allocationPartial, allocationBasis, effectiveFTE: effectiveFTEval, suppressAbsolute,
     numContributors, totalLoggedHours, capacityHours,
     deliveredSPPerPersonDay, impliedCapacityHoursPerSP, throughputMultiple, throughputRows, completionRate,
   };
