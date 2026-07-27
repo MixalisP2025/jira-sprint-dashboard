@@ -277,32 +277,19 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
     return true;
   }), [tickets, selectedAssignee, selectedProject]);
 
-  // allocationPct by actual completed-SP share per project (logging-immune; avoids the
-  // circularity that an hours-based share would introduce with logging completeness).
-  // For each person: completed pointed SP on the selected project ÷ their total across all projects.
-  const allocationByName = useMemo(() => {
-    if (selectedProject === 'all') return {};
-    const allow = new Set(ALLOWED_TYPES);
-    const total = {}, proj = {};
-    for (const t of tickets) {
-      if (!isDone(getStatus(t))) continue;
-      const sp = getSP(t); if (sp <= 0) continue;
-      const type = getType(t).toLowerCase(); if (type === 'epic' || !allow.has(type)) continue;
-      const name = getAssignee(t);
-      total[name] = (total[name] || 0) + sp;
-      if (getProject(t) === selectedProject) proj[name] = (proj[name] || 0) + sp;
-    }
-    const map = {};
-    for (const name in total) { const p = proj[name] || 0; map[name] = p > 0 ? p / total[name] : null; }
-    return map;
-  }, [tickets, selectedProject]);
+  // All-projects tickets filtered by assignee only (not project) — the panel needs cross-project
+  // work to compute each person's SP-share allocation, windowed to the same completed sprints.
+  const allProjectTickets = useMemo(
+    () => (selectedAssignee === 'all' ? tickets : tickets.filter(t => getAssignee(t) === selectedAssignee)),
+    [tickets, selectedAssignee]
+  );
 
-  const cfg = { spPerDay, hoursPerDay, planningHoursPerSP, scaleType, hoursPerIdealDay, eligibility, selectedProject, allocationByName };
+  const cfg = { spPerDay, hoursPerDay, planningHoursPerSP, scaleType, hoursPerIdealDay, eligibility, selectedProject, allProjectTickets };
   const M = useMemo(
     () => computeMetrics(scoped, today, typeMode, cfg, worklog, windowN, preview && isDev),
     // worklog derived from wl.byKey/wl.status; cfg is a fresh object each render so its primitives are listed instead
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scoped, today, typeMode, spPerDay, hoursPerDay, scaleType, hoursPerIdealDay, eligibility, selectedProject, allocationByName, wl.byKey, wl.status, windowN, preview, isDev]
+    [scoped, today, typeMode, spPerDay, hoursPerDay, scaleType, hoursPerIdealDay, eligibility, selectedProject, allProjectTickets, wl.byKey, wl.status, windowN, preview, isDev]
   );
   const effScaleType = M.scaleType; // resolved (auto → detected)
 
@@ -1064,22 +1051,9 @@ function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, pre
   const hoursPerIdealDay = cfg?.hoursPerIdealDay ?? 8;
   const planningHoursPerSP = cfg?.planningHoursPerSP ?? (hoursPerDay / spPerDay);
   const eligibility = cfg?.eligibility || {};
-  const allocationByName = cfg?.allocationByName || {};
   const selectedProject = cfg?.selectedProject ?? 'all';
-  const hasAllocation = selectedProject !== 'all' && Object.keys(allocationByName).length > 0;
   const hasEligibility = Object.keys(eligibility).length > 0;
-  // allocationPct(person) — fraction of their working time on the analysed scope.
-  //  1. primary: completed-SP share on this project vs all their projects (logging-immune)
-  //  2. fallback: even split across their eligible projects (Allocation tab)
-  //  3. else null → caller uses 100%
-  const allocationPctOf = name => {
-    if (selectedProject === 'all') return 1;               // whole tracked portfolio is in scope
-    const share = allocationByName[name];
-    if (share != null) return share;
-    const elig = eligibility[name];
-    if (elig && elig.length) return 1 / (elig.includes(selectedProject) ? elig.length : elig.length + 1);
-    return null;
-  };
+  const allProjectTickets = cfg?.allProjectTickets || [];
   const allow = new Set(ALLOWED_TYPES);
   const wlByKey = worklog?.byKey || null;
   const worklogMode = !!wlByKey;
@@ -1129,6 +1103,36 @@ function computeMetrics(tickets, today, typeMode, cfg, worklog, windowN = 6, pre
   const windowSprints = completedSprints.slice(-windowN);
   const windowSet = new Set(windowSprints.map(w => w.name));
   const inflightSprints = windows.filter(isInflight);
+
+  // Window date span — used to window the cross-project allocation share exactly to these sprints.
+  const windowStart = windowSprints.length ? windowSprints.reduce((m, w) => (w.start < m ? w.start : m), windowSprints[0].start) : null;
+  const windowEnd = windowSprints.length ? windowSprints.reduce((m, w) => (w.end > m ? w.end : m), windowSprints[0].end) : null;
+  // allocationPct by completed-SP share on the analysed project, over the SAME window: a person's
+  // completed pointed SP resolved within [windowStart, windowEnd] on this project ÷ their total across
+  // all projects in that span. Other projects attribute by resolution date (their sprint names differ).
+  const allocTotal = {}, allocProj = {};
+  if (selectedProject !== 'all' && windowStart && windowEnd) {
+    for (const t of allProjectTickets) {
+      if (!isDone(getStatus(t))) continue;
+      const sp = getSP(t); if (sp <= 0) continue;
+      const type = getType(t).toLowerCase(); if (type === 'epic' || !allow.has(type)) continue;
+      const rd = getResolved(t); const d = rd ? new Date(rd) : null;
+      if (!d || isNaN(d) || d < windowStart || d > windowEnd) continue;
+      const name = getAssignee(t);
+      allocTotal[name] = (allocTotal[name] || 0) + sp;
+      if (getProject(t) === selectedProject) allocProj[name] = (allocProj[name] || 0) + sp;
+    }
+  }
+  const hasAllocation = Object.keys(allocTotal).length > 0;
+  // 1. completed-SP share (windowed) · 2. eligibility even-split · 3. null → 100%
+  const allocationPctOf = name => {
+    if (selectedProject === 'all') return 1;
+    const tp = allocTotal[name] || 0, pp = allocProj[name] || 0;
+    if (tp > 0 && pp > 0) return pp / tp;
+    const elig = eligibility[name];
+    if (elig && elig.length) return 1 / (elig.includes(selectedProject) ? elig.length : elig.length + 1);
+    return null;
+  };
 
   const typeOk = t => {
     const type = getType(t).toLowerCase();
