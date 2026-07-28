@@ -165,7 +165,7 @@ function shortSprintLabel(name) {
 // ─── Shared UI ────────────────────────────────────────────────────────────────
 function Card({ children, style = {} }) {
   return (
-    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '20px 22px', marginBottom: 16, ...style }}>
+    <div className="tt-print-card" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '20px 22px', marginBottom: 16, ...style }}>
       {children}
     </div>
   );
@@ -183,7 +183,7 @@ function CardHeader({ title, subtitle, right }) {
 }
 function Banner({ color, icon, children }) {
   return (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '11px 14px', background: `${color}12`, border: `1px solid ${color}40`, borderRadius: 10, marginBottom: 14, fontSize: 12.5, color: '#e2e8f0', lineHeight: 1.55 }}>
+    <div className="tt-print-banner" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '11px 14px', background: `${color}12`, border: `1px solid ${color}40`, borderRadius: 10, marginBottom: 14, fontSize: 12.5, color: '#e2e8f0', lineHeight: 1.55 }}>
       <span style={{ color, flexShrink: 0, marginTop: 1 }}>{icon}</span>
       <div>{children}</div>
     </div>
@@ -397,6 +397,19 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
     </div>
   );
 
+  // Print controls (button hidden in the printout; header shown only in print)
+  const printBar = (
+    <div className="tt-no-print" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+      <button onClick={() => window.print()} style={btnGhost} title="Opens the browser print dialog — choose a printer or Save as PDF">🖨 Print / Save as PDF</button>
+    </div>
+  );
+  const printHeader = (
+    <div className="tt-print-header">
+      <div style={{ fontSize: 18, fontWeight: 800 }}>Story Point Estimation Quality</div>
+      <div style={{ fontSize: 12 }}>{scopeLabel} · {typeLabel} · {M.worklogMode ? 'worklog-level' : 'ticket-level'} · generated {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+    </div>
+  );
+
   // ── Worklog-level load bar ──
   const worklogBar = M.n > 0 && (
     <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', background: wl.status === 'loaded' ? 'rgba(34,197,94,0.06)' : 'rgba(96,165,250,0.06)', border: `1px solid ${wl.status === 'loaded' ? 'rgba(34,197,94,0.28)' : 'rgba(96,165,250,0.28)'}`, borderRadius: 12, padding: '12px 18px', marginBottom: 16 }}>
@@ -455,7 +468,9 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
   // ── Accumulation countdown (replaces the old "panel disabled" dead-end) ──
   if (M.accumulating) {
     return (
-      <div>
+      <div className="tt-print-root">
+        {printBar}
+        {printHeader}
         {controls}
         {scopeNote}
         {worklogBar}
@@ -469,7 +484,9 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
   // ── Coverage gate (not an error — a data-quality stop) ──
   if (M.coverageGate) {
     return (
-      <div>
+      <div className="tt-print-root">
+        {printBar}
+        {printHeader}
         {controls}
         {scopeNote}
         {worklogBar}
@@ -496,7 +513,9 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
   const spreadColor = M.spreadFactor < 1.5 ? '#22c55e' : M.spreadFactor <= 2.0 ? '#f59e0b' : '#ef4444';
 
   return (
-    <div>
+    <div className="tt-print-root">
+      {printBar}
+      {printHeader}
       {controls}
       {scopeNote}
       {worklogBar}
