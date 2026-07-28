@@ -15,6 +15,7 @@ import JiraRefreshButton from './components/JiraRefreshButton';
 import ServerStatus from './components/ServerStatus';
 import SprintHealthTab from './components/SprintHealthTab';
 import TimeTrackingTab from './components/TimeTrackingTab';
+import TeamContributionTab from './components/TeamContributionTab';
 import AllocationTab from './components/AllocationTab';
 import CSRTicketsTab from './components/CSRTicketsTab';
 import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
@@ -1397,6 +1398,7 @@ const SprintDashboard = () => {
     capacity: { icon: Users, label: 'Capacity' },
     health: { icon: TrendingUp, label: 'Health' },
     time: { icon: Clock, label: 'Time Tracking' },
+    team: { icon: Users, label: 'Team' },
     sprints: { icon: Target, label: 'Sprints' },
     projects: { icon: Briefcase, label: 'Projects' },
     timeline: { icon: BarChart3, label: 'Timeline' },
@@ -1777,6 +1779,13 @@ const SprintDashboard = () => {
             tickets={data}
             sprints={sprints}
             selectedAssignee={selectedAssignee}
+            selectedProject={selectedProject}
+          />
+        )}
+
+        {activeTab === 'team' && (
+          <TeamContributionTab
+            tickets={data}
             selectedProject={selectedProject}
           />
         )}
