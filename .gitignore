@@ -29,3 +29,4 @@ azdo.config.json
 # Local env files (keep secrets out of Git)
 server/.env
 server/.env.*
+_*.mjs
