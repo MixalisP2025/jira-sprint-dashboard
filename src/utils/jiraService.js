@@ -142,6 +142,28 @@ export const jiraService = {
     return { worklogs: allWorklogs, errors: allErrors, truncatedKeyList, keysRequested: unique.length };
   },
 
+  // Fetch status/assignee change history for a set of issue keys (chunked).
+  // Returns { changelogs: [{key, status:[{t,from,to}], assignee:[{t,from,to}]}], errors, truncatedKeyList }.
+  async getChangelogs(keys = []) {
+    const unique = Array.from(new Set((keys || []).filter(Boolean)));
+    if (unique.length === 0) return { changelogs: [], errors: [], truncatedKeyList: false };
+    const CHUNK = 120;
+    const all = [];
+    const allErrors = [];
+    let truncatedKeyList = false;
+    for (let i = 0; i < unique.length; i += CHUNK) {
+      const chunk = unique.slice(i, i + CHUNK);
+      const params = new URLSearchParams({ keys: chunk.join(',') });
+      const response = await fetch(`${API_BASE}/jira/changelogs?${params}`, { method: 'GET', headers: { 'Content-Type': 'application/json' } });
+      if (!response.ok) { const text = await response.text().catch(() => ''); throw new Error(`HTTP ${response.status} fetching changelogs: ${text.slice(0, 200)}`); }
+      const data = await response.json();
+      all.push(...(data.changelogs || []));
+      if (data.errors?.length) allErrors.push(...data.errors);
+      if (data.truncatedKeyList) truncatedKeyList = true;
+    }
+    return { changelogs: all, errors: allErrors, truncatedKeyList };
+  },
+
   // Get all issues (handles pagination using Jira "total")
   async getAllIssues(jql = buildJQL(), fields = null) {
     console.log("=== getAllIssues PER-PROJECT START ===");

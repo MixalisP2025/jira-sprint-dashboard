@@ -521,6 +521,52 @@ app.get('/api/jira/worklogs', async (req, res) => {
   }
 });
 
+// Fetch status/assignee change history for a set of issue keys.
+// Powers exact assignee-at-completion, cycle time, reopen rate and blocked share
+// in the Team Contribution panel. Returns only status + assignee items (compact).
+app.get('/api/jira/changelogs', async (req, res) => {
+  try {
+    let keys = String(req.query.keys || '').split(',').map(k => k.trim()).filter(Boolean);
+    if (!keys.length) return res.status(400).json({ error: 'keys query param required (comma-separated issue keys)' });
+    const MAX_KEYS = 800;
+    const truncatedKeyList = keys.length > MAX_KEYS;
+    if (truncatedKeyList) keys = keys.slice(0, MAX_KEYS);
+
+    const auth = Buffer.from(`${JIRA_CONFIG.email}:${JIRA_CONFIG.apiToken}`).toString('base64');
+    const headers = { Authorization: `Basic ${auth}`, Accept: 'application/json' };
+    const changelogs = [];
+    const errors = [];
+
+    await mapLimit(keys, 6, async (key) => {
+      try {
+        let startAt = 0; let total = Infinity; const status = []; const assignee = [];
+        while (startAt < total) {
+          const r = await axios.get(`${JIRA_CONFIG.baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}/changelog`, { headers, params: { startAt, maxResults: 100 }, timeout: 30000 });
+          const vals = r.data.values || [];
+          total = Number.isFinite(r.data.total) ? r.data.total : vals.length;
+          for (const h of vals) {
+            const t = h.created;
+            for (const it of (h.items || [])) {
+              if (it.field === 'status' || it.fieldId === 'status') status.push({ t, from: it.fromString, to: it.toString });
+              else if (it.field === 'assignee' || it.fieldId === 'assignee') assignee.push({ t, from: it.fromString, to: it.toString });
+            }
+          }
+          startAt += vals.length;
+          if (!vals.length) break;
+        }
+        changelogs.push({ key, status, assignee });
+      } catch (e) {
+        errors.push({ key, message: e.response?.status ? `HTTP ${e.response.status}` : e.message });
+      }
+    });
+
+    res.json({ changelogs, count: changelogs.length, keysRequested: keys.length, truncatedKeyList, errors });
+  } catch (error) {
+    console.error('Error fetching changelogs:', error.message);
+    res.status(500).json({ error: 'Failed to fetch changelogs', message: error.message });
+  }
+});
+
 // Serve React app for all non-API routes (must be after all API routes)
 if (hasDist) {
   app.get('*', (req, res) => {

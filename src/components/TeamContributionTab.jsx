@@ -25,6 +25,32 @@ const SEC_PER_HOUR = 3600;
 const ROUND_WORKLOG_SECS = new Set([3600, 14400, 28800]); // 1h / 4h / 8h
 const normStatus = (s = '') => s.toLowerCase().trim();
 const isDone = s => ['done', 'completed', 'closed', 'resolved'].includes(normStatus(s));
+const TODO_NAMES = new Set(['to do', 'to-do', 'todo', 'open', 'backlog', 'new', 'selected for development', 'reopened']);
+const isTodoName = s => TODO_NAMES.has(normStatus(s));
+const isBlockedName = s => /block|impediment|on[\s-]?hold|waiting/i.test(s || '');
+
+// Derive exact per-ticket signals from a compact changelog {status:[{t,from,to}], assignee:[{t,from,to}]}
+function deriveChangelog(cl, currentAssignee, createdISO) {
+  const statuses = (cl?.status || []).map(x => ({ t: new Date(x.t), from: x.from, to: x.to })).filter(x => !isNaN(x.t)).sort((a, b) => a.t - b.t);
+  const assignees = (cl?.assignee || []).map(x => ({ t: new Date(x.t), from: x.from, to: x.to })).filter(x => !isNaN(x.t)).sort((a, b) => a.t - b.t);
+  let doneTime = null, firstActive = null, reopened = false, blocked = false;
+  for (const s of statuses) {
+    if (isDone(s.to)) doneTime = s.t;                                   // last transition INTO done
+    if (!firstActive && !isTodoName(s.to) && !isDone(s.to)) firstActive = s.t; // first move off the backlog
+    if (isDone(s.from) && !isDone(s.to)) reopened = true;              // came back from done
+    if (isBlockedName(s.to)) blocked = true;                          // entered a blocked status
+  }
+  let assigneeAtDone = currentAssignee;
+  if (assignees.length) {
+    if (doneTime) { let eff = assignees[0].from ?? currentAssignee; for (const a of assignees) { if (a.t <= doneTime) eff = a.to; else break; } assigneeAtDone = eff; }
+    else assigneeAtDone = assignees[assignees.length - 1].to;
+  }
+  assigneeAtDone = assigneeAtDone || 'Unassigned';
+  const created = createdISO ? new Date(createdISO) : null;
+  const startForCycle = firstActive || (created && !isNaN(created) ? created : null);
+  const cycleDays = (startForCycle && doneTime) ? workingDaysBetween(startForCycle, doneTime) : null;
+  return { assigneeAtDone, cycleDays, reopened, blocked };
+}
 
 const f1 = n => (Number.isFinite(n) ? Math.round(n * 10) / 10 : null);
 const f2 = n => (Number.isFinite(n) ? Math.round(n * 100) / 100 : null);
@@ -117,6 +143,7 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
   const [sortDir, setSortDir] = useState('asc');
   const [splitByHours, setSplitByHours] = useState(false); // section 2 toggle (contaminated)
   const [wl, setWl] = useState({ status: 'idle', byKey: null });
+  const [cl, setCl] = useState({ status: 'idle', byKey: null });
 
   const [eligibility, setEligibility] = useState(() => { try { const raw = localStorage.getItem('assigneeEligibility'); return raw ? JSON.parse(raw) : {}; } catch { return {}; } });
   useEffect(() => { let cancelled = false; (async () => { try { if (await pingDB()) { const db = await loadEligibilityFromDB(); if (db && Object.keys(db).length && !cancelled) setEligibility(db); } } catch { /* offline */ } })(); return () => { cancelled = true; }; }, []);
@@ -205,6 +232,26 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [worklogKeyStr]);
 
+  // Auto-load change history for the completed tickets (exact assignee-at-done, cycle, reopen, blocked)
+  const completedKeyStr = completedTickets.map(getKey).join(',');
+  useEffect(() => {
+    const keys = completedTickets.map(getKey).filter(Boolean);
+    if (!keys.length) { setCl({ status: 'idle', byKey: null }); return; }
+    let cancelled = false;
+    setCl(s => ({ ...s, status: 'loading' }));
+    (async () => {
+      try {
+        const res = await jiraService.getChangelogs(keys);
+        if (cancelled) return;
+        const byKey = new Map();
+        for (const c of res.changelogs) byKey.set(c.key, c);
+        setCl({ status: 'loaded', byKey, errorsCount: res.errors?.length || 0 });
+      } catch (e) { if (!cancelled) setCl({ status: 'error', byKey: null, error: e.message }); }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completedKeyStr]);
+
   // Allocation: windowed completed-SP share on the project (logging-immune) → eligibility fallback → null
   const allocationPctOf = useMemo(() => {
     const allow = new Set(ALLOWED_TYPES);
@@ -229,8 +276,8 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
   }, [tickets, selectedProject, windowStart, windowEnd, eligibility]);
 
   const M = useMemo(
-    () => computeTeam({ completedTickets, worklog: wl.status === 'loaded' ? wl.byKey : null, allocationPctOf, windowSprints, workingDaysInWindow, windowStart, windowEnd, hoursPerDay, attrSprintOf, windowFor, splitByHours }),
-    [completedTickets, wl.byKey, wl.status, allocationPctOf, windowSprints, workingDaysInWindow, windowStart, windowEnd, hoursPerDay, attrSprintOf, windowFor, splitByHours]
+    () => computeTeam({ completedTickets, worklog: wl.status === 'loaded' ? wl.byKey : null, changelog: cl.status === 'loaded' ? cl.byKey : null, allocationPctOf, windowSprints, workingDaysInWindow, windowStart, windowEnd, hoursPerDay, attrSprintOf, windowFor, splitByHours }),
+    [completedTickets, wl.byKey, wl.status, cl.byKey, cl.status, allocationPctOf, windowSprints, workingDaysInWindow, windowStart, windowEnd, hoursPerDay, attrSprintOf, windowFor, splitByHours]
   );
 
   const scopeLabel = [`last ${windowN} completed sprints`, selectedProject !== 'all' ? selectedProject : 'all projects'].join(' · ');
@@ -281,7 +328,7 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
   );
   const scopeNote = (
     <div style={{ fontSize: 11.5, color: '#6b7280', margin: '0 2px 12px' }}>
-      Scope: <strong style={{ color: '#94a3b8' }}>last {windowN} completed sprints</strong> for {selectedProject !== 'all' ? <strong style={{ color: '#94a3b8' }}>{selectedProject}</strong> : 'all projects'} (ignores the sprint & assignee filters). SP credited to the <strong style={{ color: '#94a3b8' }}>assignee at completion</strong>; hours to the <strong style={{ color: '#94a3b8' }}>worklog author</strong>. Working days exclude weekends and Greek public holidays.
+      Scope: <strong style={{ color: '#94a3b8' }}>last {windowN} completed sprints</strong> for {selectedProject !== 'all' ? <strong style={{ color: '#94a3b8' }}>{selectedProject}</strong> : 'all projects'} (ignores the sprint & assignee filters). SP credited to the <strong style={{ color: '#94a3b8' }}>assignee at completion</strong>{M.changelogLoaded ? ' (from change history)' : ''}; hours to the <strong style={{ color: '#94a3b8' }}>worklog author</strong>. Working days exclude weekends and Greek public holidays.
     </div>
   );
 
@@ -308,6 +355,8 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
       )}
       {wl.status === 'loading' && <Banner color="#60a5fa" icon={<Microscope size={15} />}>Loading worklogs for hours attribution… ({worklogKeys.length} tickets)</Banner>}
       {wl.status === 'error' && <Banner color="#ef4444" icon={<AlertTriangle size={15} />}>Worklog load failed — hours-based columns unavailable this session. {wl.error}</Banner>}
+      {cl.status === 'loading' && <Banner color="#60a5fa" icon={<Microscope size={15} />}>Loading change history for exact assignee-at-completion, cycle time, reopen &amp; blocked rates… ({completedTickets.length} tickets)</Banner>}
+      {cl.status === 'error' && <Banner color="#f59e0b" icon={<AlertTriangle size={15} />}>Change-history load failed — using current assignee and Start→Done cycle time; reopen/blocked unavailable. {cl.error}</Banner>}
       {M.suppressedNames.length > 0 && (
         <Banner color="#64748b" icon="ℹ">Normalised metrics suppressed for {M.suppressedNames.length} contributor(s) — {M.suppressedNames.join(', ')} — due to too few completed pointed tickets (n&lt;10) or unknown allocation. Raw volume still shown.</Banner>
       )}
@@ -332,13 +381,13 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
                 <SortTh col="name" align="left">Contributor</SortTh>
                 <th style={{ ...thR, borderLeft: '2px solid rgba(255,255,255,0.06)' }} colSpan={5}>Volume (raw)</th>
                 <th style={{ ...thR, borderLeft: '2px solid rgba(96,165,250,0.25)' }} colSpan={4}>Normalised (size-adjusted)</th>
-                <th style={{ ...thR, borderLeft: '2px solid rgba(255,255,255,0.06)', color: '#475569' }} colSpan={5}>Data quality</th>
+                <th style={{ ...thR, borderLeft: '2px solid rgba(255,255,255,0.06)', color: '#475569' }} colSpan={7}>Data quality &amp; flow (from change history)</th>
               </tr>
               <tr style={{ color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.04em', fontSize: 9.5 }}>
                 <th style={thL}></th>
                 <SortTh col="tickets">Tickets</SortTh><SortTh col="sp">SP</SortTh><SortTh col="hours">Hours</SortTh><th style={thR}>Worklogs</th><th style={thR}>Sprints</th>
                 <SortTh col="spPerDay">SP/avail-day (95% CI)</SortTh><SortTh col="medianSize">Med size</SortTh><th style={thR}>Size mix</th><SortTh col="shareSP">SP% / cap%</SortTh>
-                <SortTh col="completeness">Log %</SortTh><th style={{ ...thR, color: '#475569' }}>Round%</th><th style={{ ...thR, color: '#475569' }}>WL/tkt</th><th style={{ ...thR, color: '#475569' }}>Shared%</th><th style={{ ...thR, color: '#475569' }}>Carry%</th>
+                <SortTh col="completeness">Log %</SortTh><th style={{ ...thR, color: '#475569' }}>Round%</th><th style={{ ...thR, color: '#475569' }}>WL/tkt</th><th style={{ ...thR, color: '#475569' }}>Shared%</th><th style={{ ...thR, color: '#475569' }}>Carry%</th><th style={{ ...thR, color: '#475569' }}>Reopen%</th><th style={{ ...thR, color: '#475569' }}>Blocked%</th>
               </tr>
             </thead>
             <tbody>
@@ -370,6 +419,8 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
                     <td style={{ ...tdR, color: '#64748b' }}>{r.worklogsPerTicket != null ? f1(r.worklogsPerTicket) : '—'}</td>
                     <td style={{ ...tdR, color: '#64748b' }}>{r.sharedShare != null ? pctI(r.sharedShare * 100) + '%' : '—'}</td>
                     <td style={{ ...tdR, color: '#64748b' }}>{r.carryoverRate != null ? pctI(r.carryoverRate * 100) + '%' : '—'}</td>
+                    <td style={{ ...tdR, color: r.reopenRate > 0 ? '#fca5a5' : '#64748b' }}>{r.reopenRate != null ? pctI(r.reopenRate * 100) + '%' : '—'}</td>
+                    <td style={{ ...tdR, color: r.blockedShare > 0 ? '#fcd34d' : '#64748b' }}>{r.blockedShare != null ? pctI(r.blockedShare * 100) + '%' : '—'}</td>
                   </tr>
                 );
               })}
@@ -433,7 +484,7 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
 
       {/* Chart 4: difficulty cross-check */}
       <Card>
-        <CardHeader title="Difficulty cross-check" subtitle="x = SP per available day · y = cycle-time per SP (working days). Describes the work, not the person. Reopen/blocked rates need Jira change history (not fetched)." />
+        <CardHeader title="Difficulty cross-check" subtitle={`x = SP per available day · y = cycle-time per SP (working days). Describes the work, not the person.${M.changelogLoaded ? ' Reopen/blocked rates in the table are from Jira change history.' : ' Reopen/blocked rates need change history (loading or unavailable).'}`} />
         {M.scatter.length < 2 ? <div style={{ padding: 24, textAlign: 'center', color: '#6b7280', fontSize: 13 }}>Not enough contributors clear the n≥10 gate.</div> : (
           <ResponsiveContainer width="100%" height={340}>
             <ScatterChart margin={{ top: 10, right: 20, left: 6, bottom: 20 }}>
@@ -448,7 +499,7 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
           </ResponsiveContainer>
         )}
         <div style={{ fontSize: 11, color: '#6b7280', marginTop: 8, lineHeight: 1.6 }}>
-          Quadrants (relative to team medians): <strong>low SP/day + high cycle/SP</strong> → work harder than its points suggest · <strong>low SP/day + low cycle/SP</strong> → lower volume that ran smoothly (check allocation/assignment) · <strong>high SP/day + high cycle/SP</strong> → carrying volume through friction · <strong>high SP/day + low cycle/SP</strong> → high volume, ran smoothly. Cycle time is Start→Done (or Created→Done) working days — an approximation of first-in-progress→Done.
+          Quadrants (relative to team medians): <strong>low SP/day + high cycle/SP</strong> → work harder than its points suggest · <strong>low SP/day + low cycle/SP</strong> → lower volume that ran smoothly (check allocation/assignment) · <strong>high SP/day + high cycle/SP</strong> → carrying volume through friction · <strong>high SP/day + low cycle/SP</strong> → high volume, ran smoothly. Cycle time is {M.changelogLoaded ? 'first-in-progress→Done working days (from change history)' : 'Start→Done working days (approx.)'}.
         </div>
       </Card>
 
@@ -495,13 +546,13 @@ function WhatThisMeans({ M, scopeLabel }) {
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
-function computeTeam({ completedTickets, worklog, allocationPctOf, windowSprints, workingDaysInWindow, windowStart, windowEnd, hoursPerDay, attrSprintOf, windowFor, splitByHours }) {
+function computeTeam({ completedTickets, worklog, changelog, allocationPctOf, windowSprints, workingDaysInWindow, windowStart, windowEnd, hoursPerDay, attrSprintOf, windowFor, splitByHours }) {
   const worklogsOf = key => (worklog && worklog.get(key)) || [];
   // authors set per ticket (for shared-work + medianContributors)
   const authorsOf = key => { const s = new Set(); for (const w of worklogsOf(key)) s.add(w.author); return s; };
 
   const people = {};
-  const ensure = name => (people[name] ||= { name, tickets: 0, sp: 0, ticketSPs: [], sizeMix: { Small: 0, Medium: 0, Large: 0 }, sprints: new Set(), sharedSP: 0, carryTickets: 0, cyclePerSP: [], contributorsPerTicket: [], sec: 0, worklogCount: 0, roundCount: 0, logTickets: new Set() });
+  const ensure = name => (people[name] ||= { name, tickets: 0, sp: 0, ticketSPs: [], sizeMix: { Small: 0, Medium: 0, Large: 0 }, sprints: new Set(), sharedSP: 0, carryTickets: 0, cyclePerSP: [], contributorsPerTicket: [], sec: 0, worklogCount: 0, roundCount: 0, logTickets: new Set(), clTickets: 0, reopenTickets: 0, blockedTickets: 0 });
 
   // team size terciles from all completed ticket SPs
   const allSP = completedTickets.map(getSP);
@@ -512,20 +563,25 @@ function computeTeam({ completedTickets, worklog, allocationPctOf, windowSprints
     const sp = getSP(t); const key = getKey(t);
     const authors = authorsOf(key);
     const sprint = attrSprintOf(t);
-    // carryover + cycle are per-ticket, credited to whoever gets the ticket
+    // exact per-ticket signals from change history when available
+    const cld = changelog && changelog.get(key) ? deriveChangelog(changelog.get(key), getAssignee(t), getCreated(t)) : null;
+    const hasCl = !!cld;
+    // carryover: worklog dates spanning >1 window, else sprint array length
     let carry = false;
     if (worklog) { const wins = new Set(); for (const w of worklogsOf(key)) { const win = w.started ? windowFor(w.started) : null; if (win) wins.add(win); } carry = wins.size > 1; }
     else { const raw = t._rawFields || {}; const sf = raw.customfield_10010 || raw.sprint; carry = Array.isArray(sf) && sf.length > 1; }
-    const cyc = cycleWorkingDays(getStart(t) || getCreated(t), getResolved(t));
+    // cycle: exact (first-active → done) from changelog, else Start/Created → Resolved
+    const cyc = cld?.cycleDays ?? cycleWorkingDays(getStart(t) || getCreated(t), getResolved(t));
+    const wholeAssignee = cld?.assigneeAtDone || getAssignee(t); // assignee AT completion
 
-    // credit map: {name: spCredited}. Default whole to assignee; split mode → by logged-hours share.
+    // credit map: {name: spCredited}. Default whole to assignee-at-done; split mode → by logged-hours share.
     let credit;
     if (splitByHours && worklog && worklogsOf(key).length) {
       const bySec = {}; let tot = 0;
       for (const w of worklogsOf(key)) { bySec[w.author] = (bySec[w.author] || 0) + (w.seconds || 0); tot += w.seconds || 0; }
-      credit = tot > 0 ? Object.fromEntries(Object.entries(bySec).map(([nm, s]) => [nm, sp * (s / tot)])) : { [getAssignee(t)]: sp };
+      credit = tot > 0 ? Object.fromEntries(Object.entries(bySec).map(([nm, s]) => [nm, sp * (s / tot)])) : { [wholeAssignee]: sp };
     } else {
-      credit = { [getAssignee(t)]: sp };
+      credit = { [wholeAssignee]: sp };
     }
 
     for (const [name, creditSP] of Object.entries(credit)) {
@@ -536,6 +592,7 @@ function computeTeam({ completedTickets, worklog, allocationPctOf, windowSprints
       p.contributorsPerTicket.push(authors.size || 1);
       if (carry) p.carryTickets += 1;
       if (cyc != null && sp > 0) p.cyclePerSP.push(cyc / sp);
+      if (hasCl) { p.clTickets += 1; if (cld.reopened) p.reopenTickets += 1; if (cld.blocked) p.blockedTickets += 1; }
     }
   }
 
@@ -585,6 +642,8 @@ function computeTeam({ completedTickets, worklog, allocationPctOf, windowSprints
       carryoverRate: p.tickets > 0 ? p.carryTickets / p.tickets : null,
       cyclePerSP: p.cyclePerSP.length ? median(p.cyclePerSP) : null,
       medianContributors: p.contributorsPerTicket.length ? median(p.contributorsPerTicket) : null,
+      reopenRate: p.clTickets > 0 ? p.reopenTickets / p.clTickets : null,
+      blockedShare: p.clTickets > 0 ? p.blockedTickets / p.clTickets : null,
       suppressed, allocUnknown, suppressReason: allocUnknown ? 'allocation unknown' : `n=${p.tickets} of 10`,
       _allocDays: allocDays,
     };
@@ -631,7 +690,7 @@ function computeTeam({ completedTickets, worklog, allocationPctOf, windowSprints
   const completenessSpread = comps.length >= 2 ? [Math.min(...comps), Math.max(...comps)] : null;
 
   return {
-    rows, suppressedNames,
+    rows, suppressedNames, changelogLoaded: !!changelog,
     team: { totalSP, totalTickets, totalAllocDays: teamAllocDays, spPerDay, spPerDayMedian, cyclePerSPMedian, sizeCut },
     barData, sizeMixData, scatter, divergence, completenessSpread,
     trend: { data: trendData, names: trendNames },
