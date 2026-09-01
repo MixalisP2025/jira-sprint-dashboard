@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Copy, Check, Zap, Users, LayoutGrid, RotateCcw, Download, Briefcase } from 'lucide-react';
 import { generateSuggestions } from '../utils/allocationSuggestions';
 import RolesTab from './RolesTab';
@@ -469,6 +469,12 @@ export default function AllocationTab({ filteredData, selectedSprint, assigneeCa
     [...new Set(filteredData.map(getAssignee).filter(a => a && a !== 'Unassigned' && !EXCLUDED.includes(a)))].sort(),
   [filteredData]);
 
+  // Set when eligibility is written by the seeder rather than by a user edit, so
+  // the persist effect below can skip it. lastSavedRef holds a fingerprint of the
+  // last persisted state to suppress duplicate writes.
+  const seededRef = useRef(false);
+  const lastSavedRef = useRef(null);
+
   // Seed eligibility from live data — always re-seed from actual ticket assignments
   // DB/localStorage is only used to persist manual changes made after seeding
   useEffect(() => {
@@ -510,10 +516,12 @@ export default function AllocationTab({ filteredData, selectedSprint, assigneeCa
         const hasData = Object.values(restored).some(s => s.size > 0);
         if (hasData) {
           assignees.forEach(a => { if (!restored[a]) restored[a] = fresh[a]; });
+          seededRef.current = true;
           setEligibility(restored);
           return;
         }
       }
+      seededRef.current = true;
       setEligibility(fresh);
     }
 
@@ -521,10 +529,31 @@ export default function AllocationTab({ filteredData, selectedSprint, assigneeCa
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredData]);
 
-  // Persist eligibility to DB + localStorage
+  // Persist eligibility to DB + localStorage.
+  // Seeding always builds a brand-new object (with new Sets), so this effect saw
+  // a fresh identity on every data refresh and wrote the whole table back —
+  // a DELETE + re-INSERT of every row for a change nobody made. Only persist
+  // what the seed didn't just hand us.
   useEffect(() => {
     if (Object.keys(eligibility).length === 0) return;
+
+    if (seededRef.current) {
+      seededRef.current = false;
+      lastSavedRef.current = JSON.stringify(
+        Object.fromEntries(Object.entries(eligibility).map(([k, v]) => [k, [...v].sort()]))
+      );
+      return;
+    }
+
     const plain = Object.fromEntries(Object.entries(eligibility).map(([k, v]) => [k, [...v]]));
+    // Guard against re-saving identical content if the object identity changes
+    // for any other reason.
+    const fingerprint = JSON.stringify(
+      Object.fromEntries(Object.entries(plain).map(([k, v]) => [k, [...v].sort()]))
+    );
+    if (fingerprint === lastSavedRef.current) return;
+    lastSavedRef.current = fingerprint;
+
     localStorage.setItem(ELIGIBILITY_KEY, JSON.stringify(plain));
     pingDB().then(online => {
       if (online) saveEligibilityToDB(plain).catch(() => {});

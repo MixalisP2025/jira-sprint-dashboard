@@ -74,11 +74,30 @@ export async function loadSettingsFromDB() {
 }
 
 // ── Ping ──────────────────────────────────────────────────────
-export async function pingDB() {
-  try {
-    const r = await get('/ping');
-    return r.ok === true;
-  } catch (_) {
-    return false;
-  }
+// Result is cached for PING_TTL_MS and concurrent callers share one in-flight
+// request. Every component used to ping on mount and before every save, so a
+// single page load fired dozens of round trips that told us the same thing.
+const PING_TTL_MS = 60_000;
+let _pingValue = null;
+let _pingAt = 0;
+let _pingInFlight = null;
+
+export async function pingDB({ force = false } = {}) {
+  const fresh = Date.now() - _pingAt < PING_TTL_MS;
+  if (!force && _pingValue !== null && fresh) return _pingValue;
+  if (_pingInFlight) return _pingInFlight;
+
+  _pingInFlight = (async () => {
+    try {
+      const r = await get('/ping');
+      _pingValue = r.ok === true;
+    } catch {
+      _pingValue = false;
+    }
+    _pingAt = Date.now();
+    _pingInFlight = null;
+    return _pingValue;
+  })();
+
+  return _pingInFlight;
 }

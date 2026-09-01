@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Edit3, Save, X, Printer } from 'lucide-react';
 import { saveRolesToDB, loadRolesFromDB, pingDB } from '../utils/dbSync';
 
@@ -225,6 +225,10 @@ export default function RolesTab() {
     return DEFAULT_ROLES;
   });
 
+  // Fingerprint of the last state we persisted, so the effect below can tell a
+  // real user edit from state that just arrived out of storage or the DB.
+  const lastSavedRolesRef = useRef(null);
+
   // On mount: try to load from DB, fall back to localStorage
   useEffect(() => {
     async function load() {
@@ -233,6 +237,8 @@ export default function RolesTab() {
         if (online) {
           const dbRoles = await loadRolesFromDB();
           if (Array.isArray(dbRoles) && dbRoles.length > 0) {
+            // Came from the DB — don't turn around and write it straight back.
+            lastSavedRolesRef.current = JSON.stringify(dbRoles);
             setRoles(dbRoles);
             return;
           }
@@ -243,8 +249,18 @@ export default function RolesTab() {
     load();
   }, []);
 
+  // Only write when the content actually changed. This used to fire on mount
+  // (saving the defaults straight back), then again when the DB load replaced
+  // them — a round trip per mount for data that hadn't changed.
   useEffect(() => {
-    localStorage.setItem(ROLES_KEY, JSON.stringify(roles));
+    const serialised = JSON.stringify(roles);
+    localStorage.setItem(ROLES_KEY, serialised);
+
+    if (lastSavedRolesRef.current === serialised) return;
+    const isFirstRun = lastSavedRolesRef.current === null;
+    lastSavedRolesRef.current = serialised;
+    if (isFirstRun) return; // initial state came from storage/DB — nothing to push back
+
     // Persist to DB (fire-and-forget)
     pingDB().then(online => {
       if (online) saveRolesToDB(roles).catch(() => {});
