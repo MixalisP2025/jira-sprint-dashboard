@@ -1,4 +1,13 @@
 const oracledb = require('oracledb');
+const { createBreaker, DbUnavailableError, isFatal } = require('./circuitBreaker');
+
+// Guards every physical connection attempt. Credential errors block outright;
+// anything else backs off. While it is open or blocked nothing touches the
+// network, so a broken login can no longer flood the listener log.
+const breaker = createBreaker({
+  onStateChange: ({ from, to, reason }) =>
+    console.warn(`[oracle] circuit ${from} -> ${to}: ${reason}`),
+});
 
 // Thin mode is the default (no Oracle Instant Client needed).
 // Commit explicitly per request instead of per statement — one autocommit per
@@ -27,6 +36,8 @@ let poolPromise = null;
 
 function getPool() {
   if (!poolPromise) {
+    // Throws without any network I/O when the breaker is open or blocked.
+    breaker.assertAllowed();
     poolPromise = oracledb
       .createPool({
         ...config,
@@ -41,13 +52,16 @@ function getPool() {
         queueTimeout:     30000,
       })
       .then(p => {
+        breaker.recordSuccess();
         console.log('✅ Oracle connection pool created');
         return p;
       })
       .catch(err => {
         // Clear the cache so a transient outage doesn't poison the pool
         // permanently — the next request retries instead of failing forever.
+        // The breaker decides whether that next attempt is actually allowed.
         poolPromise = null;
+        breaker.recordFailure(err);
         throw err;
       });
   }
@@ -59,7 +73,21 @@ function getPool() {
 // single save into thousands of logons.
 async function withConnection(fn) {
   const pool = await getPool();
-  const conn = await pool.getConnection();
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+  } catch (err) {
+    // A pool can outlive valid credentials: an account locked *after* the pool
+    // was built surfaces here, not at createPool. A live pool with poolMin > 0
+    // re-establishes connections on its own, so a fatal error has to tear it
+    // down or it keeps hammering the listener with nobody driving it.
+    breaker.recordFailure(err);
+    if (isFatal(err)) await destroyPool();
+    throw err;
+  }
+  breaker.recordSuccess();
+
   try {
     return await fn(conn);
   } finally {
@@ -103,6 +131,26 @@ async function closePool() {
   if (pool) await pool.close(10);
 }
 
+// Drop the pool immediately, without draining. Used when credentials have gone
+// bad: every second a poolMin connection keeps retrying is more listener log.
+async function destroyPool() {
+  if (!poolPromise) return;
+  const p = poolPromise.catch(() => null);
+  poolPromise = null;
+  const pool = await p;
+  if (pool) { try { await pool.close(0); } catch (_) {} }
+}
+
+// Clear a blocked/open breaker after the credentials have actually been fixed.
+function resetCircuit() {
+  breaker.reset();
+  return breaker.status();
+}
+
+function circuitStatus() {
+  return breaker.status();
+}
+
 module.exports = {
   oracledb,
   query,
@@ -111,4 +159,8 @@ module.exports = {
   withTransaction,
   getPool,
   closePool,
+  destroyPool,
+  resetCircuit,
+  circuitStatus,
+  DbUnavailableError,
 };

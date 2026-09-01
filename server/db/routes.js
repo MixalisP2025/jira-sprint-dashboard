@@ -427,8 +427,31 @@ router.get('/ping', async (req, res) => {
     const result = await db.query(`SELECT 'OK' AS STATUS FROM DUAL`);
     safeJson(res, { ok: true, status: result.rows[0].STATUS });
   } catch (err) {
-    errJson(res, err);
+    // 503 rather than 500 when the breaker is holding the line — this is a
+    // known-unavailable state, not an unexpected failure.
+    const open = err && (err.code === 'DB_CIRCUIT_OPEN' || err.code === 'DB_CIRCUIT_BLOCKED');
+    safeJson(res, {
+      ok: false,
+      circuit: db.circuitStatus(),
+      error: String((err && err.message) || err),
+    }, open ? 503 : 500);
   }
+});
+
+// ── GET /api/db/status — breaker state, for diagnosis ────────
+// The original outage was invisible for weeks because every DB error was
+// swallowed client-side. This endpoint always answers, so "is the database
+// actually working?" has one place to look.
+router.get('/status', (req, res) => {
+  safeJson(res, db.circuitStatus());
+});
+
+// ── POST /api/db/reset-circuit — after fixing credentials ────
+// A blocked breaker is deliberately sticky: it will not retry a locked account
+// on its own. Call this once the account is unlocked and the password is right,
+// or just restart the backend.
+router.post('/reset-circuit', (req, res) => {
+  safeJson(res, { ok: true, circuit: db.resetCircuit() });
 });
 
 // ── GET /api/db/tables — check which SAD_ tables exist ───────
