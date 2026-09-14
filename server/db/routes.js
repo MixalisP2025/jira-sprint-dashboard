@@ -30,6 +30,10 @@ function num(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function round2(n) {
+  return n == null ? null : Math.round(n * 100) / 100;
+}
+
 // Rows are sent to Oracle in chunks so a large sprint pull doesn't build one
 // enormous bind array. Each chunk is still a single round trip.
 const CHUNK = 1000;
@@ -124,7 +128,10 @@ function toIssueBinds(issues) {
       assignee:    clamp(t['Assignee'] || t['D'], 255),
       projectKey:  clamp(t['Project'] || t['B'], 50),
       projectName: clamp(t['Project'] || t['B'], 255),
-      sp:          num(t['Story Points']),
+      // STORY_POINTS is NUMBER(10,2). Round first, or a derived value like
+      // 0.1333 never equals the stored 0.13 and the row is rewritten on every
+      // refresh by the change check in ISSUE_MERGE.
+      sp:          round2(num(t['Story Points'])),
       est:         num(t['Original Estimate']),
       priority:    clamp(t['Priority'], 50),
     });
