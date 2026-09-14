@@ -34,25 +34,33 @@ const config = {
 // them forever. Each re-establish is a fresh logon in the listener log.
 let poolPromise = null;
 
+// Pool settings, exported so the regression test runs the exact same config.
+const POOL_OPTIONS = {
+  // Must stay 0. In thin mode the pool's background task keeps poolMin
+  // connections open, and when a connect fails it retries immediately with no
+  // delay — measured at ~700 attempts/second against a dropped listener, with
+  // no requests at all. A DB restart, network blip or password change would
+  // restart the listener-log flood. With 0 the driver only connects when a
+  // request asks, so every attempt passes through the breaker below.
+  poolMin:       0,
+  poolMax:       10,
+  poolIncrement: 1,
+  // Never retire idle connections. The default (60s) meant a quiet period
+  // dropped connections that the next request had to re-open through the
+  // listener — steady churn with no work behind it. Once opened, a connection
+  // stays open even with poolMin 0.
+  poolTimeout:      0,
+  poolPingInterval: 60,
+  queueTimeout:     30000,
+};
+
 function getPool() {
   if (!poolPromise) {
-    // Throws without any network I/O when the breaker is open or blocked.
-    breaker.assertAllowed();
+    // createPool does no network I/O in thin mode and proves nothing about the
+    // credentials, so it is not recorded as a success — only a real connection is.
     poolPromise = oracledb
-      .createPool({
-        ...config,
-        poolMin:       1,
-        poolMax:       10,
-        poolIncrement: 1,
-        // Never retire idle connections. The default (60s) meant a quiet period
-        // dropped connections that the next request had to re-open through the
-        // listener — steady churn with no work behind it.
-        poolTimeout:      0,
-        poolPingInterval: 60,
-        queueTimeout:     30000,
-      })
+      .createPool({ ...config, ...POOL_OPTIONS })
       .then(p => {
-        breaker.recordSuccess();
         console.log('✅ Oracle connection pool created');
         return p;
       })
@@ -61,7 +69,6 @@ function getPool() {
         // permanently — the next request retries instead of failing forever.
         // The breaker decides whether that next attempt is actually allowed.
         poolPromise = null;
-        breaker.recordFailure(err);
         throw err;
       });
   }
@@ -72,16 +79,18 @@ function getPool() {
 // whole unit of work in one of these — borrowing per statement is what turned a
 // single save into thousands of logons.
 async function withConnection(fn) {
-  const pool = await getPool();
+  // Throws without any network I/O when the breaker is open or blocked. Checked
+  // on every borrow, not just pool creation — an existing pool whose connection
+  // was dropped would otherwise reconnect straight past an open breaker.
+  breaker.assertAllowed();
 
   let conn;
   try {
+    const pool = await getPool();
     conn = await pool.getConnection();
   } catch (err) {
-    // A pool can outlive valid credentials: an account locked *after* the pool
-    // was built surfaces here, not at createPool. A live pool with poolMin > 0
-    // re-establishes connections on its own, so a fatal error has to tear it
-    // down or it keeps hammering the listener with nobody driving it.
+    // Credential errors always surface here, never at createPool. Tear the pool
+    // down on a fatal one so nothing cached can keep trying the bad login.
     breaker.recordFailure(err);
     if (isFatal(err)) await destroyPool();
     throw err;
@@ -153,6 +162,7 @@ function circuitStatus() {
 
 module.exports = {
   oracledb,
+  POOL_OPTIONS,
   query,
   execute,
   withConnection,
