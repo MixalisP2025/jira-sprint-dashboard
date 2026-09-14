@@ -47,10 +47,21 @@ async function executeManyChunked(conn, sql, rows, bindDefs) {
 }
 
 // ── Issues ────────────────────────────────────────────────────
+// Every refresh re-sends the whole dataset, and nearly all of it is unchanged.
+// The WHERE on the matched branch skips rows whose values are identical, so an
+// unchanged ticket costs a read instead of an UPDATE — no undo/redo, nothing
+// for archive logs on DBSRV. DECODE compares NULLs as equal (a plain <> would
+// treat NULL vs NULL as "changed" and rewrite the row). FETCHED_AT therefore
+// means "last changed", not "last seen".
+//
+// The ON clause is NULL-safe for the same reason: Oracle stores '' as NULL, so
+// a ticket with no sprint never matched its own row, fell through to INSERT,
+// and hit UQ_ISSUE_KEY_SPRINT — failing the entire save on every refresh after
+// the first.
 const ISSUE_MERGE = `
   MERGE INTO SAD_ISSUES tgt
   USING (SELECT :key AS ISSUE_KEY, :sprint AS SPRINT_NAME FROM DUAL) src
-  ON (tgt.ISSUE_KEY = src.ISSUE_KEY AND tgt.SPRINT_NAME = src.SPRINT_NAME)
+  ON (tgt.ISSUE_KEY = src.ISSUE_KEY AND DECODE(tgt.SPRINT_NAME, src.SPRINT_NAME, 1, 0) = 1)
   WHEN MATCHED THEN UPDATE SET
     SUMMARY       = :summary,
     ISSUE_TYPE    = :type,
@@ -62,6 +73,15 @@ const ISSUE_MERGE = `
     ORIGINAL_EST  = :est,
     PRIORITY      = :priority,
     FETCHED_AT    = SYSTIMESTAMP
+  WHERE DECODE(tgt.SUMMARY,      :summary,     0, 1) = 1
+     OR DECODE(tgt.ISSUE_TYPE,   :type,        0, 1) = 1
+     OR DECODE(tgt.STATUS,       :status,      0, 1) = 1
+     OR DECODE(tgt.ASSIGNEE,     :assignee,    0, 1) = 1
+     OR DECODE(tgt.PROJECT_KEY,  :projectKey,  0, 1) = 1
+     OR DECODE(tgt.PROJECT_NAME, :projectName, 0, 1) = 1
+     OR DECODE(tgt.STORY_POINTS, :sp,          0, 1) = 1
+     OR DECODE(tgt.ORIGINAL_EST, :est,         0, 1) = 1
+     OR DECODE(tgt.PRIORITY,     :priority,    0, 1) = 1
   WHEN NOT MATCHED THEN INSERT
     (ISSUE_KEY, SUMMARY, ISSUE_TYPE, STATUS, ASSIGNEE,
      PROJECT_KEY, PROJECT_NAME, SPRINT_NAME, STORY_POINTS,
@@ -121,10 +141,11 @@ router.post('/issues', async (req, res) => {
     const rows = toIssueBinds(issues);
     if (!rows.length) return safeJson(res, { ok: true, count: 0, merged: 0 });
 
-    await db.withTransaction(conn =>
+    const written = await db.withTransaction(conn =>
       executeManyChunked(conn, ISSUE_MERGE, rows, ISSUE_BIND_DEFS)
     );
-    safeJson(res, { ok: true, count: issues.length, merged: rows.length });
+    // written counts only inserted + changed rows; unchanged rows are skipped.
+    safeJson(res, { ok: true, count: issues.length, merged: rows.length, written });
   } catch (err) {
     console.error('DB /issues error:', err);
     errJson(res, err);

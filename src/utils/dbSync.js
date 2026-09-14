@@ -19,8 +19,21 @@ async function get(path) {
 }
 
 // ── Issues ────────────────────────────────────────────────────
+// Only the fields SAD_ISSUES stores (see toIssueBinds in server/db/routes.js).
+// A full Jira pull is ~14M characters of JSON; nearly all of it is fields the
+// server throws away.
+const ISSUE_DB_FIELDS = [
+  'Issue key', 'Key', 'Sprint', 'G', 'Summary', 'Issue Type', 'Status',
+  'Assignee', 'D', 'Project', 'B', 'Story Points', 'Original Estimate', 'Priority',
+];
+
 export async function saveIssuesToDB(issues) {
-  return post('/issues', issues);
+  const slim = (issues || []).map(t => {
+    const row = {};
+    for (const f of ISSUE_DB_FIELDS) if (t[f] != null) row[f] = t[f];
+    return row;
+  });
+  return post('/issues', slim);
 }
 
 export async function loadIssuesFromDB(sprint = 'all') {

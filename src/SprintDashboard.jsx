@@ -83,6 +83,21 @@ const Tooltip = ({ children, content }) => {
   );
 };
 
+// Browser cache of the last dataset, best effort only. A full Jira pull is ~14M
+// characters against a ~5M localStorage quota, and the QuotaExceededError used
+// to abort the refresh handler before the Oracle save ran — issues were never
+// saved. Too big to cache just means the next load comes from Oracle instead.
+function cacheDashboardData(data, timestamp) {
+  try {
+    localStorage.setItem('cachedDashboardData', JSON.stringify(data));
+  } catch (e) {
+    console.warn('Dataset too large for the browser cache, skipping:', e.name);
+    // Don't leave an older, smaller dataset behind to be loaded as current.
+    try { localStorage.removeItem('cachedDashboardData'); } catch (_) {}
+  }
+  try { localStorage.setItem('lastUpdatedTimestamp', timestamp.toISOString()); } catch (_) {}
+}
+
 const SprintDashboard = () => {
   // ============== STATE ==============
   const [data, setData] = useState([]);
@@ -277,9 +292,7 @@ const SprintDashboard = () => {
         }
       }
       
-      // Save to localStorage
-      localStorage.setItem('cachedDashboardData', JSON.stringify(jiraData));
-      localStorage.setItem('lastUpdatedTimestamp', timestamp.toISOString());
+      cacheDashboardData(jiraData, timestamp);
       
       // Save to Oracle DB (fire-and-forget, don't block UI)
       if (dbStatus === 'online') {
@@ -472,9 +485,7 @@ const SprintDashboard = () => {
       setLastUpdated(timestamp);
       setCachedData(parsedData);
       
-      // Save to localStorage
-      localStorage.setItem('cachedDashboardData', JSON.stringify(parsedData));
-      localStorage.setItem('lastUpdatedTimestamp', timestamp.toISOString());
+      cacheDashboardData(parsedData, timestamp);
       
       // Save to Oracle DB
       if (dbStatus === 'online') {
