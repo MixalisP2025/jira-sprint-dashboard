@@ -207,6 +207,52 @@ router.get('/sprints', async (req, res) => {
   }
 });
 
+// ── Settings-style merges ─────────────────────────────────────
+// The dashboard re-saves capacity and settings every time it is opened, almost always
+// with identical values. Each WHEN MATCHED branch only updates a row whose values
+// actually differ, so an unchanged save writes nothing (no undo/redo, no archive log).
+//
+// CLOB columns cannot use DECODE, so they compare with DBMS_LOB.COMPARE, which returns
+// NULL when either side is NULL — hence the explicit NULL cases around it. Oracle stores
+// '' as NULL, so an empty string against a NULL column counts as unchanged.
+const CAPACITY_MERGE = `
+  MERGE INTO SAD_ASSIGNEE_CAPACITY tgt
+  USING (SELECT :assignee AS ASSIGNEE FROM DUAL) src
+  ON (tgt.ASSIGNEE = src.ASSIGNEE)
+  WHEN MATCHED THEN UPDATE SET SPRINT_CAPACITY = :sp, UPDATED_AT = SYSTIMESTAMP
+    WHERE tgt.SPRINT_CAPACITY <> :sp
+  WHEN NOT MATCHED THEN INSERT (ASSIGNEE, SPRINT_CAPACITY) VALUES (:assignee, :sp)`;
+
+const clobChanged = (col, bind) =>
+  `((${col} IS NULL AND ${bind} IS NOT NULL) OR (${col} IS NOT NULL AND ${bind} IS NULL) OR DBMS_LOB.COMPARE(${col}, ${bind}) <> 0)`;
+
+const SETTINGS_MERGE = `
+  MERGE INTO SAD_SETTINGS tgt
+  USING (SELECT :key AS SETTING_KEY FROM DUAL) src
+  ON (tgt.SETTING_KEY = src.SETTING_KEY)
+  WHEN MATCHED THEN UPDATE SET SETTING_VALUE = :val, UPDATED_AT = SYSTIMESTAMP
+    WHERE ${clobChanged('tgt.SETTING_VALUE', ':val')}
+  WHEN NOT MATCHED THEN INSERT (SETTING_KEY, SETTING_VALUE) VALUES (:key, :val)`;
+
+const ROLES_MERGE = `
+  MERGE INTO SAD_ROLES tgt
+  USING (SELECT :roleId AS ROLE_ID FROM DUAL) src
+  ON (tgt.ROLE_ID = src.ROLE_ID)
+  WHEN MATCHED THEN UPDATE SET
+    TITLE = :title, BULLETS = :bullets, RESPONSIBLE = :responsible,
+    SORT_ORDER = :sort, UPDATED_AT = SYSTIMESTAMP
+    WHERE DECODE(tgt.TITLE,       :title,       0, 1) = 1
+       OR DECODE(tgt.RESPONSIBLE, :responsible, 0, 1) = 1
+       OR DECODE(tgt.SORT_ORDER,  :sort,        0, 1) = 1
+       OR ${clobChanged('tgt.BULLETS', ':bullets')}
+  WHEN NOT MATCHED THEN INSERT
+    (ROLE_ID, TITLE, BULLETS, RESPONSIBLE, SORT_ORDER)
+  VALUES (:roleId, :title, :bullets, :responsible, :sort)`;
+
+// Bound as CLOB so a value over 4000 characters compares and stores the same way as a
+// short one, instead of being sent as a LONG that DBMS_LOB.COMPARE rejects.
+const clobBind = v => ({ val: v, type: oracledb.CLOB });
+
 // ── GET/POST /api/db/capacity ─────────────────────────────────
 router.get('/capacity', async (req, res) => {
   try {
@@ -224,21 +270,16 @@ router.post('/capacity', async (req, res) => {
     const caps = req.body; // { assignee: sp, ... }
     const rows = Object.entries(caps || {}).map(([assignee, sp]) => ({
       assignee: clamp(assignee, 255),
-      sp:       Number(sp) || 16,
+      // SPRINT_CAPACITY is NUMBER(10,2); round first or 12.345 never equals the stored 12.35
+      sp:       round2(Number(sp) || 16),
     }));
     if (!rows.length) return safeJson(res, { ok: true });
 
-    await db.withTransaction(conn => executeManyChunked(
-      conn,
-      `MERGE INTO SAD_ASSIGNEE_CAPACITY tgt
-       USING (SELECT :assignee AS ASSIGNEE FROM DUAL) src
-       ON (tgt.ASSIGNEE = src.ASSIGNEE)
-       WHEN MATCHED THEN UPDATE SET SPRINT_CAPACITY = :sp, UPDATED_AT = SYSTIMESTAMP
-       WHEN NOT MATCHED THEN INSERT (ASSIGNEE, SPRINT_CAPACITY) VALUES (:assignee, :sp)`,
-      rows,
+    const written = await db.withTransaction(conn => executeManyChunked(
+      conn, CAPACITY_MERGE, rows,
       { assignee: { type: oracledb.STRING, maxSize: 255 }, sp: { type: oracledb.NUMBER } }
     ));
-    safeJson(res, { ok: true });
+    safeJson(res, { ok: true, count: rows.length, written });
   } catch (err) {
     errJson(res, err);
   }
@@ -328,30 +369,21 @@ router.post('/roles', async (req, res) => {
 
     // BULLETS is a CLOB, so these stay as individual statements — but they now
     // share one connection and one commit instead of one of each per role.
+    let written = 0;
     await db.withTransaction(async conn => {
       for (let i = 0; i < roles.length; i++) {
         const r = roles[i];
-        await db.execute(conn,
-          `MERGE INTO SAD_ROLES tgt
-           USING (SELECT :roleId AS ROLE_ID FROM DUAL) src
-           ON (tgt.ROLE_ID = src.ROLE_ID)
-           WHEN MATCHED THEN UPDATE SET
-             TITLE = :title, BULLETS = :bullets, RESPONSIBLE = :responsible,
-             SORT_ORDER = :sort, UPDATED_AT = SYSTIMESTAMP
-           WHEN NOT MATCHED THEN INSERT
-             (ROLE_ID, TITLE, BULLETS, RESPONSIBLE, SORT_ORDER)
-           VALUES (:roleId, :title, :bullets, :responsible, :sort)`,
-          {
-            roleId:      clamp(r.id, 50),
-            title:       clamp(r.title, 255),
-            bullets:     JSON.stringify(r.bullets || []),
-            responsible: clamp(r.responsible, 500),
-            sort:        i,
-          }
-        );
+        const out = await db.execute(conn, ROLES_MERGE, {
+          roleId:      clamp(r.id, 50),
+          title:       clamp(r.title, 255),
+          bullets:     clobBind(JSON.stringify(r.bullets || [])),
+          responsible: clamp(r.responsible, 500),
+          sort:        i,
+        });
+        written += out.rowsAffected;
       }
     });
-    safeJson(res, { ok: true });
+    safeJson(res, { ok: true, count: roles.length, written });
   } catch (err) {
     errJson(res, err);
   }
@@ -431,19 +463,14 @@ router.post('/settings', async (req, res) => {
 
     // SETTING_VALUE is a CLOB — kept as individual statements, but on one
     // connection with a single commit.
+    let written = 0;
     await db.withTransaction(async conn => {
       for (const { key, val } of entries) {
-        await db.execute(conn,
-          `MERGE INTO SAD_SETTINGS tgt
-           USING (SELECT :key AS SETTING_KEY FROM DUAL) src
-           ON (tgt.SETTING_KEY = src.SETTING_KEY)
-           WHEN MATCHED THEN UPDATE SET SETTING_VALUE = :val, UPDATED_AT = SYSTIMESTAMP
-           WHEN NOT MATCHED THEN INSERT (SETTING_KEY, SETTING_VALUE) VALUES (:key, :val)`,
-          { key, val }
-        );
+        const out = await db.execute(conn, SETTINGS_MERGE, { key, val: clobBind(val) });
+        written += out.rowsAffected;
       }
     });
-    safeJson(res, { ok: true });
+    safeJson(res, { ok: true, count: entries.length, written });
   } catch (err) {
     errJson(res, err);
   }
@@ -495,3 +522,5 @@ router.get('/tables', async (req, res) => {
 });
 
 module.exports = router;
+// Exposed so the statements can be checked against the real schema.
+module.exports.SQL = { ISSUE_MERGE, CAPACITY_MERGE, SETTINGS_MERGE, ROLES_MERGE };

@@ -124,7 +124,7 @@ async function execute(conn, sql, binds = {}, opts = {}) {
     ...opts,
   });
   // Return only plain data — avoid circular refs in oracledb result metadata.
-  return { rows: result.rows || [] };
+  return { rows: result.rows || [], rowsAffected: result.rowsAffected || 0 };
 }
 
 // Convenience wrapper for one-off reads.
