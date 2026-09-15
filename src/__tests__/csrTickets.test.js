@@ -403,6 +403,9 @@ const filtersArb = fc.record({
   status: fc.oneof(fc.constant('all'), statusArb),
   bank: fc.oneof(fc.constant('all'), bankArb),
   assignee: fc.oneof(fc.constant('all'), assigneeArb),
+  // applyFilters has filtered on reporter since the Reporter dropdown was added;
+  // without this key every ticket was excluded.
+  reporter: fc.oneof(fc.constant('all'), fc.constantFrom('a', 'b')),
   dateFrom: fc.oneof(fc.constant(''), fc.constant('2024-01-01'), fc.constant('2024-06-01')),
   dateTo: fc.oneof(fc.constant(''), fc.constant('2025-12-31'), fc.constant('2025-06-01')),
   slaOnly: fc.boolean(),
@@ -426,6 +429,7 @@ describe('P1: applyFilters AND composition', () => {
           if (filters.status !== 'all' && t.status !== filters.status) return false;
           if (filters.bank !== 'all' && t.bank !== filters.bank) return false;
           if (filters.assignee !== 'all' && t.assignee !== filters.assignee) return false;
+          if (filters.reporter !== 'all' && t.reporter !== filters.reporter) return false;
           if (filters.dateFrom && (!t.created || t.created < filters.dateFrom)) return false;
           if (filters.dateTo) {
             const d = t.created ? t.created.slice(0, 10) : '';
@@ -450,6 +454,7 @@ describe('P1: applyFilters AND composition', () => {
           if (filters.status !== 'all' && t.status !== filters.status) return false;
           if (filters.bank !== 'all' && t.bank !== filters.bank) return false;
           if (filters.assignee !== 'all' && t.assignee !== filters.assignee) return false;
+          if (filters.reporter !== 'all' && t.reporter !== filters.reporter) return false;
           if (filters.dateFrom && (!t.created || t.created < filters.dateFrom)) return false;
           if (filters.dateTo) {
             const d = t.created ? t.created.slice(0, 10) : '';
@@ -542,7 +547,9 @@ describe('P5: computeResolutionStats avg/median/min/max correctness', () => {
               isStale: false,
             };
           });
-          const stats = computeResolutionStats(tickets);
+          // excludeLegacy=false: the fixed 2024 dates fall outside the rolling
+          // 2-year window, which is not what these properties are testing.
+          const stats = computeResolutionStats(tickets, false);
           const expectedAvg = times.reduce((s, v) => s + v, 0) / times.length;
           return Math.abs(stats.avg - expectedAvg) < 0.001;
         }
@@ -573,7 +580,7 @@ describe('P5: computeResolutionStats avg/median/min/max correctness', () => {
               isStale: false,
             };
           });
-          const stats = computeResolutionStats(tickets);
+          const stats = computeResolutionStats(tickets, false);
           return stats.min === Math.min(...times) && stats.max === Math.max(...times);
         }
       ),
@@ -603,7 +610,7 @@ describe('P5: computeResolutionStats avg/median/min/max correctness', () => {
               isStale: false,
             };
           });
-          const stats = computeResolutionStats(tickets);
+          const stats = computeResolutionStats(tickets, false);
           const sorted = [...times].sort((a, b) => a - b);
           const mid = Math.floor(sorted.length / 2);
           const expectedMedian = sorted.length % 2 === 0
@@ -789,9 +796,9 @@ describe('P11: serializeStandupToText contains all four sections', () => {
           const text = serializeStandupToText(report);
           return (
             text.includes('Closed Yesterday') &&
-            text.includes('New Today') &&
+            text.includes('New (24h) / Today') &&
             text.includes('In Progress by Assignee') &&
-            text.includes('SLA Breaches')
+            text.includes('SLA Risk')
           );
         }
       ),
@@ -933,9 +940,9 @@ describe('serializeStandupToText sections', () => {
     const report = generateStandupReport(tickets, today);
     const text = serializeStandupToText(report);
     expect(text).toContain('Closed Yesterday');
-    expect(text).toContain('New Today');
+    expect(text).toContain('New (24h) / Today');
     expect(text).toContain('In Progress by Assignee');
-    expect(text).toContain('SLA Breaches');
+    expect(text).toContain('SLA Risk');
   });
 
   it('contains ticket keys in appropriate sections', () => {
