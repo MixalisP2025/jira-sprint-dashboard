@@ -12,16 +12,36 @@ const BULK_ISSUES_PER_CALL = 1000;   // Jira's documented cap on issueIdsOrKeys
 const KEY_LOOKUP_CHUNK = 100;        // keeps `key in (...)` inside JQL's practical limit
 const MAX_PAGES = 200;               // pagination guard
 
+// The two endpoints describe the same events differently: per-issue gives ISO strings
+// oldest first; bulkfetch gives epoch milliseconds newest first, and leaves fromString out
+// when it is null. Both are normalised to one contract — ISO-8601 UTC strings, oldest
+// first, from/to always present — so callers never see which path answered.
+const toIso = v => {
+  const d = new Date(v);
+  return (v == null || isNaN(d)) ? v : d.toISOString();
+};
+
 /** Collapse change histories into the compact {status, assignee} shape callers consume. */
 function collectHistories(histories, into) {
   for (const h of histories || []) {
-    const t = h.created;
+    const t = toIso(h.created);
     for (const it of (h.items || [])) {
-      if (it.field === 'status' || it.fieldId === 'status') into.status.push({ t, from: it.fromString, to: it.toString });
-      else if (it.field === 'assignee' || it.fieldId === 'assignee') into.assignee.push({ t, from: it.fromString, to: it.toString });
+      // Read as own string properties only. bulkfetch omits toString on an unassignment,
+      // and `it.toString` would then be Object.prototype.toString — a function, not null.
+      const str = name => (typeof it[name] === 'string' ? it[name] : null);
+      const ev = { t, from: str('fromString'), to: str('toString') };
+      if (it.field === 'status' || it.fieldId === 'status') into.status.push(ev);
+      else if (it.field === 'assignee' || it.fieldId === 'assignee') into.assignee.push(ev);
     }
   }
   return into;
+}
+
+function chronological(entry) {
+  const byTime = (a, b) => new Date(a.t) - new Date(b.t);
+  entry.status.sort(byTime);
+  entry.assignee.sort(byTime);
+  return entry;
 }
 
 /**
@@ -34,9 +54,12 @@ async function resolveKeyIds({ axios, baseUrl, headers, keys, counter }) {
   for (let i = 0; i < keys.length; i += KEY_LOOKUP_CHUNK) {
     const chunk = keys.slice(i, i + KEY_LOOKUP_CHUNK);
     counter.calls += 1;
+    // fields must name `key`: with fields=id the /search/jql endpoint returns bare { id }
+    // objects with no key, every issue failed to map, and bulk silently fell back to
+    // one request per issue on every call.
     const r = await axios.get(`${baseUrl}/rest/api/3/search/jql`, {
       headers,
-      params: { jql: `key in (${chunk.join(',')})`, fields: 'id', maxResults: chunk.length },
+      params: { jql: `key in (${chunk.join(',')})`, fields: 'key', maxResults: chunk.length },
       timeout: 30000,
     });
     for (const issue of (r.data.issues || [])) {
@@ -82,7 +105,7 @@ async function fetchChangelogsBulk({ axios, baseUrl, headers, keys, counter, log
 
   // an issue with no status/assignee history still needs an entry, or callers read it as missing
   for (const k of keys) if (keyToId.has(k)) ensure(k);
-  return { changelogs: [...byKey.values()], unresolved: keys.filter(k => !keyToId.has(k)) };
+  return { changelogs: [...byKey.values()].map(chronological), unresolved: keys.filter(k => !keyToId.has(k)) };
 }
 
 async function fetchChangelogsPerIssue({ axios, baseUrl, headers, keys, counter, mapLimit }) {
@@ -101,7 +124,7 @@ async function fetchChangelogsPerIssue({ axios, baseUrl, headers, keys, counter,
         startAt += vals.length;
         if (!vals.length) break;
       }
-      changelogs.push({ key, status: acc.status, assignee: acc.assignee });
+      changelogs.push(chronological({ key, status: acc.status, assignee: acc.assignee }));
     } catch (e) {
       errors.push({ key, message: e.response?.status ? `HTTP ${e.response.status}` : e.message });
     }

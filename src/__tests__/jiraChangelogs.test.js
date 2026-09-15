@@ -21,7 +21,10 @@ function makeJira({ histories = {}, bulkStatus = null, pageSize = Infinity, echo
         calls.search += 1;
         const jql = cfg.params.jql;
         const wanted = jql.slice(jql.indexOf('(') + 1, jql.lastIndexOf(')')).split(',').map(s => s.trim());
-        return { data: { issues: wanted.map(current).filter(k => keyToId[k]).map(k => ({ id: keyToId[k], key: k })) } };
+        // Real /search/jql behaviour: with fields=id each issue is a bare { id }; the key only
+        // comes back when a field list names it.
+        const withKey = String(cfg.params.fields || '').split(',').includes('key');
+        return { data: { issues: wanted.map(current).filter(k => keyToId[k]).map(k => (withKey ? { id: keyToId[k], key: k } : { id: keyToId[k] })) } };
       }
       if (url.includes('/changelog')) {
         calls.perIssue += 1;
@@ -40,9 +43,15 @@ function makeJira({ histories = {}, bulkStatus = null, pageSize = Infinity, echo
       const ids = body.issueIdsOrKeys;
       const start = body.nextPageToken ? parseInt(body.nextPageToken, 10) : 0;
       const slice = ids.slice(start, start === Infinity ? undefined : start + pageSize);
-      const issueChangeLogs = slice.map(id => {
+      // Real bulkfetch omits issues that have no matching history at all, lists histories
+      // newest first with `created` as epoch milliseconds, and drops a null fromString.
+      const asBulk = h => ({
+        created: new Date(h.created).getTime(),
+        items: h.items.map(it => { const o = { ...it }; if (o.fromString == null) delete o.fromString; if (o.toString == null) delete o.toString; return o; }),
+      });
+      const issueChangeLogs = slice.filter(id => (histories[idToKey[id]] || []).length > 0).map(id => {
         const key = idToKey[id];
-        const entry = { issueId: id, changeHistories: histories[key] || [] };
+        const entry = { issueId: id, changeHistories: [...(histories[key] || [])].reverse().map(asBulk) };
         if (echoKey) entry.key = key;
         return entry;
       });
@@ -71,13 +80,24 @@ const run = (jira, over = {}) => fetchChangelogs({
 });
 
 describe('collectHistories', () => {
-  it('splits status and assignee changes and keeps the timestamp', () => {
+  it('splits status and assignee changes and keeps the timestamp as ISO UTC', () => {
     const out = collectHistories(HISTORIES['A-1'], { status: [], assignee: [] });
     expect(out.status).toEqual([
-      { t: '2026-07-01T10:00:00.000+03:00', from: 'To Do', to: 'In Progress' },
-      { t: '2026-07-05T10:00:00.000+03:00', from: 'In Progress', to: 'Done' },
+      { t: '2026-07-01T07:00:00.000Z', from: 'To Do', to: 'In Progress' },
+      { t: '2026-07-05T07:00:00.000Z', from: 'In Progress', to: 'Done' },
     ]);
     expect(out.assignee).toEqual([]);
+  });
+
+  it('reads bulkfetch epoch-millisecond timestamps and a missing fromString', () => {
+    const out = collectHistories([{ created: Date.UTC(2026, 6, 30, 12, 10), items: [{ field: 'assignee', toString: 'Kostas' }] }], { status: [], assignee: [] });
+    expect(out.assignee).toEqual([{ t: '2026-07-30T12:10:00.000Z', from: null, to: 'Kostas' }]);
+  });
+
+  it('reads an unassignment (no toString key) as to: null, not the inherited toString function', () => {
+    const out = collectHistories([{ created: Date.UTC(2026, 7, 28, 7, 15), items: [{ field: 'assignee', fromString: 'Kostas' }] }], { status: [], assignee: [] });
+    expect(out.assignee).toEqual([{ t: '2026-08-28T07:15:00.000Z', from: 'Kostas', to: null }]);
+    expect(typeof out.assignee[0].to).not.toBe('function');
   });
 
   it('accepts fieldId as well as field', () => {
@@ -92,11 +112,14 @@ describe('collectHistories', () => {
 });
 
 describe('bulkfetch path', () => {
-  it('returns the same shape as the per-issue path', async () => {
-    const bulk = await run(makeJira({ histories: HISTORIES }));
-    const perIssue = await run(makeJira({ histories: HISTORIES }), { bulkEnabled: false });
+  it('returns exactly what the per-issue path returns — same events, format and order', async () => {
+    const withNullFrom = { ...HISTORIES, 'A-2': [...HISTORIES['A-2'], H('2026-07-03T10:00:00.000+03:00', 'assignee', null, 'Sotirios'), H('2026-07-04T10:00:00.000+03:00', 'assignee', 'Sotirios', null)] };
+    const bulk = await run(makeJira({ histories: withNullFrom }));
+    const perIssue = await run(makeJira({ histories: withNullFrom }), { bulkEnabled: false });
     const norm = r => [...r.changelogs].sort((a, b) => a.key.localeCompare(b.key));
+    expect(bulk.method).toBe('bulkfetch');
     expect(norm(bulk)).toEqual(norm(perIssue));
+    expect(norm(bulk)[0].status.map(e => e.t)).toEqual(['2026-07-01T07:00:00.000Z', '2026-07-05T07:00:00.000Z']);  // oldest first
   });
 
   it('collapses the call count — the reason for the change', async () => {
@@ -167,7 +190,7 @@ describe('bulkfetch path', () => {
     expect(out.method).toBe('bulkfetch');
     expect(out.errors).toEqual([]);
     const moved = out.changelogs.find(c => c.key === 'OLD-7');
-    expect(moved.assignee).toEqual([{ t: '2026-07-02T10:00:00.000+03:00', from: 'Sotirios', to: 'Giorgos' }]);
+    expect(moved.assignee).toEqual([{ t: '2026-07-02T07:00:00.000Z', from: 'Sotirios', to: 'Giorgos' }]);
     expect(jira.calls.perIssue).toBe(1);   // only the moved key goes one by one
   });
 
