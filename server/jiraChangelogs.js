@@ -46,7 +46,7 @@ async function resolveKeyIds({ axios, baseUrl, headers, keys, counter }) {
   return { idToKey, keyToId };
 }
 
-async function fetchChangelogsBulk({ axios, baseUrl, headers, keys, counter }) {
+async function fetchChangelogsBulk({ axios, baseUrl, headers, keys, counter, log = () => {} }) {
   const { idToKey, keyToId } = await resolveKeyIds({ axios, baseUrl, headers, keys, counter });
   const ids = keys.map(k => keyToId.get(k)).filter(Boolean);
   if (!ids.length) throw new Error('could not resolve any issue ids for bulkfetch');
@@ -77,6 +77,7 @@ async function fetchChangelogsBulk({ axios, baseUrl, headers, keys, counter }) {
       }
       nextPageToken = r.data.nextPageToken || null;
     } while (nextPageToken && ++pages < MAX_PAGES);
+    if (nextPageToken) log(`[jira] changelog bulkfetch stopped after ${MAX_PAGES} pages with more remaining — history for this batch may be incomplete`);
   }
 
   // an issue with no status/assignee history still needs an entry, or callers read it as missing
@@ -112,20 +113,27 @@ async function fetchChangelogsPerIssue({ axios, baseUrl, headers, keys, counter,
 async function fetchChangelogs({ axios, baseUrl, headers, keys, mapLimit, bulkEnabled = true, log = () => {} }) {
   const counter = { calls: 0 };
   if (bulkEnabled) {
+    let out;
     try {
-      const out = await fetchChangelogsBulk({ axios, baseUrl, headers, keys, counter });
-      return {
-        changelogs: out.changelogs,
-        errors: out.unresolved.map(key => ({ key, message: 'issue id could not be resolved' })),
-        jiraCalls: counter.calls, method: 'bulkfetch', fallbackReason: null,
-      };
+      out = await fetchChangelogsBulk({ axios, baseUrl, headers, keys, counter, log });
     } catch (e) {
       const fallbackReason = e.response?.status ? `HTTP ${e.response.status}` : e.message;
       log(`[jira] changelog bulkfetch unavailable (${fallbackReason}) — falling back to per-issue`);
       counter.calls = 0;
-      const out = await fetchChangelogsPerIssue({ axios, baseUrl, headers, keys, counter, mapLimit });
-      return { ...out, jiraCalls: counter.calls, method: 'per-issue', fallbackReason };
+      const perIssue = await fetchChangelogsPerIssue({ axios, baseUrl, headers, keys, counter, mapLimit });
+      return { ...perIssue, jiraCalls: counter.calls, method: 'per-issue', fallbackReason };
     }
+    // A key search does not return an issue under a key it has since moved away from
+    // (`key in (OLD-1)` comes back as NEW-1), so those keys never resolve to an id. The
+    // per-issue endpoint follows the old key, so fetch just those one by one.
+    let errors = [];
+    let changelogs = out.changelogs;
+    if (out.unresolved.length) {
+      const rest = await fetchChangelogsPerIssue({ axios, baseUrl, headers, keys: out.unresolved, counter, mapLimit });
+      changelogs = changelogs.concat(rest.changelogs);
+      errors = rest.errors;
+    }
+    return { changelogs, errors, jiraCalls: counter.calls, method: 'bulkfetch', fallbackReason: null };
   }
   const out = await fetchChangelogsPerIssue({ axios, baseUrl, headers, keys, counter, mapLimit });
   return { ...out, jiraCalls: counter.calls, method: 'per-issue', fallbackReason: null };

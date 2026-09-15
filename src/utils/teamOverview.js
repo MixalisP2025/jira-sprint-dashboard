@@ -199,7 +199,8 @@ export function buildOverview(M) {
         name: r.name, rate: r.spPerDay, lo, hi, separation,
         tickets: r.tickets, sp: r.sp,
         // a rate that the person's own signals say is not measuring their output
-        rateMisleading: !!p?.concerns.some(c => c.countersRate),
+        // countersRate is set on visibility notes (unpointed work, quiet sprints), not concerns
+        rateMisleading: !!p && [...p.concerns, ...p.visibility].some(c => c.countersRate),
       };
     });
   const distinguishable = ranked.filter(r => r.separation === 'above' || r.separation === 'below').length;

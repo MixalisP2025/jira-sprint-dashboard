@@ -213,4 +213,16 @@ describe('buildOverview', () => {
     expect(O.groups.unknown.map(p => p.name)).toContain('Cat');
     expect(O.ranked.map(r => r.name)).not.toContain('Cat');
   });
+
+  it('flags a ranked rate as misleading when most of their hours went to unpointed work', () => {
+    const O = buildOverview({
+      ...M,
+      rows: [
+        baseRow({ name: 'Ann', spPerDay: 1.8, spPerDayCI: [1.4, 2.2] }),
+        baseRow({ name: 'Dee', spPerDay: 0.6, spPerDayCI: [0.4, 0.8], unpointedShare: 0.6, hours: 200 }),
+      ],
+    });
+    expect(O.ranked.find(r => r.name === 'Dee').rateMisleading).toBe(true);
+    expect(O.ranked.find(r => r.name === 'Ann').rateMisleading).toBe(false);
+  });
 });

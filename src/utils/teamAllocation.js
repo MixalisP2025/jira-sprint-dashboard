@@ -215,7 +215,13 @@ export const DEFAULT_SERVICE_ACCOUNTS = ['Unassigned'];
  */
 export function loadServiceAccounts() {
   const saved = loadJson(SERVICE_ACCOUNTS_KEY, null);
-  if (saved == null) { saveJson(SERVICE_ACCOUNTS_KEY, DEFAULT_SERVICE_ACCOUNTS); return [...DEFAULT_SERVICE_ACCOUNTS]; }
+  if (saved == null) {
+    // Mark as seeded here too, or removing "Unassigned" later saves [] and the next load
+    // folds the default straight back in.
+    saveJson(SERVICE_ACCOUNTS_KEY, DEFAULT_SERVICE_ACCOUNTS);
+    try { localStorage.setItem(SERVICE_ACCOUNTS_SEEDED_KEY, '1'); } catch { /* private mode */ }
+    return [...DEFAULT_SERVICE_ACCOUNTS];
+  }
   let seeded = false;
   try { seeded = localStorage.getItem(SERVICE_ACCOUNTS_SEEDED_KEY) === '1'; } catch { /* private mode */ }
   if (seeded) return saved;
@@ -223,6 +229,25 @@ export function loadServiceAccounts() {
   saveJson(SERVICE_ACCOUNTS_KEY, merged);
   try { localStorage.setItem(SERVICE_ACCOUNTS_SEEDED_KEY, '1'); } catch { /* private mode */ }
   return merged;
+}
+
+/**
+ * Allocation overrides are stored per project scope: { [scope]: { [name]: fraction } },
+ * where scope is a project key or 'all'. Someone at 50% on one project is not at 50% on
+ * another, nor on the whole portfolio. The old flat { [name]: fraction } format applied
+ * one value everywhere; its entries are ignored rather than guessed onto a project.
+ */
+export function overridesForScope(stored, scope) {
+  const v = stored && typeof stored === 'object' ? stored[scope] : null;
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+}
+export function withScopeOverrides(stored, scope, overrides) {
+  const next = {};
+  for (const [k, v] of Object.entries(stored && typeof stored === 'object' ? stored : {})) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) next[k] = v;   // drop legacy flat entries
+  }
+  next[scope] = overrides || {};
+  return next;
 }
 
 export function loadJson(key, fallback) {

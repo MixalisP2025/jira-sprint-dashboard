@@ -4,6 +4,16 @@
 import { workingDaysBetween, workingDaysInclusive, workingDaysList, cycleWorkingDays } from './workingDays';
 import { ALLOC_BASIS } from './teamAllocation';
 
+// ─── Capacity-planning constant ───────────────────────────────────────────────
+// One definition shared by Time Tracking (where it is edited) and the Executive Summary
+// (which judges planning against it) — they previously fell back to 2 and 1.
+export const DEFAULT_SP_PER_DAY = 2;
+export const SP_PER_DAY_KEY = 'tt_spPerDay';
+export function loadPlanningSPPerDay() {
+  try { const v = parseFloat(localStorage.getItem(SP_PER_DAY_KEY)); return Number.isFinite(v) && v > 0 ? v : DEFAULT_SP_PER_DAY; }
+  catch { return DEFAULT_SP_PER_DAY; }
+}
+
 // ─── Accessors ────────────────────────────────────────────────────────────────
 export const getStatus   = t => t['Status'] || '';
 export const getSP       = t => parseFloat(t['Story Points']) || parseFloat(t['Story points']) || parseFloat(t['Custom field (Story Points)']) || 0;
@@ -69,9 +79,15 @@ function bootstrapCI(items, statFn, resamples = 2000) {
   return [quantile(stats, 0.025), quantile(stats, 0.975)];
 }
 
+// The end date names the sprint's last working day, so it runs to the end of that day.
+// Midnight at its start made the last day read as "sprint has ended" and dropped that
+// day's worklogs and completions from every in-sprint check.
 export function parseSprintDates(name) {
   const m = name?.match(/(\d{2}-\d{2}-\d{2})\s+to\s+(\d{2}-\d{2}-\d{2})/);
-  if (m) { const p = s => { const [d, mo, y] = s.split('-'); return new Date(`20${y}-${mo}-${d}`); }; return { start: p(m[1]), end: p(m[2]) }; }
+  if (m) {
+    const iso = s => { const [d, mo, y] = s.split('-'); return `20${y}-${mo}-${d}`; };
+    return { start: new Date(`${iso(m[1])}T00:00:00Z`), end: new Date(`${iso(m[2])}T23:59:59.999Z`) };
+  }
   return null;
 }
 export const shortSprint = name => (name || 'No Sprint').replace(/Sprint\s*/i, 'S').replace(/\s+\d{2}-\d{2}-\d{2}\s+to\s+\d{2}-\d{2}-\d{2}/, '');

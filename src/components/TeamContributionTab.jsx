@@ -12,12 +12,14 @@ import ExecutiveSummaryView from './ExecutiveSummaryView';
 import TeamDailyNote from './TeamDailyNote';
 import TeamQueueTab from './TeamQueueTab';
 import TeamMethodology from './TeamMethodology';
-import { computeDailyNote, findCurrentSprint, loadSnapshot, saveSnapshot, loadStallDays, saveStallDays } from '../utils/teamDaily';
-import { workingDaysInclusive } from '../utils/workingDays';
+import { computeDailyNote, findCurrentSprint, loadBaseline, saveSnapshot, loadStallDays, saveStallDays, buildDailyNoteText } from '../utils/teamDaily';
+import { workingDaysInclusive, zonedDayKey } from '../utils/workingDays';
 import {
   resolveAvailability, detectServiceAccountCandidates, computePointingCoverage, ALLOC_BASIS, loadServiceAccounts,
   SERVICE_ACCOUNTS_KEY, ALLOCATION_OVERRIDES_KEY, DISMISSED_CANDIDATES_KEY, loadJson, saveJson,
+  overridesForScope, withScopeOverrides,
 } from '../utils/teamAllocation';
+import { copyPlain } from '../utils/teamReport';
 import TeamBySprintView from './TeamBySprintView';
 import TeamOverview from './TeamOverview';
 
@@ -73,7 +75,8 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
   const [hoursPerDay, setHoursPerDay] = useState(() => { const v = parseFloat(localStorage.getItem('tt_hoursPerDay')); return Number.isFinite(v) && v > 0 ? v : 8; });
   // Minimum share of completed tickets that must carry a story point for a sprint's rate
   // to mean anything. Below this the sprint is excluded from every rate calculation.
-  const [coverageMin, setCoverageMin] = useState(() => { const v = parseFloat(localStorage.getItem('tt_coverageMin')); return Number.isFinite(v) && v > 0 && v <= 1 ? v : 0.7; });
+  // 0 is a real choice ("Off — include every sprint"), so it must survive a reload.
+  const [coverageMin, setCoverageMin] = useState(() => { const v = parseFloat(localStorage.getItem('tt_coverageMin')); return Number.isFinite(v) && v >= 0 && v <= 1 ? v : 0.7; });
   const [sortCol, setSortCol] = useState('name');   // default alphabetical — NOT a metric
   const [sortDir, setSortDir] = useState('asc');
   const [splitByHours, setSplitByHours] = useState(false); // section 2 toggle (contaminated)
@@ -89,10 +92,15 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
 
   // Excluded service/bot accounts and explicit per-person allocation, both persisted.
   const [serviceAccounts, setServiceAccounts] = useState(() => loadServiceAccounts());
-  const [allocOverrides, setAllocOverrides] = useState(() => loadJson(ALLOCATION_OVERRIDES_KEY, {}));
+  // Allocation is per project scope — see overridesForScope.
+  const [allocOverridesStored, setAllocOverridesStored] = useState(() => loadJson(ALLOCATION_OVERRIDES_KEY, {}));
+  const allocOverrides = useMemo(() => overridesForScope(allocOverridesStored, selectedProject), [allocOverridesStored, selectedProject]);
   const [dismissedCandidates, setDismissedCandidates] = useState(() => loadJson(DISMISSED_CANDIDATES_KEY, []));
   const persistServiceAccounts = v => { setServiceAccounts(v); saveJson(SERVICE_ACCOUNTS_KEY, v); };
-  const persistAllocOverrides = v => { setAllocOverrides(v); saveJson(ALLOCATION_OVERRIDES_KEY, v); };
+  const persistAllocOverrides = v => {
+    const next = withScopeOverrides(allocOverridesStored, selectedProject, v);
+    setAllocOverridesStored(next); saveJson(ALLOCATION_OVERRIDES_KEY, next);
+  };
   const persistDismissed = v => { setDismissedCandidates(v); saveJson(DISMISSED_CANDIDATES_KEY, v); };
 
   const [eligibility, setEligibility] = useState(() => { try { const raw = localStorage.getItem('assigneeEligibility'); return raw ? JSON.parse(raw) : {}; } catch { return {}; } });
@@ -290,14 +298,16 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
      
   }, [sprintKeyStr]);
 
+  // The baseline is an earlier day's figures for this project scope, so it stays the same
+  // however many times the note recomputes today (e.g. when activity data finishes loading).
   const dailyNote = useMemo(() => computeDailyNote({
     sprintTickets, allScoped: scoped, sprint: currentSprint,
     worklog: daily.wl, changelog: daily.cl, today,
-    prev: loadSnapshot(), deriveChangelog, stallDays,
-  }), [sprintTickets, scoped, currentSprint, daily.wl, daily.cl, today, stallDays]);
+    prev: loadBaseline(selectedProject, zonedDayKey(today)), deriveChangelog, stallDays,
+  }), [sprintTickets, scoped, currentSprint, daily.wl, daily.cl, today, stallDays, selectedProject]);
 
-  // Record today's figures once, so tomorrow's note can report the movement.
-  useEffect(() => { if (dailyNote.snapshot) saveSnapshot(dailyNote.snapshot); }, [dailyNote.snapshot]);
+  // Record today's figures, so tomorrow's note can report the movement.
+  useEffect(() => { if (dailyNote.snapshot) saveSnapshot(selectedProject, dailyNote.snapshot); }, [dailyNote.snapshot, selectedProject]);
 
   // Every name that appears in the window, before any exclusion — needed so the
   // service-account detector can see candidates that would otherwise be filtered out.
@@ -534,11 +544,6 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
     />
   );
 
-  // gates for empty / loading
-  if (!windowSprints.length) {
-    return <div className="tt-print-root">{printBar}{printHeader}{controls}{scopeNote}<Card><div style={{ textAlign: 'center', padding: '28px 12px', color: '#94a3b8' }}>No completed sprints in the current window {selectedProject !== 'all' ? `for ${selectedProject}` : ''}.</div></Card></div>;
-  }
-
   const subNav = (extra = null) => (
     <div className="tt-no-print" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, marginBottom: 8 }}>
       {viewToggle}
@@ -546,6 +551,43 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
       <button onClick={() => setShowAlloc(true)} style={{ ...btnGhost, display: 'inline-flex', alignItems: 'center', gap: 6 }}><SlidersHorizontal size={13} /> Allocation &amp; accounts</button>
     </div>
   );
+
+  // The daily note is about the sprint in flight, so it must not wait for a sprint to close —
+  // it sits ahead of the completed-sprints gate below. Its email is the note itself, not the
+  // per-person contribution report.
+  const emailDailyNote = async () => {
+    const text = buildDailyNoteText(dailyNote, projectLabel);
+    await copyPlain(text);
+    const subject = `Daily note — ${currentSprint ? shortSprint(currentSprint.name) : 'no sprint running'} — ${projectLabel} — ${dailyNote.todayKey}`;
+    let to = '';
+    try { to = localStorage.getItem('tt_email_to') || ''; } catch { /* private mode */ }
+    // mailto bodies are length-limited; the full note is already on the clipboard
+    const body = text.length > 1800 ? `${text.slice(0, 1800)}\n…\n\n[The full note is on your clipboard — paste it over this text.]` : text;
+    window.location.href = `mailto:${encodeURIComponent(to.trim())}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`.replace(/%2C/g, ',');
+  };
+
+  if (view === 'daily') {
+    return (
+      <>
+        {subNav()}
+        <TeamDailyNote
+          note={dailyNote}
+          projectLabel={projectLabel}
+          loading={daily.status === 'loading'}
+          error={daily.status === 'error' ? daily.error : null}
+          stallDays={stallDays}
+          onStallDaysChange={v => { setStallDays(v); saveStallDays(v); }}
+          onEmail={emailDailyNote}
+        />
+        {allocModal}
+      </>
+    );
+  }
+
+  // gates for empty / loading
+  if (!windowSprints.length) {
+    return <div className="tt-print-root">{printBar}{printHeader}{controls}{subNav()}{scopeNote}<Card><div style={{ textAlign: 'center', padding: '28px 12px', color: '#94a3b8' }}>No completed sprints in the current window {selectedProject !== 'all' ? `for ${selectedProject}` : ''}. The Daily note still covers the sprint in flight.</div></Card>{allocModal}</div>;
+  }
 
   if (view === 'overview') {
     return (
@@ -560,25 +602,6 @@ export default function TeamContributionTab({ tickets = [], selectedProject = 'a
           scopeLabel={scopeLabel}
           onView={setView}
         />
-        {allocModal}
-      </>
-    );
-  }
-
-  if (view === 'daily') {
-    return (
-      <>
-        {subNav()}
-        <TeamDailyNote
-          note={dailyNote}
-          projectLabel={projectLabel}
-          loading={daily.status === 'loading'}
-          error={daily.status === 'error' ? daily.error : null}
-          stallDays={stallDays}
-          onStallDaysChange={v => { setStallDays(v); saveStallDays(v); }}
-          onEmail={() => setShowEmail(true)}
-        />
-        {showEmail && <TeamReportEmailModal M={M} meta={emailMeta} onClose={() => setShowEmail(false)} />}
         {allocModal}
       </>
     );

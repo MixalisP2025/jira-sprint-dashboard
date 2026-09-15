@@ -7,6 +7,7 @@ import {
 import { Gauge, Layers, Activity, Target, AlertTriangle, Microscope, Users } from 'lucide-react';
 import { jiraService } from '../utils/jiraService';
 import { loadEligibilityFromDB, pingDB } from '../utils/dbSync';
+import { loadPlanningSPPerDay } from '../utils/teamEngine';
 
 // ─── Jira field accessors ─────────────────────────────────────────────────────
 const getStatus   = t => t['Status'] || '';
@@ -23,8 +24,8 @@ const getResolved = t => t['Resolved'] || t['Resolution Date'] || t._rawFields?.
 const SEC_PER_HOUR = 3600;
 const toHours = sec => (sec || 0) / SEC_PER_HOUR;
 
-// SP → day conversion is a *capacity-planning assumption*, not truth.
-const DEFAULT_SP_PER_DAY = 2;
+// SP → day conversion is a *capacity-planning assumption*, not truth. Its default lives in
+// teamEngine so the Executive Summary judges planning against the same value.
 const DEFAULT_HOURS_PER_DAY = 8;
 
 // Issue types pointed on the same scale (Spikes/Research deliberately excluded).
@@ -220,10 +221,7 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
   const isDev = !!(import.meta.env && import.meta.env.DEV);
 
   // Capacity-planning assumption (persisted). NOT treated as truth — only overlaid for the gap.
-  const [spPerDay, setSpPerDay] = useState(() => {
-    const v = parseFloat(localStorage.getItem('tt_spPerDay'));
-    return Number.isFinite(v) && v > 0 ? v : DEFAULT_SP_PER_DAY;
-  });
+  const [spPerDay, setSpPerDay] = useState(() => loadPlanningSPPerDay());
   const [hoursPerDay, setHoursPerDay] = useState(() => {
     const v = parseFloat(localStorage.getItem('tt_hoursPerDay'));
     return Number.isFinite(v) && v > 0 ? v : DEFAULT_HOURS_PER_DAY;

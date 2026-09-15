@@ -12,7 +12,10 @@ import { getKey, getSP, getStatus, getAssignee, getResolved, getStart, getCreate
 export const STALL_DAYS_DEFAULT = 3;
 export const STALL_DAYS_KEY = 'tt_stallDays';
 export const AGING_DAYS = 20;             // matches the analyst panel's stale threshold
-export const DAILY_SNAPSHOT_KEY = 'tt_dailySnapshot';
+// { [scope]: { current: snapshot, previous: snapshot|null } }. Replaces the old single
+// 'tt_dailySnapshot' entry, which was shared across projects and overwritten with today's
+// figures mid-session — after that every recompute compared today against today.
+export const DAILY_SNAPSHOT_KEY = 'tt_dailySnapshots';
 
 export function loadStallDays() {
   try { const v = parseInt(localStorage.getItem(STALL_DAYS_KEY), 10); return Number.isFinite(v) && v >= 1 && v <= 15 ? v : STALL_DAYS_DEFAULT; }
@@ -130,9 +133,10 @@ export function computeDailyNote({
   }
 
   // No stored baseline means there is nothing to compare against — say that rather than
-  // implying the figure held steady.
-  const agingPrev = prev && Number.isFinite(prev.aging) ? prev.aging : null;
-  const unassignedPrev = prev && Number.isFinite(prev.unassigned) ? prev.unassigned : null;
+  // implying the figure held steady. A baseline from today is not a baseline.
+  const base = prev && prev.date !== todayKey ? prev : null;
+  const agingPrev = base && Number.isFinite(base.aging) ? base.aging : null;
+  const unassignedPrev = base && Number.isFinite(base.unassigned) ? base.unassigned : null;
 
   return {
     generatedAt: today,
@@ -155,15 +159,74 @@ export function computeDailyNote({
   };
 }
 
-export function loadSnapshot() {
-  try { const raw = localStorage.getItem(DAILY_SNAPSHOT_KEY); return raw ? JSON.parse(raw) : null; }
-  catch { return null; }
+/**
+ * The daily note as plain text, for email. Same content as the on-screen note — volume and
+ * status only, nothing per-person beyond who holds a ticket.
+ */
+export function buildDailyNoteText(note, projectLabel) {
+  const L = [];
+  const f1 = n => (Number.isFinite(n) ? (Math.round(n * 10) / 10).toString() : '—');
+  const pct = n => (Number.isFinite(n) ? `${Math.round(n * 100)}%` : '—');
+  const row = r => `  - ${r.key}: ${r.summary}${r.assignee ? ` (${r.assignee})` : ''}`;
+  if (!note.sprint) {
+    L.push(`Daily note — ${projectLabel}`, '', 'No sprint is running, so there is nothing to report between sprints.');
+    if (note.aging.count > 0) L.push(`${note.aging.count} tickets have been open more than ${AGING_DAYS} working days.`);
+    return L.join('\n');
+  }
+  const sp = note.sprint, s = note.standing;
+  L.push(`Daily note — ${sp.name} — ${projectLabel}`);
+  L.push(sp.finished ? 'Sprint has ended.' : `Day ${sp.dayOfSprint} of ${sp.totalDays}.`, '');
+  L.push('WHERE THE SPRINT STANDS');
+  L.push(`  Committed ${f1(s.committedSP)} points (${s.committedTickets} tickets) · done ${f1(s.doneSP)} points (${s.doneTickets} tickets)`);
+  L.push(`  Sprint elapsed ${pct(s.pctElapsed)} · points done ${pct(s.pctDone)}`);
+  if (s.projectedSP != null) L.push(`  At this sprint's own rate it finishes at ~${f1(s.projectedSP)} of ${f1(s.committedSP)} points.`);
+  L.push('', `MOVED ON ${note.moved.onKey}`);
+  if (!note.moved.done.length && !note.moved.started.length) L.push('  Nothing moved.');
+  if (note.moved.done.length) { L.push(`  Reached Done (${note.moved.done.length})`); note.moved.done.forEach(r => L.push(row(r))); }
+  if (note.moved.started.length) { L.push(`  Started (${note.moved.started.length})`); note.moved.started.forEach(r => L.push(row(r))); }
+  L.push('', `NOT MOVING — no activity in ${note.stallDays}+ working days (${note.stalled.length})`);
+  if (!note.stalled.length) L.push('  None.');
+  note.stalled.forEach(r => L.push(`  - ${f1(r.daysSince)}d  ${r.key}: ${r.summary} (${r.assignee}, ${r.status})`));
+  L.push('', `BLOCKED (${note.blocked.length})`);
+  if (!note.blocked.length) L.push('  None.');
+  note.blocked.forEach(r => L.push(`  - ${r.daysBlocked != null ? `${f1(r.daysBlocked)}d  ` : ''}${r.key}: ${r.summary} (last touched by ${r.lastTouchedBy})`));
+  L.push('', 'QUEUE');
+  const a = note.aging;
+  L.push(`  ${a.count} tickets open more than ${AGING_DAYS} working days${a.delta == null ? '' : a.delta === 0 ? ' — unchanged since the last note' : ` — ${a.delta > 0 ? 'up' : 'down'} ${Math.abs(a.delta)} (was ${a.prev})`}.`);
+  if (note.unassigned.changed) L.push(`  Unassigned queue: ${note.unassigned.count} (was ${note.unassigned.prev}).`);
+  return L.join('\n');
 }
-// Only overwrite once the day rolls over, so today's note keeps comparing against yesterday.
-export function saveSnapshot(snapshot) {
+
+function loadAllSnapshots() {
+  try { const raw = localStorage.getItem(DAILY_SNAPSHOT_KEY); const v = raw ? JSON.parse(raw) : null; return v && typeof v === 'object' ? v : {}; }
+  catch { return {}; }
+}
+
+/**
+ * The figure to compare today against, for one scope (project key or 'all'): the most
+ * recent snapshot from an earlier day. Stable for the whole day, however often the note
+ * is recomputed.
+ */
+export function loadBaseline(scope, todayKey) {
+  const entry = loadAllSnapshots()[scope];
+  if (!entry || !entry.current) return null;
+  if (entry.current.date === todayKey) return entry.previous || null;
+  return entry.current.date < todayKey ? entry.current : null;
+}
+
+/** Record today's figures for a scope, keeping the earlier day's as the baseline. */
+export function saveSnapshot(scope, snapshot) {
+  if (!snapshot || !snapshot.date) return;
   try {
-    const prev = loadSnapshot();
-    if (prev && prev.date === snapshot.date) return;
-    localStorage.setItem(DAILY_SNAPSHOT_KEY, JSON.stringify(snapshot));
+    const all = loadAllSnapshots();
+    const entry = all[scope];
+    if (entry?.current?.date === snapshot.date) {
+      if (entry.current.aging === snapshot.aging && entry.current.unassigned === snapshot.unassigned) return;
+      all[scope] = { current: snapshot, previous: entry.previous || null };
+    } else {
+      const earlier = entry?.current && entry.current.date < snapshot.date ? entry.current : null;
+      all[scope] = { current: snapshot, previous: earlier };
+    }
+    localStorage.setItem(DAILY_SNAPSHOT_KEY, JSON.stringify(all));
   } catch { /* private mode */ }
 }

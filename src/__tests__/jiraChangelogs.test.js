@@ -6,10 +6,14 @@ const { collectHistories, fetchChangelogs, fetchChangelogsBulk, KEY_LOOKUP_CHUNK
 
 // A stub Jira. Records every call so the whole point of this change — call count —
 // is asserted rather than assumed.
-function makeJira({ histories = {}, bulkStatus = null, pageSize = Infinity, echoKey = false }) {
+// `moved` maps an old key to the key the issue lives under now. Like real Jira, a key
+// search returns it under the new key, while the per-issue endpoint follows the old one.
+// Unknown keys 404 on the per-issue endpoint, as they do in Jira.
+function makeJira({ histories = {}, bulkStatus = null, pageSize = Infinity, echoKey = false, moved = {} }) {
   const calls = { search: 0, bulk: 0, perIssue: 0, bodies: [] };
   const keyToId = Object.fromEntries(Object.keys(histories).map((k, i) => [k, String(10000 + i)]));
   const idToKey = Object.fromEntries(Object.entries(keyToId).map(([k, v]) => [v, k]));
+  const current = k => moved[k] || k;
 
   const axios = {
     async get(url, cfg) {
@@ -17,12 +21,13 @@ function makeJira({ histories = {}, bulkStatus = null, pageSize = Infinity, echo
         calls.search += 1;
         const jql = cfg.params.jql;
         const wanted = jql.slice(jql.indexOf('(') + 1, jql.lastIndexOf(')')).split(',').map(s => s.trim());
-        return { data: { issues: wanted.filter(k => keyToId[k]).map(k => ({ id: keyToId[k], key: k })) } };
+        return { data: { issues: wanted.map(current).filter(k => keyToId[k]).map(k => ({ id: keyToId[k], key: k })) } };
       }
       if (url.includes('/changelog')) {
         calls.perIssue += 1;
-        const key = decodeURIComponent(url.split('/issue/')[1].split('/')[0]);
-        const vals = histories[key] || [];
+        const key = current(decodeURIComponent(url.split('/issue/')[1].split('/')[0]));
+        if (!histories[key]) { const e = new Error('Not Found'); e.response = { status: 404 }; throw e; }
+        const vals = histories[key];
         return { data: { values: vals, total: vals.length } };
       }
       throw new Error(`unexpected GET ${url}`);
@@ -149,11 +154,29 @@ describe('bulkfetch path', () => {
     expect(jira.calls.bodies[0].fieldIds).toEqual(['status', 'assignee']);
   });
 
-  it('reports keys it could not resolve rather than dropping them silently', async () => {
+  it('reports keys that do not exist rather than dropping them silently', async () => {
     const jira = makeJira({ histories: { 'A-1': [] } });
     const out = await fetchChangelogs({ axios: jira.axios, baseUrl: 'x', headers: {}, keys: ['A-1', 'GONE-9'], mapLimit });
-    expect(out.errors).toEqual([{ key: 'GONE-9', message: 'issue id could not be resolved' }]);
+    expect(out.errors).toEqual([{ key: 'GONE-9', message: 'HTTP 404' }]);
     expect(out.changelogs.map(c => c.key)).toEqual(['A-1']);
+  });
+
+  it('keeps the history of an issue moved to another project, under the key asked for', async () => {
+    const jira = makeJira({ histories: { 'A-1': HISTORIES['A-1'], 'NEW-7': HISTORIES['A-2'] }, moved: { 'OLD-7': 'NEW-7' } });
+    const out = await fetchChangelogs({ axios: jira.axios, baseUrl: 'x', headers: {}, keys: ['A-1', 'OLD-7'], mapLimit });
+    expect(out.method).toBe('bulkfetch');
+    expect(out.errors).toEqual([]);
+    const moved = out.changelogs.find(c => c.key === 'OLD-7');
+    expect(moved.assignee).toEqual([{ t: '2026-07-02T10:00:00.000+03:00', from: 'Sotirios', to: 'Giorgos' }]);
+    expect(jira.calls.perIssue).toBe(1);   // only the moved key goes one by one
+  });
+
+  it('says so when paging stops at the guard with pages left', async () => {
+    const many = Object.fromEntries(Array.from({ length: 205 }, (_, i) => [`P-${i}`, []]));
+    const jira = makeJira({ histories: many, pageSize: 1 });
+    const logs = [];
+    await fetchChangelogs({ axios: jira.axios, baseUrl: 'x', headers: {}, keys: Object.keys(many), mapLimit, log: m => logs.push(m) });
+    expect(logs.some(m => /stopped after 200 pages/.test(m))).toBe(true);
   });
 });
 

@@ -1,5 +1,61 @@
-import { describe, it, expect } from 'vitest';
-import { resolveAvailability, detectServiceAccountCandidates } from '../utils/teamAllocation';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  resolveAvailability, detectServiceAccountCandidates, loadServiceAccounts, saveJson,
+  SERVICE_ACCOUNTS_KEY, overridesForScope, withScopeOverrides,
+} from '../utils/teamAllocation';
+import { loadPlanningSPPerDay, DEFAULT_SP_PER_DAY } from '../utils/teamEngine';
+
+describe('persisted settings', () => {
+  let store;
+  beforeEach(() => {
+    store = new Map();
+    globalThis.localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+  });
+  afterEach(() => { delete globalThis.localStorage; });
+
+  it('lets a user un-exclude "Unassigned" after a first-ever load', () => {
+    expect(loadServiceAccounts()).toEqual(['Unassigned']);   // first load seeds the default
+    saveJson(SERVICE_ACCOUNTS_KEY, []);                        // user removes it
+    expect(loadServiceAccounts()).toEqual([]);                 // and it stays removed
+  });
+
+  it('still folds the default into a list saved before defaults existed, once', () => {
+    saveJson(SERVICE_ACCOUNTS_KEY, ['build-bot']);
+    expect(loadServiceAccounts().sort()).toEqual(['Unassigned', 'build-bot']);
+    saveJson(SERVICE_ACCOUNTS_KEY, ['build-bot']);
+    expect(loadServiceAccounts()).toEqual(['build-bot']);
+  });
+
+  it('uses the same planning-constant default as Time Tracking', () => {
+    expect(loadPlanningSPPerDay()).toBe(DEFAULT_SP_PER_DAY);
+    expect(DEFAULT_SP_PER_DAY).toBe(2);
+    store.set('tt_spPerDay', '1.5');
+    expect(loadPlanningSPPerDay()).toBe(1.5);
+  });
+});
+
+describe('allocation overrides are per project scope', () => {
+  it('keeps one project\'s allocation off every other scope', () => {
+    const stored = withScopeOverrides({}, 'ABC', { Ann: 0.5 });
+    expect(overridesForScope(stored, 'ABC')).toEqual({ Ann: 0.5 });
+    expect(overridesForScope(stored, 'XYZ')).toEqual({});
+    expect(overridesForScope(stored, 'all')).toEqual({});
+  });
+
+  it('updates one scope without touching another', () => {
+    let stored = withScopeOverrides({}, 'ABC', { Ann: 0.5 });
+    stored = withScopeOverrides(stored, 'XYZ', { Ann: 0.3 });
+    stored = withScopeOverrides(stored, 'ABC', {});
+    expect(overridesForScope(stored, 'ABC')).toEqual({});
+    expect(overridesForScope(stored, 'XYZ')).toEqual({ Ann: 0.3 });
+  });
+
+  it('ignores the old flat format instead of applying it everywhere', () => {
+    const legacy = { Ann: 0.5, Bob: 0.25 };
+    expect(overridesForScope(legacy, 'ABC')).toEqual({});
+    expect(withScopeOverrides(legacy, 'ABC', { Cat: 0.8 })).toEqual({ ABC: { Cat: 0.8 } });
+  });
+});
 import { workingDaysBetween, workingDaysInclusive, workingDaysList } from '../utils/workingDays';
 
 // Six two-week sprints through 2026.

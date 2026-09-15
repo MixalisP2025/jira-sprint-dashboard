@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { computeDailyNote, findCurrentSprint, STALL_DAYS_DEFAULT, AGING_DAYS } from '../utils/teamDaily';
-import { deriveChangelog } from '../utils/teamEngine';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { computeDailyNote, findCurrentSprint, STALL_DAYS_DEFAULT, AGING_DAYS, loadBaseline, saveSnapshot, buildDailyNoteText } from '../utils/teamDaily';
+import { deriveChangelog, parseSprintDates } from '../utils/teamEngine';
 import { previousWorkingDay, previousWorkingDayKey, zonedDayKey, workingDaysInclusive, REPORT_TZ } from '../utils/workingDays';
 
 // Wed 15 Jul 2026 — mid-sprint, so "the last working day" is Tue 14 Jul.
@@ -38,6 +38,77 @@ describe('findCurrentSprint', () => {
 
   it('returns null when there are no sprints at all', () => {
     expect(findCurrentSprint([], TODAY)).toBeNull();
+  });
+
+  it('still counts the last day of a sprint whose dates come from its name', () => {
+    const name = 'Sprint 29 06-07-26 to 17-07-26';
+    const w = { name, ...parseSprintDates(name) };            // no Jira state to fall back on
+    const lastDay = new Date(Date.UTC(2026, 6, 17, 15, 0));    // Fri 17 Jul, mid-afternoon
+    expect(findCurrentSprint([w], lastDay).name).toBe(name);
+    expect(computeDailyNote({ sprint: w, today: lastDay, deriveChangelog }).sprint.finished).toBe(false);
+    expect(computeDailyNote({ sprint: w, today: new Date(Date.UTC(2026, 6, 18, 9)), deriveChangelog }).sprint.finished).toBe(true);
+  });
+});
+
+describe('daily baseline', () => {
+  let store;
+  beforeEach(() => {
+    store = new Map();
+    globalThis.localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+  });
+  afterEach(() => { delete globalThis.localStorage; });
+
+  it('keeps comparing against yesterday however often today is saved', () => {
+    saveSnapshot('ABC', { date: '2026-07-14', aging: 5, unassigned: 2 });
+    saveSnapshot('ABC', { date: '2026-07-15', aging: 7, unassigned: 2 });   // first render today
+    saveSnapshot('ABC', { date: '2026-07-15', aging: 8, unassigned: 3 });   // recompute after data loads
+    expect(loadBaseline('ABC', '2026-07-15')).toEqual({ date: '2026-07-14', aging: 5, unassigned: 2 });
+  });
+
+  it('the recomputed note still reports the change since yesterday', () => {
+    saveSnapshot('ABC', { date: '2026-07-14', aging: 1, unassigned: 0 });
+    const first = run({ prev: loadBaseline('ABC', '2026-07-15') });
+    saveSnapshot('ABC', first.snapshot);
+    const again = run({ prev: loadBaseline('ABC', '2026-07-15') });
+    expect(again.aging.hasBaseline).toBe(true);
+    expect(again.aging.prev).toBe(1);
+  });
+
+  it('never treats a same-day snapshot as a baseline', () => {
+    const note = run({ prev: { date: zonedDayKey(TODAY), aging: 99, unassigned: 99 } });
+    expect(note.aging.hasBaseline).toBe(false);
+    expect(note.unassigned.changed).toBe(false);
+  });
+
+  it('keeps each project scope separate', () => {
+    saveSnapshot('ABC', { date: '2026-07-14', aging: 5, unassigned: 1 });
+    saveSnapshot('XYZ', { date: '2026-07-14', aging: 40, unassigned: 9 });
+    expect(loadBaseline('ABC', '2026-07-15').aging).toBe(5);
+    expect(loadBaseline('XYZ', '2026-07-15').aging).toBe(40);
+    expect(loadBaseline('all', '2026-07-15')).toBeNull();
+  });
+
+  it('has no baseline on the very first day', () => {
+    saveSnapshot('ABC', { date: '2026-07-15', aging: 3, unassigned: 0 });
+    expect(loadBaseline('ABC', '2026-07-15')).toBeNull();
+  });
+});
+
+describe('buildDailyNoteText', () => {
+  it('is the daily note, not the contribution report', () => {
+    const note = run({
+      sprintTickets: [mk({ key: 'A-1', status: 'Done', resolved: at(YESTERDAY) }), mk({ key: 'A-2', status: 'Blocked' })],
+    });
+    const text = buildDailyNoteText(note, 'ABC');
+    expect(text).toContain(SPRINT.name);
+    expect(text).toContain('WHERE THE SPRINT STANDS');
+    expect(text).toContain('A-1');
+    expect(text).toContain('BLOCKED (1)');
+    expect(text).not.toMatch(/points per (available )?day|ahead|on pace|behind/i);
+  });
+
+  it('says plainly when no sprint is running', () => {
+    expect(buildDailyNoteText(run({ sprint: null }), 'ABC')).toContain('No sprint is running');
   });
 });
 

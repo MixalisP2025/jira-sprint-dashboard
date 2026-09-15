@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from 'recharts';
+import { loadPlanningSPPerDay } from '../utils/teamEngine';
 
 // Team-level only. No contributor is named anywhere in this view, by design:
 // allocation is partly inferred, several people have single-digit sample sizes, and the
@@ -273,10 +274,7 @@ function PaceTip({ active, payload, label }) {
 }
 
 export default function ExecutiveSummaryView({ M, meta, windowN, onWindowChange }) {
-  const planningSPPerDay = useMemo(() => {
-    const v = parseFloat(localStorage.getItem('tt_spPerDay'));
-    return Number.isFinite(v) && v > 0 ? v : 1;
-  }, []);
+  const planningSPPerDay = useMemo(() => loadPlanningSPPerDay(), []);
 
   const findings = useMemo(() => buildFindings(M, meta, planningSPPerDay), [M, meta, planningSPPerDay]);
   const paceSeries = useMemo(() => M.teamTrend.filter(p => p.spPerDay != null), [M.teamTrend]);
