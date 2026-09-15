@@ -242,6 +242,8 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
   });
   const [missFloorH, setMissFloorH] = useState(2);   // E: absolute-error floor for the misses list
   const [missSort, setMissSort] = useState('abs');   // 'abs' | 'ratio'
+  // The statistics live behind this toggle — the default view is the plain-English summary.
+  const [showDetail, setShowDetail] = useState(false);
   const upd = (setter, keyName) => v => { const n = parseFloat(v); if (Number.isFinite(n) && n > 0) { setter(n); localStorage.setItem(keyName, String(n)); } };
   const setWindow = n => { setWindowN(n); localStorage.setItem('tt_windowN', String(n)); };
   const setScale = v => { setScaleType(v); localStorage.setItem('tt_scaleType', v); };
@@ -292,6 +294,39 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
     [scoped, today, typeMode, spPerDay, hoursPerDay, scaleType, hoursPerIdealDay, eligibility, selectedProject, allProjectTickets, wl.byKey, wl.status, windowN, preview, isDev]
   );
   const effScaleType = M.scaleType; // resolved (auto → detected)
+
+  // Scale shape is a property of the team's estimation practice, not of one person's tickets.
+  // Detecting it from a single-assignee slice can miss the range entirely, so the distribution
+  // is always re-derived with the assignee filter cleared and compared against what is on screen.
+  const teamScale = useMemo(() => {
+    const allow = new Set(['story', 'task', 'bug']);
+    const vals = [];
+    for (const t of tickets) {
+      if (selectedProject !== 'all' && getProject(t) !== selectedProject) continue;
+      const type = (getType(t) || '').toLowerCase();
+      if (type === 'epic' || !allow.has(type)) continue;
+      const sp = getSP(t);
+      if (sp > 0) vals.push(sp);
+    }
+    if (!vals.length) return null;
+    const distinct = [...new Set(vals)].sort((a, b) => a - b);
+    return {
+      distinct, n: vals.length,
+      min: distinct[0], max: distinct[distinct.length - 1],
+      detected: detectScaleType(distinct),
+      subUnit: distinct.filter(v => v < 1).length,
+    };
+  }, [tickets, selectedProject]);
+
+  const scaleFiltered = selectedAssignee !== 'all' && teamScale && (
+    <Banner color="#f97316" icon={<AlertTriangle size={15} />}>
+      <strong>Scale shape below is filtered to {selectedAssignee} — do not conclude anything about the scale from it.</strong>{' '}
+      Team-wide{selectedProject !== 'all' ? ` for ${selectedProject}` : ''} the story-point field runs <strong>{f2(teamScale.min)} to {f2(teamScale.max)}</strong> across {teamScale.distinct.length} distinct values over {teamScale.n} pointed tickets, and detects as <strong>{teamScale.detected === 'ideal_days' ? 'ideal-days' : 'relative'}</strong>
+      {teamScale.detected !== M.detectedScale && <> — which is <strong>not</strong> what this filtered view detects ({M.detectedScale === 'ideal_days' ? 'ideal-days' : 'relative'})</>}.
+      {' '}Values: {teamScale.distinct.slice(0, 14).map(f2).join(', ')}{teamScale.distinct.length > 14 ? ` … (+${teamScale.distinct.length - 14} more)` : ''}.
+      {' '}Clear the assignee filter before reading the scale-shape or ideal-days conclusions.
+    </Banner>
+  );
 
   async function loadWorklogs() {
     try {
@@ -405,9 +440,24 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
   );
   const printHeader = (
     <div className="tt-print-header">
-      <div style={{ fontSize: 18, fontWeight: 800 }}>Story Point Estimation Quality</div>
+      <div style={{ fontSize: 18, fontWeight: 800 }}>How good are our estimates?</div>
       <div style={{ fontSize: 12 }}>{scopeLabel} · {typeLabel} · {M.worklogMode ? 'worklog-level' : 'ticket-level'} · generated {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
     </div>
+  );
+
+  // ── Detail toggle — everything statistical sits behind this ──
+  const detailToggle = (
+    <button
+      className="tt-no-print"
+      onClick={() => setShowDetail(v => !v)}
+      style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '11px 16px', marginBottom: 16, cursor: 'pointer', color: '#cbd5e1', fontSize: 12.5, fontWeight: 600 }}
+    >
+      <span style={{ color: '#60a5fa' }}>{showDetail ? '▾' : '▸'}</span>
+      {showDetail ? 'Hide the detailed analysis' : 'Show the detailed analysis'}
+      <span style={{ color: '#6b7280', fontWeight: 400 }}>
+        settings, charts, per-size breakdown, drift and forecast accuracy
+      </span>
+    </button>
   );
 
   // ── Worklog-level load bar ──
@@ -471,12 +521,18 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
       <div className="tt-print-root">
         {printBar}
         {printHeader}
-        {controls}
-        {scopeNote}
-        {worklogBar}
-        {banners}
-        {scaleContradiction}
         <AccumulationView M={M} windowN={windowN} typeLabel={typeLabel} isDev={isDev} preview={preview} setPreview={setPreview} />
+        {detailToggle}
+        {showDetail && (
+          <>
+            {controls}
+            {scopeNote}
+            {worklogBar}
+            {banners}
+            {scaleContradiction}
+            {scaleFiltered}
+          </>
+        )}
       </div>
     );
   }
@@ -487,24 +543,30 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
       <div className="tt-print-root">
         {printBar}
         {printHeader}
-        {controls}
-        {scopeNote}
-        {worklogBar}
-        {banners}
-        {scaleContradiction}
         <Card style={{ border: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.05)' }}>
-          <CardHeader title="Story Point Estimation Quality" subtitle={`${scopeLabel} · ${typeLabel}`} />
+          <CardHeader title="How good are our estimates?" subtitle={`${scopeLabel} · ${typeLabel}`} />
           <div style={{ textAlign: 'center', padding: '24px 12px' }}>
             <AlertTriangle size={26} style={{ color: '#f59e0b', marginBottom: 10 }} />
-            <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0', marginBottom: 6 }}>Log coverage too low to measure ({M.logCoverage}%)</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0', marginBottom: 6 }}>Too few people log their time to answer this ({M.logCoverage}% do)</div>
             <div style={{ fontSize: 13, color: '#94a3b8', maxWidth: 580, margin: '0 auto', lineHeight: 1.6 }}>{M.coverageGate.detail}</div>
             <div style={{ display: 'flex', gap: 22, justifyContent: 'center', marginTop: 20, flexWrap: 'wrap' }}>
-              <MiniStat label="Completed pointed tickets" value={M.eligibleN} />
-              <MiniStat label="With logged time (n)" value={M.n} />
-              <MiniStat label="Coverage / target" value={`${M.logCoverage}% / 70%`} />
+              <MiniStat label="Finished, estimated tickets" value={M.eligibleN} />
+              <MiniStat label="Of those, with time logged" value={M.n} />
+              <MiniStat label="Coverage / needed" value={`${M.logCoverage}% / 70%`} />
             </div>
           </div>
         </Card>
+        {detailToggle}
+        {showDetail && (
+          <>
+            {controls}
+            {scopeNote}
+            {worklogBar}
+            {banners}
+            {scaleContradiction}
+            {scaleFiltered}
+          </>
+        )}
       </div>
     );
   }
@@ -516,11 +578,19 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
     <div className="tt-print-root">
       {printBar}
       {printHeader}
+
+      {/* The default view: the same findings, in plain language. */}
+      <SimpleSummary M={M} windowN={windowN} typeLabel={typeLabel} onShowDetail={() => setShowDetail(true)} />
+
+      {detailToggle}
+
+      {showDetail && (<>
       {controls}
       {scopeNote}
       {worklogBar}
       {banners}
-        {scaleContradiction}
+      {scaleContradiction}
+      {scaleFiltered}
 
       {M.notReliable && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 10, padding: '10px 14px', marginBottom: 14 }}>
@@ -821,6 +891,7 @@ export default function TimeTrackingTab({ tickets = [], selectedAssignee = 'all'
           </>
         )}
       </Card>
+      </>)}
     </div>
   );
 }
@@ -1059,6 +1130,226 @@ function WhatThisMeans({ M, typeLabel }) {
       <div style={{ marginTop: 12, padding: '11px 13px', background: `${recColor}12`, border: `1px solid ${recColor}33`, borderRadius: 8, fontSize: 12.5, color: recColor, lineHeight: 1.6 }}>
         <strong>✅ Recommended: </strong>{rec}
       </div>
+    </Card>
+  );
+}
+
+// ─── Plain-English summary (the default view) ─────────────────────────────────
+// Everything here is a restatement of the same metrics the detailed section shows —
+// no new maths, just the jargon removed. Rank-based findings (discrimination, spread,
+// hit rate) survive uniform under-logging, so only the absolute-hours block is caveated.
+const VERDICT = {
+  good: { color: '#22c55e', mark: '✓' },
+  warn: { color: '#f59e0b', mark: '!' },
+  bad: { color: '#ef4444', mark: '✗' },
+};
+
+function Check({ status, title, detail }) {
+  const v = VERDICT[status];
+  return (
+    <div style={{ display: 'flex', gap: 11, alignItems: 'flex-start', padding: '12px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+      <span style={{ width: 20, height: 20, borderRadius: '50%', background: `${v.color}22`, color: v.color, fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1 }}>{v.mark}</span>
+      <div>
+        <div style={{ fontSize: 13.5, color: '#e2e8f0', fontWeight: 600, lineHeight: 1.4 }}>{title}</div>
+        {detail && <div style={{ fontSize: 12.5, color: '#94a3b8', marginTop: 4, lineHeight: 1.55 }}>{detail}</div>}
+      </div>
+    </div>
+  );
+}
+
+function SectionLabel({ children }) {
+  return <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600, marginBottom: 10 }}>{children}</div>;
+}
+
+function SimpleSummary({ M, windowN, typeLabel, onShowDetail }) {
+  const suppressed = M.suppressAbsolute;
+
+  // ── 1. How long does work actually take ──
+  // Prefer a real measured bucket (n≥5) over the fitted rate; fall back to the rate.
+  const measured = M.buckets.filter(b => b.enough);
+  const rep = measured.length ? measured.reduce((a, b) => (b.n > a.n ? b : a)) : null;
+  const mostCommon = M.buckets.length ? M.buckets.reduce((a, b) => (b.n > a.n ? b : a)) : null;
+  const headline = rep
+    ? { sp: rep.sp, typical: rep.medianHours, lo: rep.iqr[0], hi: rep.iqr[1], measured: true }
+    : mostCommon
+      ? { sp: mostCommon.sp, typical: M.medianHoursPerSP * mostCommon.sp, lo: M.iqr[0] * mostCommon.sp, hi: M.iqr[1] * mostCommon.sp, measured: false }
+      : null;
+
+  // ── 2. Are our estimates any good — three plain checks + the two config-level ones ──
+  const checks = [];
+  const d = M.discrimination;
+  checks.push(
+    d >= 0.7
+      ? { status: 'good', title: 'Bigger estimates do take longer', detail: `Across ${M.n} tickets, a higher estimate almost always meant more time. The points are carrying real information.` }
+      : d >= 0.4
+        ? { status: 'warn', title: 'Bigger estimates only loosely take longer', detail: 'The direction is right, but plenty of small tickets outlast big ones. Use the points to plan a sprint, not to promise a date on one ticket.' }
+        : { status: 'bad', title: 'Bigger estimates do not reliably take longer', detail: 'Estimate size barely predicts how long a ticket takes, so the points cannot be used to plan.' }
+  );
+
+  const s = M.spreadFactor;
+  checks.push(
+    s < 1.5
+      ? { status: 'good', title: 'Tickets of the same size take similar time', detail: `Two tickets with the same estimate usually land within about ×${f1(s)} of each other.` }
+      : s <= 2.0
+        ? { status: 'warn', title: `Tickets of the same size vary by about ×${f1(s)}`, detail: 'Workable when planning a whole sprint, where the differences cancel out — not reliable for a single ticket.' }
+        : { status: 'bad', title: `Tickets of the same size vary by about ×${f1(s)}`, detail: 'Two tickets given the same estimate routinely take very different amounts of time — the estimate carries little information.' }
+  );
+
+  const hit = M.hitRate;
+  checks.push(
+    hit >= 70
+      ? { status: 'good', title: `${pctI(hit)} in 100 tickets finish close to their estimate`, detail: 'Close means within half again, or half, of the time the estimate predicted.' }
+      : hit >= 50
+        ? { status: 'warn', title: `Only ${pctI(hit)} in 100 tickets finish close to their estimate`, detail: 'Close means within half again, or half, of the time the estimate predicted — the rest miss by more than that.' }
+        : { status: 'bad', title: `Only ${pctI(hit)} in 100 tickets finish close to their estimate`, detail: 'Close means within half again, or half, of the time the estimate predicted. Most tickets miss by more than that.' }
+  );
+
+  if (M.throughputMultiple) {
+    const m = M.throughputMultiple;
+    const planDetail = `You plan at ${f1(M.spPerDay)} points per person per day. Over the last ${windowN} sprints the team actually completed ${f2(M.deliveredSPPerPersonDay)}.`;
+    checks.push(
+      m > 1.3
+        ? { status: 'bad', title: `Your plan expects ${f1(m)}× more work than the team delivers`, detail: planDetail }
+        : m < 0.77
+          ? { status: 'warn', title: 'Your plan expects less work than the team delivers', detail: planDetail }
+          : { status: 'good', title: 'Your planning assumption matches what the team delivers', detail: planDetail }
+    );
+  }
+
+  if (M.collapseText && M.collapseText.length) {
+    checks.push({ status: 'warn', title: 'Some estimate sizes mean the same thing in practice', detail: M.collapseText.join(' ') });
+  }
+
+  const nBad = checks.filter(c => c.status === 'bad').length;
+  const nWarn = checks.filter(c => c.status === 'warn').length;
+  const overall = nBad
+    ? { label: 'NEEDS WORK', color: '#ef4444' }
+    : nWarn
+      ? { label: 'MIXED', color: '#f59e0b' }
+      : { label: 'GOOD', color: '#22c55e' };
+
+  // ── One next step, not a menu ──
+  const noisy = M.spreadFactor > 2.0 || M.discrimination < 0.4;
+  const planOff = M.throughputMultiple && (M.throughputMultiple > 1.3 || M.throughputMultiple < 0.77);
+  let action;
+  if (noisy) {
+    action = 'Fix the estimating, not the numbers. Re-point against a few agreed reference tickets and split anything 8 points or larger — the problem is that same-size tickets behave differently, and no amount of recalibration fixes that.';
+  } else if (planOff) {
+    action = `Plan the next sprint at ${f2(M.deliveredSPPerPersonDay)} points per person per day instead of ${f1(M.spPerDay)}. The estimates themselves are fine; only the planning assumption is off.`;
+  } else if (nWarn) {
+    action = 'Nothing structural to change. Walk the biggest misses below in the retro and keep an eye on the trend.';
+  } else {
+    action = 'Nothing to change — estimates are consistent and the planning assumption matches reality.';
+  }
+
+  // ── 3. Which tickets went most wrong ──
+  const worst = [...M.missesAll].filter(o => o.absErr >= 2).sort((a, b) => b.absErr - a.absErr).slice(0, 5);
+
+  return (
+    <Card style={{ padding: '22px 24px' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap', marginBottom: 6 }}>
+        <div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: '#f1f5f9' }}>How good are our estimates?</div>
+          <div style={{ fontSize: 12.5, color: '#6b7280', marginTop: 4 }}>
+            Based on {M.n} finished tickets ({typeLabel}) from the last {windowN} completed sprints.
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, background: `${overall.color}15`, border: `1px solid ${overall.color}45`, borderRadius: 9, padding: '7px 13px' }}>
+          <span style={{ width: 9, height: 9, borderRadius: '50%', background: overall.color, display: 'inline-block' }} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: overall.color, letterSpacing: '0.03em' }}>{overall.label}</span>
+        </div>
+      </div>
+
+      {M.notReliable && (
+        <div style={{ fontSize: 12, color: '#fca5a5', marginTop: 10 }}>
+          Dev preview — below the reliability threshold (n={M.n}). Do not quote these numbers.
+        </div>
+      )}
+
+      {/* 1. How long work actually takes */}
+      {headline && (
+        <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+          <SectionLabel>How long does work actually take?</SectionLabel>
+          <div style={{ fontSize: 15.5, color: '#e2e8f0', lineHeight: 1.6 }}>
+            A <strong style={{ color: '#c4b5fd' }}>{f2(headline.sp)}-point</strong> ticket typically takes{' '}
+            <strong style={{ color: '#86efac' }}>{f1(headline.typical)}h</strong>
+            {Number.isFinite(headline.lo) && Number.isFinite(headline.hi) && (
+              <span style={{ color: '#94a3b8' }}> — usually between {f1(headline.lo)}h and {f1(headline.hi)}h</span>
+            )}.
+          </div>
+
+          {measured.length > 1 && (
+            <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: '0 18px', fontSize: 12.5, alignItems: 'center' }}>
+              <div style={{ color: '#6b7280', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', paddingBottom: 6 }}>Size</div>
+              <div style={{ color: '#6b7280', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', paddingBottom: 6 }}>Usually takes</div>
+              <div style={{ color: '#6b7280', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', paddingBottom: 6, textAlign: 'right' }}>Tickets seen</div>
+              {measured.map(b => (
+                <React.Fragment key={b.sp}>
+                  <div style={{ color: '#c4b5fd', fontWeight: 700, padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.05)' }}>{f2(b.sp)} pt</div>
+                  <div style={{ color: '#e2e8f0', padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.05)', fontVariantNumeric: 'tabular-nums' }}>
+                    <strong style={{ color: '#86efac' }}>{f1(b.medianHours)}h</strong>
+                    <span style={{ color: '#6b7280' }}> · between {f1(b.iqr[0])}h and {f1(b.iqr[1])}h</span>
+                  </div>
+                  <div style={{ color: '#94a3b8', padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.05)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{b.n}</div>
+                </React.Fragment>
+              ))}
+            </div>
+          )}
+
+          {suppressed && (
+            <div style={{ fontSize: 12, color: '#fcd34d', marginTop: 12, lineHeight: 1.55 }}>
+              ⚠ Only about {pctI(M.loggingCompleteness * 100)}% of working time is logged in Jira, so these hours are what was <em>recorded</em>, not the full effort — read them as a floor. The checks below compare tickets against each other, so under-logging does not affect them.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 2. Are the estimates any good */}
+      <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+        <SectionLabel>Are our estimates any good?</SectionLabel>
+        {checks.map((c, i) => <Check key={i} {...c} />)}
+      </div>
+
+      {/* 3. Which tickets went most wrong */}
+      {worst.length > 0 && (
+        <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+          <SectionLabel>Which tickets went most wrong?</SectionLabel>
+          <div style={{ display: 'grid', gap: 9 }}>
+            {worst.map((o, i) => {
+              const over = o.logRatio > 0;
+              const factor = Math.exp(Math.abs(o.logRatio));
+              return (
+                <div key={o.key + i} style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                  <div style={{ minWidth: 0, flex: '1 1 320px' }}>
+                    <span style={{ color: '#60a5fa', fontSize: 12.5, fontWeight: 600 }}>{o.key}</span>
+                    <span style={{ color: '#e2e8f0', fontSize: 12.5, marginLeft: 8 }} title={o.summary}>{o.summary}</span>
+                    {o.placeholder && <span title="The whole logged time is one round number — probably typed in as a placeholder, not measured" style={{ marginLeft: 6 }}>⚠️</span>}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: '#94a3b8', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                    {f2(o.sp)} pt · expected {f1(o.predicted)}h, took <strong style={{ color: over ? '#fca5a5' : '#93c5fd' }}>{f1(o.logged)}h</strong>
+                    <span style={{ color: over ? '#fca5a5' : '#93c5fd' }}> ({f1(factor)}× {over ? 'longer' : 'quicker'})</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {worst.some(o => o.placeholder) && (
+            <div style={{ fontSize: 11.5, color: '#fcd34d', marginTop: 10 }}>⚠️ = the entire logged time is a single round number (1h / 4h / 8h) — likely typed in as a placeholder rather than measured, so don't let it drive the retro.</div>
+          )}
+        </div>
+      )}
+
+      {/* One next step */}
+      <div style={{ marginTop: 20, padding: '13px 15px', background: `${overall.color}12`, border: `1px solid ${overall.color}33`, borderRadius: 9, fontSize: 13, color: '#e2e8f0', lineHeight: 1.6 }}>
+        <strong style={{ color: overall.color }}>What to do: </strong>{action}
+      </div>
+
+      {onShowDetail && (
+        <button className="tt-no-print" onClick={onShowDetail} style={{ ...btnGhost, marginTop: 14, padding: '6px 12px' }}>
+          See the full analysis and every miss →
+        </button>
+      )}
     </Card>
   );
 }

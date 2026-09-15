@@ -293,7 +293,7 @@ const SprintDashboard = () => {
       }
       
       cacheDashboardData(jiraData, timestamp);
-      
+
       // Save to Oracle DB (fire-and-forget, don't block UI)
       if (dbStatus === 'online') {
         saveIssuesToDB(jiraData).catch(e => console.warn('DB save issues failed:', e));
@@ -486,7 +486,7 @@ const SprintDashboard = () => {
       setCachedData(parsedData);
       
       cacheDashboardData(parsedData, timestamp);
-      
+
       // Save to Oracle DB
       if (dbStatus === 'online') {
         saveIssuesToDB(parsedData).catch(e => console.warn('DB save issues failed:', e));
@@ -1619,25 +1619,37 @@ const SprintDashboard = () => {
             </div>
           </div>
 
-          <div className="flex gap-1 border-b border-slate-700">
+          {/* Wraps to a second row rather than overflowing — every tab must stay reachable
+              without horizontal page scroll. The active indicator is each button's own
+              bottom border, so it follows the tab onto its wrapped row. */}
+          <div className="flex flex-wrap gap-x-1 gap-y-1 border-b border-slate-700 max-w-full">
             {Object.entries(tabs).map(([key, { icon: Icon, label }]) => (
               <button
                 key={key}
                 onClick={() => setActiveTab(key)}
-                className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-all ${
+                className={`flex-none flex items-center gap-1.5 px-2.5 py-3 border-b-2 transition-all ${
                   activeTab === key
                     ? 'border-blue-500 text-blue-400 bg-slate-800/50'
                     : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'
                 }`}
               >
-                <Icon className="w-4 h-4" />
-                <span className="font-medium">{label}</span>
+                <Icon className="w-4 h-4 flex-none" />
+                <span className="font-medium text-sm">{label}</span>
               </button>
             ))}
           </div>
 
           {activeTab !== 'timeline' && activeTab !== 'csr' && activeTab !== 'csr-analytics' && (
             <div className="pt-3">
+              {/* The Team and Time Tracking tabs pin themselves to the last N completed
+                  sprints, so the sprint filter has no effect there. Say so rather than
+                  letting the filter and the report silently disagree. */}
+              {(activeTab === 'team' || activeTab === 'time') && selectedSprint !== 'all' && (
+                <div className="mb-2 inline-flex items-center gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-1.5">
+                  <span className="font-semibold">Sprint filter not used on this tab</span>
+                  <span className="text-amber-200/70">— this report covers the last N completed sprints regardless of “{selectedSprint}”.</span>
+                </div>
+              )}
               <FilterPanel
                 sprint={selectedSprint}
                 assignee={selectedAssignee}
@@ -1666,7 +1678,9 @@ const SprintDashboard = () => {
         </div>
       </div>
 
-              <div className={`${activeTab === 'csr' || activeTab === 'csr-analytics' || activeTab === 'data' ? 'w-full px-4 py-6 space-y-6' : 'max-w-7xl mx-auto px-6 py-6 space-y-6'}`}>
+              {/* min-w-0 + overflow-x-hidden keep the page itself from scrolling sideways;
+                  wide content (the contributor table) scrolls inside its own container. */}
+              <div className={`min-w-0 overflow-x-hidden ${activeTab === 'csr' || activeTab === 'csr-analytics' || activeTab === 'data' ? 'w-full px-4 py-6 space-y-6' : 'max-w-7xl mx-auto px-6 py-6 space-y-6'}`}>
 
 
         {activeTab === 'overview' && (

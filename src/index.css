@@ -43,6 +43,9 @@
   /* Drop interactive chrome from the printout */
   .tt-print-root button, .tt-print-root .tt-no-print { display: none !important; }
 
+  /* Executive summary is a paginated document: findings / charts / appendix */
+  .tt-page-break { break-before: page; page-break-before: always; }
+
   /* Printed report header */
   .tt-print-header {
     display: block !important;

@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const { fetchChangelogs } = require('./jiraChangelogs');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
@@ -524,6 +525,10 @@ app.get('/api/jira/worklogs', async (req, res) => {
 // Fetch status/assignee change history for a set of issue keys.
 // Powers exact assignee-at-completion, cycle time, reopen rate and blocked share
 // in the Team Contribution panel. Returns only status + assignee items (compact).
+// ── Changelogs ────────────────────────────────────────────────────────────────
+// Implementation lives in ./jiraChangelogs so it can be unit-tested against a stub Jira.
+// Bulk path first (Jira Cloud POST /rest/api/3/changelog/bulkfetch), per-issue as fallback.
+// Set JIRA_CHANGELOG_BULK=0 to force the per-issue path without a code change.
 app.get('/api/jira/changelogs', async (req, res) => {
   try {
     let keys = String(req.query.keys || '').split(',').map(k => k.trim()).filter(Boolean);
@@ -534,33 +539,20 @@ app.get('/api/jira/changelogs', async (req, res) => {
 
     const auth = Buffer.from(`${JIRA_CONFIG.email}:${JIRA_CONFIG.apiToken}`).toString('base64');
     const headers = { Authorization: `Basic ${auth}`, Accept: 'application/json' };
-    const changelogs = [];
-    const errors = [];
+    const startedAtMs = Date.now();
 
-    await mapLimit(keys, 6, async (key) => {
-      try {
-        let startAt = 0; let total = Infinity; const status = []; const assignee = [];
-        while (startAt < total) {
-          const r = await axios.get(`${JIRA_CONFIG.baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}/changelog`, { headers, params: { startAt, maxResults: 100 }, timeout: 30000 });
-          const vals = r.data.values || [];
-          total = Number.isFinite(r.data.total) ? r.data.total : vals.length;
-          for (const h of vals) {
-            const t = h.created;
-            for (const it of (h.items || [])) {
-              if (it.field === 'status' || it.fieldId === 'status') status.push({ t, from: it.fromString, to: it.toString });
-              else if (it.field === 'assignee' || it.fieldId === 'assignee') assignee.push({ t, from: it.fromString, to: it.toString });
-            }
-          }
-          startAt += vals.length;
-          if (!vals.length) break;
-        }
-        changelogs.push({ key, status, assignee });
-      } catch (e) {
-        errors.push({ key, message: e.response?.status ? `HTTP ${e.response.status}` : e.message });
-      }
+    const out = await fetchChangelogs({
+      axios, baseUrl: JIRA_CONFIG.baseUrl, headers, keys, mapLimit,
+      bulkEnabled: process.env.JIRA_CHANGELOG_BULK !== '0',
+      log: msg => console.warn(msg),
     });
 
-    res.json({ changelogs, count: changelogs.length, keysRequested: keys.length, truncatedKeyList, errors });
+    console.log(`[jira] changelogs: ${keys.length} issue(s) → ${out.jiraCalls} Jira API call(s) in ${Date.now() - startedAtMs}ms via ${out.method}${out.fallbackReason ? ` (bulk failed: ${out.fallbackReason})` : ''}`);
+    res.json({
+      changelogs: out.changelogs, count: out.changelogs.length, keysRequested: keys.length,
+      truncatedKeyList, errors: out.errors, jiraCalls: out.jiraCalls,
+      method: out.method, fallbackReason: out.fallbackReason,
+    });
   } catch (error) {
     console.error('Error fetching changelogs:', error.message);
     res.status(500).json({ error: 'Failed to fetch changelogs', message: error.message });

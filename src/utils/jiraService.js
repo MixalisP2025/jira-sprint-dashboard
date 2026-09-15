@@ -150,6 +150,7 @@ export const jiraService = {
     const CHUNK = 120;
     const all = [];
     const allErrors = [];
+    const callMeta = [];
     let truncatedKeyList = false;
     for (let i = 0; i < unique.length; i += CHUNK) {
       const chunk = unique.slice(i, i + CHUNK);
@@ -160,7 +161,15 @@ export const jiraService = {
       all.push(...(data.changelogs || []));
       if (data.errors?.length) allErrors.push(...data.errors);
       if (data.truncatedKeyList) truncatedKeyList = true;
+      callMeta.push({ method: data.method, jiraCalls: data.jiraCalls, fallbackReason: data.fallbackReason });
     }
+    // The server reports how it actually reached Jira — bulkfetch, or the per-issue
+    // fallback when bulkfetch is unavailable — and how many upstream calls that cost.
+    const methods = [...new Set(callMeta.map(m => m.method).filter(Boolean))].join(', ') || 'unknown';
+    const jiraCalls = callMeta.reduce((a, m) => a + (m.jiraCalls || 0), 0);
+    console.log(`[jira] getChangelogs: ${unique.length} keys → ${Math.ceil(unique.length / CHUNK)} request(s) to this server → ${jiraCalls} Jira API call(s) via ${methods}`);
+    const fellBack = callMeta.find(m => m.fallbackReason);
+    if (fellBack) console.warn(`[jira] changelog bulkfetch unavailable (${fellBack.fallbackReason}) — server used the per-issue fallback`);
     return { changelogs: all, errors: allErrors, truncatedKeyList };
   },
 
