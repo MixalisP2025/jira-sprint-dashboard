@@ -32,6 +32,16 @@ function oraErrorNumber(err) {
   return m ? Number(m[1]) : null;
 }
 
+// NJS-530 (ERR_HOST_NOT_FOUND): the host in the connect string could not be resolved.
+// A pool resolves its host once, when it is built, so a pool built while the network was
+// down keeps failing this way after the network returns. Rebuilding fixes it; retrying
+// the same pool never does. Deliberately narrow: a listener that is merely down is a
+// different error, and there the existing pool is fine.
+function isStaleAddress(err) {
+  if (!err) return false;
+  return err.code === 'NJS-530' || /\bNJS-530\b/.test(String(err.message || ''));
+}
+
 function isFatal(err) {
   const num = oraErrorNumber(err);
   return num != null && Object.prototype.hasOwnProperty.call(FATAL_ORA_ERRORS, num);
@@ -163,6 +173,7 @@ module.exports = {
   createBreaker,
   DbUnavailableError,
   isFatal,
+  isStaleAddress,
   oraErrorNumber,
   FATAL_ORA_ERRORS,
 };

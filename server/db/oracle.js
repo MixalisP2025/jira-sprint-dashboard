@@ -1,5 +1,5 @@
 const oracledb = require('oracledb');
-const { createBreaker, DbUnavailableError, isFatal } = require('./circuitBreaker');
+const { createBreaker, DbUnavailableError, isFatal, isStaleAddress } = require('./circuitBreaker');
 
 // Guards every physical connection attempt. Credential errors block outright;
 // anything else backs off. While it is open or blocked nothing touches the
@@ -17,15 +17,19 @@ oracledb.autoCommit = false;
 // plain strings so the JSON.parse() calls in routes.js work on them directly.
 oracledb.fetchAsString = [oracledb.CLOB];
 
-const config = {
-  user:     process.env.ORACLE_USER     || 'SprintAnalyticsDashboard',
-  password: process.env.ORACLE_PASSWORD || '',
-  // ORACLE_CONNECT_STRING overrides the parts — set it to a tnsnames alias
-  // (e.g. AIS_SERVER) if you also set TNS_ADMIN. Defaults to the EZConnect
-  // equivalent of the AIS_SERVER descriptor: DBSRV:1521/ORCL.
-  connectString: process.env.ORACLE_CONNECT_STRING
-    || `${process.env.ORACLE_HOST || 'DBSRV'}:${process.env.ORACLE_PORT || 1521}/${process.env.ORACLE_SERVICE || 'ORCL'}`,
-};
+// Read when a pool is built, not once at import, so a rebuilt pool picks up the
+// current settings.
+function buildConfig() {
+  return {
+    user:     process.env.ORACLE_USER     || 'SprintAnalyticsDashboard',
+    password: process.env.ORACLE_PASSWORD || '',
+    // ORACLE_CONNECT_STRING overrides the parts — set it to a tnsnames alias
+    // (e.g. AIS_SERVER) if you also set TNS_ADMIN. Defaults to the EZConnect
+    // equivalent of the AIS_SERVER descriptor: DBSRV:1521/ORCL.
+    connectString: process.env.ORACLE_CONNECT_STRING
+      || `${process.env.ORACLE_HOST || 'DBSRV'}:${process.env.ORACLE_PORT || 1521}/${process.env.ORACLE_SERVICE || 'ORCL'}`,
+  };
+}
 
 // Cache the *promise*, not the resolved pool. `if (!pool) pool = await create()`
 // let every concurrent first caller past the guard before the first create
@@ -59,7 +63,7 @@ function getPool() {
     // createPool does no network I/O in thin mode and proves nothing about the
     // credentials, so it is not recorded as a success — only a real connection is.
     poolPromise = oracledb
-      .createPool({ ...config, ...POOL_OPTIONS })
+      .createPool({ ...buildConfig(), ...POOL_OPTIONS })
       .then(p => {
         console.log('✅ Oracle connection pool created');
         return p;
@@ -92,7 +96,12 @@ async function withConnection(fn) {
     // Credential errors always surface here, never at createPool. Tear the pool
     // down on a fatal one so nothing cached can keep trying the bad login.
     breaker.recordFailure(err);
-    if (isFatal(err)) await destroyPool();
+    // A pool resolves the host once, when it is built. One built while the network
+    // was down (laptop off the LAN, DNS unreachable) keeps that dead address list
+    // and fails forever, even after the network returns — it took a restart to
+    // recover. Drop it so the next attempt resolves the host again; the breaker
+    // still decides when that attempt may happen.
+    if (isFatal(err) || isStaleAddress(err)) await destroyPool();
     throw err;
   }
   breaker.recordSuccess();

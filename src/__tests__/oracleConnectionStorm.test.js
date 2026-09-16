@@ -3,6 +3,7 @@ import { createRequire } from 'module';
 import net from 'net';
 
 const require = createRequire(import.meta.url);
+const { isStaleAddress } = require('../../server/db/circuitBreaker.js');
 
 // Regression test for the listener-log flood, run against the real oracledb
 // driver. The "listener" is a local socket that accepts and drops every
@@ -25,6 +26,34 @@ beforeAll(async () => {
 afterAll(async () => {
   try { await require('../../server/db/oracle.js').destroyPool(); } catch (_) {}
   await new Promise(r => server.close(r));
+});
+
+describe('a pool built while the host was unresolvable is rebuilt, not reused', () => {
+  it('recovers on the next attempt once the host resolves again', async () => {
+    const db = require('../../server/db/oracle.js');
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      // 1. network down: the host cannot be resolved, so the pool holds no usable address
+      process.env.ORACLE_CONNECT_STRING = 'dbsrv.invalid-for-test:1521/ORCL';
+      const first = await db.query('SELECT 1 FROM DUAL').then(() => null, e => e);
+      expect(String(first.message)).toMatch(/NJS-530/);
+      expect(isStaleAddress(first)).toBe(true);
+
+      // 2. network back: the next attempt must resolve again rather than reuse the
+      //    dead address list. Reaching the local listener proves the pool was rebuilt.
+      db.resetCircuit();
+      process.env.ORACLE_CONNECT_STRING = `127.0.0.1:${port}/STORMTEST`;
+      const second = await db.query('SELECT 1 FROM DUAL').then(() => null, e => e);
+      expect(second).toBeTruthy();
+      expect(String(second.message)).not.toMatch(/NJS-530/);   // no longer a name problem
+      expect(hits).toBeGreaterThan(0);                          // it actually dialled the listener
+    } finally {
+      console.warn = warn;
+      await require('../../server/db/oracle.js').destroyPool();
+      require('../../server/db/oracle.js').resetCircuit();
+    }
+  }, 30000);
 });
 
 describe('Oracle pool does not retry on its own', () => {
