@@ -5,6 +5,7 @@ import {
   fetchCSRIssues, transformCSRIssue, CSR_PROJECTS, DOMAIN_MAP,
   getSLARisk, getSLATarget, SLA_RISK_STYLES, fetchSLABreaches,
 } from '../utils/csrService.js';
+import { downloadCsv } from '../utils/csvDownload.js';
 
 const LEGACY_CUTOFF_YEARS = 2;
 const STALE_DEFAULT_DAYS  = 180;
@@ -143,11 +144,7 @@ function exportCSV(tickets, filename = `CSR_tickets_export_${new Date().toISOStr
     ];
   });
   const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+  downloadCsv(csv, filename);
 }
 
 // ─── Filter Panel ─────────────────────────────────────────────────────────────

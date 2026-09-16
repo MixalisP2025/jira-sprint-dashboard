@@ -3,6 +3,7 @@ import { Copy, Check, Zap, Users, LayoutGrid, RotateCcw, Download, Briefcase } f
 import { generateSuggestions } from '../utils/allocationSuggestions';
 import RolesTab from './RolesTab';
 import { saveEligibilityToDB, loadEligibilityFromDB, saveAllocationsToDB, pingDB } from '../utils/dbSync';
+import { downloadCsv } from '../utils/csvDownload';
 
 // ─── Field accessors ──────────────────────────────────────────────────────────
 const getKey      = t => t['Issue key'] || t['Key'] || '';
@@ -126,11 +127,7 @@ function EligibilityView({ assignees, projectKeys, eligibility, onEligibilityCha
       rows.push([a, ...projectKeys.map(p => eligible.has(p) ? '✓' : '')]);
     });
     const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url  = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url; link.download = 'eligibility.csv'; link.click();
-    URL.revokeObjectURL(url);
+    downloadCsv(csv, 'eligibility.csv');
   }
 
   return (

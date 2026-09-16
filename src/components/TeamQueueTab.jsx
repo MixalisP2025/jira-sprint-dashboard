@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Download, Search, AlertTriangle, Copy, Check } from 'lucide-react';
 import { f1, getKey, getSP, getStatus, getAssignee, getStart, getCreated, isDone, isTodoName, median, quantile } from '../utils/teamEngine';
 import { workingDaysBetween } from '../utils/workingDays';
+import { downloadCsv } from '../utils/csvDownload';
 
 // The in-progress queue as a working list. This is the most actionable thing in the panel:
 // a queue this old is a decision backlog, and it cannot be worked from a summary card.
@@ -113,13 +114,7 @@ export default function TeamQueueTab({ scoped = [], today = new Date(), projectL
     for (const r of filtered) {
       lines.push([r.key, r.summary, r.assignee, r.status, r.sp, r.age ?? '', r.idle ?? '', r.startedAt ? r.startedAt.toISOString().slice(0, 10) : ''].map(csvCell).join(','));
     }
-    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `in-progress-queue-${projectLabel.replace(/[^\w]+/g, '-').toLowerCase()}-${today.toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    downloadCsv(lines.join('\r\n'), `in-progress-queue-${projectLabel.replace(/[^\w]+/g, '-').toLowerCase()}-${today.toISOString().slice(0, 10)}.csv`);
   };
 
   const inProgressStatuses = useMemo(() => [...new Set(items.map(i => i.status))].sort(), [items]);

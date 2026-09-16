@@ -11,6 +11,7 @@
 import { useState, useMemo } from 'react';
 import { csvEscape, formatDate } from '../utils/csrAnalyticsFormatters.js';
 import { MAX_GRID_ROWS } from '../utils/csrAnalyticsConstants.js';
+import { downloadCsv } from '../../../utils/csvDownload.js';
 
 /** Formats seconds into a human-readable time string (e.g. "2h 30m") */
 function fmtTime(sec) {
@@ -137,14 +138,8 @@ function handleExport(tickets) {
   ]);
 
   const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
   const date = new Date().toISOString().slice(0, 10);
-  a.href = url;
-  a.download = `CSR_analytics_export_${date}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadCsv(csv, `CSR_analytics_export_${date}.csv`);
 }
 
 // ---------------------------------------------------------------------------

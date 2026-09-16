@@ -20,6 +20,7 @@ import AllocationTab from './components/AllocationTab';
 import CSRTicketsTab from './components/CSRTicketsTab';
 import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
 import CsrSnapshotPage from './features/csr-analytics/CsrSnapshotPage.jsx';
+import { downloadCsv } from './utils/csvDownload';
 import {
   pingDB, saveIssuesToDB, loadIssuesFromDB,
   saveCapacityToDB, loadCapacityFromDB,
@@ -3882,19 +3883,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
       )
     ].join('\n');
 
-    // Download file
-    // Prepend a UTF-8 BOM so Excel reads non-Latin characters (e.g. Greek) correctly
-    // instead of falling back to the system ANSI codepage and producing mojibake.
-    const blob = new Blob(['﻿' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `jira-export-${new Date().toISOString().split('T')[0]}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadCsv(csvContent, `jira-export-${new Date().toISOString().split('T')[0]}.csv`);
   };
 
   const statusCounts = useMemo(() => {
