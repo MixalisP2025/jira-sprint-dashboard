@@ -3,6 +3,7 @@ import {
   aggregateProjects, velocityOf, assessProject, buildPortfolio,
   findNewProjects, isoWeekKey, updateSnapshots, previousSnapshot, weekOverWeek,
   projectMatches, projectsInData, weekStartDate,
+  spanOf, concurrencyWindows, peakConcurrency,
   HEALTH, T,
 } from '../utils/projectPortfolio';
 
@@ -481,5 +482,155 @@ describe('weekStartDate', () => {
   it('returns null for a malformed key rather than an invalid date', () => {
     expect(weekStartDate('nonsense')).toBeNull();
     expect(weekStartDate(null)).toBeNull();
+  });
+});
+
+// ── Ongoing projects ──────────────────────────────────────────────────────────
+// Continuous work — support queues, BAU streams — is not trying to finish. Judging it
+// against a target date manufactures a deadline nobody set, and "% complete" drifts
+// downwards as the queue is fed, which reads as going backwards.
+describe('ongoing projects', () => {
+  const rows = [
+    t({ 'Story Points': '5', Status: 'Done', Sprint: S1 }),
+    t({ 'Story Points': '5', Status: 'Done', Sprint: S2 }),
+    t({ 'Story Points': '40', Status: 'To Do', Sprint: S3 }),
+  ];
+
+  it('is never judged against a target date', () => {
+    const p = projectOf(rows);
+    const judged = assessProject(p, { targetDate: '2026-02-21', now: NOW });
+    const ongoing = assessProject(p, { targetDate: '2026-02-21', now: NOW, ongoing: true });
+    expect(judged.health).toBe(HEALTH.OFF_TRACK);
+    expect(ongoing.health).toBe(HEALTH.ONGOING);
+    expect(ongoing.varianceWeeks).toBeNull();
+    expect(ongoing.forecastDate).toBeNull();
+  });
+
+  it('still measures a delivery rate, which is what it is reported on', () => {
+    const r = assessProject(projectOf(rows), { now: NOW, ongoing: true });
+    expect(r.spPerWeek).toBeGreaterThan(0);
+    expect(r.ongoing).toBe(true);
+  });
+
+  // An empty support queue today has not finished; it refills tomorrow.
+  it('outranks Complete — finished work that is ongoing is still ongoing', () => {
+    const allDone = projectOf([t({ Sprint: S1 }), t({ Sprint: S2 })]);
+    expect(assessProject(allDone, { now: NOW }).health).toBe(HEALTH.DONE);
+    expect(assessProject(allDone, { now: NOW, ongoing: true }).health).toBe(HEALTH.ONGOING);
+  });
+
+  it('says so when it cannot even measure throughput', () => {
+    const thin = projectOf([t({ Sprint: 'undated', Status: 'To Do' })]);
+    const r = assessProject(thin, { now: NOW, ongoing: true });
+    expect(r.health).toBe(HEALTH.ONGOING);
+    expect(r.note).toMatch(/no delivery rate measurable/i);
+  });
+
+  it('reads the flag from projectMeta through buildPortfolio', () => {
+    const list = buildPortfolio(rows, {
+      tracked: ['PROJ'],
+      projectTargets: { PROJ: '2026-02-21' },
+      projectMeta: { PROJ: { ongoing: true } },
+      now: NOW,
+    });
+    expect(list[0].health).toBe(HEALTH.ONGOING);
+    expect(list[0].ongoing).toBe(true);
+  });
+
+  it('sorts below everything that needs a decision', () => {
+    const list = buildPortfolio([
+      ...rows.map(r => ({ ...r, Project: 'LATE' })),
+      ...rows.map(r => ({ ...r, Project: 'BAU' })),
+    ], {
+      tracked: ['LATE', 'BAU'],
+      projectTargets: { LATE: '2026-02-21' },
+      projectMeta: { BAU: { ongoing: true } },
+      now: NOW,
+    });
+    expect(list[0].project).toBe('LATE');
+    expect(list[0].health).toBe(HEALTH.OFF_TRACK);
+    expect(list[1].health).toBe(HEALTH.ONGOING);
+  });
+});
+
+// ── Calendar spans and concurrency ────────────────────────────────────────────
+// The finding the old overlap panel was reaching for and could not show: how many
+// projects run at once, when, and which ones.
+describe('spanOf', () => {
+  it('spans the earliest sprint start to the latest sprint end', () => {
+    const p = projectOf([t({ Sprint: S2 }), t({ Sprint: S1 }), t({ Sprint: S3 })]);
+    expect(spanOf(p)).toEqual({ startDate: '2026-01-05', endDate: '2026-02-13' });
+  });
+
+  // Collapsing an undated project onto today would place a bar on the chart that
+  // asserts a schedule nobody has.
+  it('reports nulls rather than inventing a span', () => {
+    expect(spanOf(projectOf([t({ Sprint: 'undated sprint' })]))).toEqual({ startDate: null, endDate: null });
+    expect(spanOf(projectOf([t({ Sprint: '' })]))).toEqual({ startDate: null, endDate: null });
+  });
+
+  it('is carried on every portfolio entry', () => {
+    const list = buildPortfolio([t({ Project: 'A', Sprint: S1 })], { tracked: ['A'], now: NOW });
+    expect(list[0].startDate).toBe('2026-01-05');
+    expect(list[0].endDate).toBe('2026-01-16');
+  });
+});
+
+describe('concurrencyWindows', () => {
+  const span = (project, startDate, endDate) => ({ project, startDate, endDate });
+
+  it('finds the stretch where enough projects run at once', () => {
+    const w = concurrencyWindows([
+      span('A', '2026-01-01', '2026-06-30'),
+      span('B', '2026-03-01', '2026-06-30'),
+      span('C', '2026-03-01', '2026-06-30'),
+    ], { minProjects: 3 });
+    expect(w.length).toBeGreaterThan(0);
+    expect(new Date(w[0].start) >= new Date('2026-02-25')).toBe(true);
+    expect(w[0].count).toBe(3);
+    expect(w[0].projects.sort()).toEqual(['A', 'B', 'C']);
+  });
+
+  it('stays silent when the threshold is never reached', () => {
+    expect(concurrencyWindows([
+      span('A', '2026-01-01', '2026-02-01'),
+      span('B', '2026-06-01', '2026-07-01'),
+    ], { minProjects: 3 })).toEqual([]);
+  });
+
+  // One long crunch should read as one band, not fifty weekly slivers.
+  it('merges adjacent samples into a single band', () => {
+    const w = concurrencyWindows([
+      span('A', '2026-01-01', '2026-12-31'),
+      span('B', '2026-01-01', '2026-12-31'),
+      span('C', '2026-01-01', '2026-12-31'),
+    ], { minProjects: 3 });
+    expect(w).toHaveLength(1);
+  });
+
+  it('ignores projects with no span instead of throwing', () => {
+    const w = concurrencyWindows([
+      span('A', '2026-01-01', '2026-12-31'),
+      { project: 'NODATES', startDate: null, endDate: null },
+    ], { minProjects: 1 });
+    expect(w.every(x => !x.projects.includes('NODATES'))).toBe(true);
+  });
+
+  it('survives an empty portfolio', () => {
+    expect(concurrencyWindows([], { minProjects: 3 })).toEqual([]);
+    expect(peakConcurrency([])).toBeNull();
+  });
+});
+
+describe('peakConcurrency', () => {
+  it('names the worst moment and who is in it', () => {
+    const peak = peakConcurrency([
+      { project: 'A', startDate: '2026-01-01', endDate: '2026-12-31' },
+      { project: 'B', startDate: '2026-06-01', endDate: '2026-08-31' },
+      { project: 'C', startDate: '2026-06-01', endDate: '2026-08-31' },
+      { project: 'D', startDate: '2026-06-01', endDate: '2026-08-31' },
+    ]);
+    expect(peak.count).toBe(4);
+    expect(new Date(peak.start) >= new Date('2026-05-25')).toBe(true);
   });
 });

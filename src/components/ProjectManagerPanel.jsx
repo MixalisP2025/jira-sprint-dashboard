@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { Briefcase, RefreshCw, FileText, Plus, EyeOff, Eye, AlertCircle, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { jiraService } from '../utils/jiraService';
-import { buildPortfolio, findNewProjects, projectMatches, HEALTH, HEALTH_LABEL, T } from '../utils/projectPortfolio';
+import { findNewProjects, projectMatches, HEALTH, HEALTH_LABEL, T } from '../utils/projectPortfolio';
 import { HEALTH_STYLE, SECTIONS, describeProject, fmtDate } from '../utils/projectReport';
 import ProjectStatusReportModal from './ProjectStatusReportModal';
 
@@ -28,7 +28,7 @@ function HealthPill({ health }) {
   );
 }
 
-function ProjectRow({ p, onTargetChange, onOwnerChange, onNoteChange, onUntrack }) {
+function ProjectRow({ p, onTargetChange, onOwnerChange, onNoteChange, onOngoingChange, onUntrack }) {
   const [open, setOpen] = useState(false);
   const s = HEALTH_STYLE[p.health] || HEALTH_STYLE[HEALTH.NO_DATA];
   const bar = Math.max(0, Math.min(100, p.percentComplete));
@@ -60,12 +60,15 @@ function ProjectRow({ p, onTargetChange, onOwnerChange, onNoteChange, onUntrack 
         <div className="px-4 pb-4 pt-1 border-t border-slate-100 bg-slate-50/60">
           <div className="grid gap-3 sm:grid-cols-3 mt-3">
             <label className="block">
-              <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">Target end date</span>
+              <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                Target end date{p.ongoing && <span className="font-normal normal-case text-slate-400"> — n/a while ongoing</span>}
+              </span>
               <input
                 type="date"
                 value={p.targetDate || ''}
                 onChange={e => onTargetChange(p.project, e.target.value)}
-                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-800 focus:ring-2 focus:ring-blue-400 outline-none"
+                disabled={!!p.ongoing}
+                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-sm text-slate-800 focus:ring-2 focus:ring-blue-400 outline-none disabled:bg-slate-100 disabled:text-slate-400"
               />
             </label>
             <label className="block">
@@ -90,6 +93,21 @@ function ProjectRow({ p, onTargetChange, onOwnerChange, onNoteChange, onUntrack 
             </label>
           </div>
 
+          {/* Continuous work has no finish line, so a target date and a forecast are the
+              wrong questions for it. Ticking this swaps both for throughput. */}
+          <label className="mt-3 flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!p.ongoing}
+              onChange={e => onOngoingChange(p.project, e.target.checked)}
+              className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-2 focus:ring-blue-400 cursor-pointer"
+            />
+            <span className="text-xs text-slate-700">
+              <span className="font-semibold">Ongoing project</span>
+              <span className="text-slate-500"> — continuous work with no end date. Reported on throughput instead of a forecast, and never counted as off track.</span>
+            </span>
+          </label>
+
           <div className="mt-3 grid gap-2 sm:grid-cols-4 text-xs">
             <div><span className="text-slate-500">Scope</span><div className="font-semibold text-slate-800">{p.totalSP} SP · {p.items} items</div></div>
             <div><span className="text-slate-500">Remaining</span><div className="font-semibold text-slate-800">{p.remainingSP} SP</div></div>
@@ -97,7 +115,7 @@ function ProjectRow({ p, onTargetChange, onOwnerChange, onNoteChange, onUntrack 
             <div><span className="text-slate-500">Forecast</span><div className="font-semibold text-slate-800">{p.beyondHorizon ? 'beyond horizon' : fmtDate(p.forecastDate)}</div></div>
           </div>
 
-          {p.unpointedItems > 0 && (
+          {p.unpointedItems > 0 && !p.ongoing && (
             <p className="mt-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
               {p.unpointedItems} of {p.items} items carry no story points, so they are invisible to the forecast.
             </p>
@@ -114,9 +132,13 @@ function ProjectRow({ p, onTargetChange, onOwnerChange, onNoteChange, onUntrack 
 }
 
 export default function ProjectManagerPanel({
-  data,
-  tracked, ignored, configured = [], projectTargets, projectMeta, snapshots,
-  onTrack, onIgnore, onUntrack, onTargetChange, onOwnerChange, onNoteChange,
+  // The portfolio is built once by the dashboard and shared with the overlap chart, so
+  // the two views cannot disagree about a project's health, span or forecast. Building
+  // it here as well was one copy too many — a second call site drifts the moment either
+  // one's inputs change.
+  portfolio,
+  tracked, ignored, configured = [], snapshots,
+  onTrack, onIgnore, onUntrack, onTargetChange, onOwnerChange, onNoteChange, onOngoingChange,
 }) {
   const [jiraProjects, setJiraProjects] = useState(null);
   const [checking, setChecking] = useState(false);
@@ -124,12 +146,8 @@ export default function ProjectManagerPanel({
   const [showReport, setShowReport] = useState(false);
   const [manualKey, setManualKey] = useState('');
   const [showIgnored, setShowIgnored] = useState(false);
+  // Fixed at mount so the report header does not tick while it is open.
   const now = useMemo(() => new Date(), []);
-
-  const portfolio = useMemo(
-    () => buildPortfolio(data, { tracked, projectTargets, projectMeta, now }),
-    [data, tracked, projectTargets, projectMeta, now],
-  );
 
   const newProjects = useMemo(
     () => (jiraProjects ? findNewProjects(jiraProjects, { tracked, ignored, configured }) : []),
@@ -297,6 +315,7 @@ export default function ProjectManagerPanel({
                   onTargetChange={onTargetChange}
                   onOwnerChange={onOwnerChange}
                   onNoteChange={onNoteChange}
+                  onOngoingChange={onOngoingChange}
                   onUntrack={onUntrack}
                 />
               ))}

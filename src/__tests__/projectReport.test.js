@@ -189,3 +189,51 @@ describe('weekCommencing', () => {
     expect(weekCommencing(new Date('2026-02-16T00:00:00Z'))).toBe('w/c 16 Feb 2026');  // Mon → itself
   });
 });
+
+describe('ongoing projects in the report', () => {
+  const bau = proj({
+    project: 'BAU', health: HEALTH.ONGOING, ongoing: true,
+    targetDate: null, forecastDate: null, varianceWeeks: null,
+    items: 120, doneItems: 84, remainingSP: 40, spPerWeek: 6.2, sprintsUsed: 6,
+  });
+
+  // A refilling backlog makes "% complete" drift downwards; quoting it would read as
+  // the project going backwards week on week.
+  it('reports throughput, never a percentage or a forecast', () => {
+    const s = describeProject(bau);
+    expect(s).toMatch(/^Ongoing/);
+    expect(s).toContain('84/120 items done');
+    expect(s).toContain('6.2 SP/wk');
+    expect(s).not.toMatch(/% complete/);
+    expect(s).not.toMatch(/forecast/i);
+    expect(s).not.toMatch(/target/i);
+  });
+
+  it('says plainly when throughput cannot be measured', () => {
+    expect(describeProject({ ...bau, spPerWeek: null }))
+      .toContain('no delivery rate measurable yet');
+  });
+
+  it('gets its own section rather than being mixed into On track', () => {
+    const html = buildReportHtml({ portfolio: [bau], synopsis: ['x'], meta });
+    expect(html).toContain('Ongoing — continuous, no end date');
+    expect(html).not.toContain('>On track<');
+  });
+
+  // Folding ongoing work into "on track" would overstate how much is under control.
+  it('is counted separately in the synopsis and excluded from attention', () => {
+    const s = buildSynopsis([
+      proj({ project: 'A', health: HEALTH.ON_TRACK }),
+      bau,
+    ], { now: NOW }).join(' ');
+    expect(s).toMatch(/No tracked project is forecast to miss/);
+    expect(s).toMatch(/1 ongoing \(continuous, not judged against a date\)/);
+  });
+
+  it('states the exemption in the method footnote', () => {
+    const html = buildReportHtml({ portfolio: [bau], synopsis: ['x'], meta });
+    expect(html).toMatch(/marked ongoing are continuous work/i);
+    expect(buildReportText({ portfolio: [bau], synopsis: ['x'], meta }))
+      .toMatch(/marked ongoing are continuous work/i);
+  });
+});

@@ -16,6 +16,7 @@ const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial
 
 export const HEALTH_STYLE = {
   [HEALTH.OFF_TRACK]: { color: '#b91c1c', bg: '#fef2f2', border: '#fca5a5', dot: '●' },
+  [HEALTH.ONGOING]:   { color: '#0e7490', bg: '#ecfeff', border: '#67e8f9', dot: '↻' },
   [HEALTH.AT_RISK]:   { color: '#b45309', bg: '#fffbeb', border: '#fcd34d', dot: '●' },
   [HEALTH.ON_TRACK]:  { color: '#15803d', bg: '#f0fdf4', border: '#86efac', dot: '●' },
   [HEALTH.DONE]:      { color: '#1d4ed8', bg: '#eff6ff', border: '#93c5fd', dot: '✓' },
@@ -28,6 +29,7 @@ export const SECTIONS = [
   { key: HEALTH.OFF_TRACK, title: 'Off track — needs a decision' },
   { key: HEALTH.AT_RISK,   title: 'At risk — watch this week' },
   { key: HEALTH.ON_TRACK,  title: 'On track' },
+  { key: HEALTH.ONGOING,   title: 'Ongoing — continuous, no end date' },
   { key: HEALTH.DONE,      title: 'Complete' },
   { key: HEALTH.NO_TARGET, title: 'No target date set' },
   { key: HEALTH.NO_DATA,   title: 'Cannot forecast yet' },
@@ -53,6 +55,17 @@ export function describeVariance(weeks) {
 export function describeProject(p) {
   const pct = `${p.percentComplete}% complete`;
   const sp  = p.totalSP > 0 ? `${p.completedSP}/${p.totalSP} SP` : `${p.doneItems}/${p.items} items`;
+
+  // Ongoing work is reported on throughput. No percentage: the denominator refills by
+  // design, so "52% complete" would drift downwards as the queue is fed and read as
+  // going backwards.
+  if (p.health === HEALTH.ONGOING) {
+    const rate = p.spPerWeek == null
+      ? 'no delivery rate measurable yet'
+      : `${p.spPerWeek} SP/wk over the last ${p.sprintsUsed} sprints`;
+    const openWork = p.remainingSP > 0 ? `, ${p.remainingSP} SP open` : '';
+    return `Ongoing · ${p.doneItems}/${p.items} items done · ${rate}${openWork}.`;
+  }
 
   if (p.health === HEALTH.DONE) return `${pct} · ${sp}.`;
 
@@ -122,8 +135,14 @@ export function buildSynopsis(portfolio, { snapshots = {}, now = new Date() } = 
     out.push(`Movement since last week — ${movers.slice(0, 5).map(x => `${x.p.project}: ${x.m.replace(/^Since [^:]+: /, '')}`).join(' ')}`);
   }
 
-  if (ok.length || done.length) {
-    out.push(`${ok.length} on track${done.length ? `, ${done.length} complete` : ''}.`);
+  const ongoing = by(HEALTH.ONGOING);
+  if (ok.length || done.length || ongoing.length) {
+    const bits = [`${ok.length} on track`];
+    if (done.length) bits.push(`${done.length} complete`);
+    // Named, not silently folded into "on track": ongoing work was never assessed
+    // against a date, and saying otherwise would overstate how much is under control.
+    if (ongoing.length) bits.push(`${ongoing.length} ongoing (continuous, not judged against a date)`);
+    out.push(bits.join(', ') + '.');
   }
 
   // The honest caveat, always stated when it applies.
@@ -202,6 +221,7 @@ export function buildReportHtml({ portfolio, synopsis, snapshots = {}, meta }) {
       ${T.velocityWindow} completed sprints. At risk = forecast more than ${T.atRiskWeeks} week past target;
       off track = more than ${T.offTrackWeeks} weeks past. Delivery rate is measured per sprint, because the
       stored issue rows carry no completion dates — a project whose sprints are undated cannot be forecast.
+      Projects marked ongoing are continuous work and are reported on throughput, never against a target date.
     </div>
   </td></tr></table>
 </div>`.trim();
@@ -236,6 +256,7 @@ export function buildReportText({ portfolio, synopsis, snapshots = {}, meta }) {
   lines.push('—');
   lines.push(`Forecast = remaining SP / SP completed per week over the last ${T.velocityWindow} completed sprints.`);
   lines.push(`At risk = forecast >${T.atRiskWeeks}wk past target; off track = >${T.offTrackWeeks}wk past.`);
+  lines.push('Projects marked ongoing are continuous work, reported on throughput rather than against a date.');
   return lines.join('\n');
 }
 

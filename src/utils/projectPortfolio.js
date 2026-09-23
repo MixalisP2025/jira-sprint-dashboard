@@ -20,6 +20,9 @@ import { getSP, getSprint, getProject, getStatus, isDone, parseSprintDates, f1 }
 // ─── Health ───────────────────────────────────────────────────────────────────
 // Exported so the UI can state the rule on screen rather than applying it invisibly.
 export const HEALTH = {
+  // Continuous work — support queues, BAU streams — that is not trying to finish.
+  // It must never be judged against a completion date, because there isn't one.
+  ONGOING:    'ongoing',
   DONE:       'done',
   ON_TRACK:   'on-track',
   AT_RISK:    'at-risk',
@@ -29,6 +32,7 @@ export const HEALTH = {
 };
 
 export const HEALTH_LABEL = {
+  [HEALTH.ONGOING]:   'Ongoing',
   [HEALTH.DONE]:      'Complete',
   [HEALTH.ON_TRACK]:  'On track',
   [HEALTH.AT_RISK]:   'At risk',
@@ -147,8 +151,64 @@ export function velocityOf(project, { now = new Date(), window = T.velocityWindo
   };
 }
 
+// ─── Calendar span ────────────────────────────────────────────────────────────
+// Where a project sits on a calendar: the earliest start and latest end across its
+// sprints. Derived from the sprint names for the same reason velocity is — the rows
+// carry no dates of their own. A project whose sprints are all undated has no span,
+// and says so with nulls rather than collapsing onto today.
+export function spanOf(project) {
+  let min = null, max = null;
+  project.bySprint.forEach((_, name) => {
+    const d = parseSprintDates(name);
+    if (!d) return;
+    if (!min || d.start < min) min = d.start;
+    if (!max || d.end > max) max = d.end;
+  });
+  return { startDate: iso(min), endDate: iso(max) };
+}
+
+// Stretches of calendar where at least `minProjects` run at once. This is the finding
+// the old overlap panel was reaching for and could not show: it drew a fixed rainbow
+// gradient carrying no data, with the concurrency as a faint wash on top and no way to
+// tell WHICH projects collided.
+//
+// Sampled weekly — finer resolution would imply a precision sprint-level dates do not
+// have — and adjacent samples are merged so one long crunch reads as one band.
+export function concurrencyWindows(portfolio, { minProjects = 3, stepDays = 7 } = {}) {
+  const spans = portfolio
+    .filter(p => p.startDate && p.endDate)
+    .map(p => ({ start: new Date(p.startDate), end: new Date(p.endDate), project: p.project }));
+  if (!spans.length) return [];
+
+  const min = new Date(Math.min(...spans.map(s => s.start)));
+  const max = new Date(Math.max(...spans.map(s => s.end)));
+  const stepMs = stepDays * 24 * 60 * 60 * 1000;
+
+  const windows = [];
+  for (let t = min.getTime(); t <= max.getTime(); t += stepMs) {
+    const at = new Date(t);
+    const live = spans.filter(s => at >= s.start && at <= s.end);
+    if (live.length < minProjects) continue;
+    const last = windows[windows.length - 1];
+    if (last && t - new Date(last.end).getTime() <= stepMs) {
+      last.end = iso(new Date(t + stepMs));
+      if (live.length > last.count) { last.count = live.length; last.projects = live.map(s => s.project); }
+    } else {
+      windows.push({ start: iso(at), end: iso(new Date(t + stepMs)), count: live.length, projects: live.map(s => s.project) });
+    }
+  }
+  return windows;
+}
+
+// The single worst moment, for the headline. Null when nothing ever overlaps.
+export function peakConcurrency(portfolio, opts = {}) {
+  const windows = concurrencyWindows(portfolio, { ...opts, minProjects: 2 });
+  if (!windows.length) return null;
+  return windows.reduce((best, w) => (w.count > best.count ? w : best), windows[0]);
+}
+
 // ─── Forecast + health ────────────────────────────────────────────────────────
-export function assessProject(project, { targetDate, now = new Date(), velocityWindow = T.velocityWindow } = {}) {
+export function assessProject(project, { targetDate, now = new Date(), velocityWindow = T.velocityWindow, ongoing = false } = {}) {
   const remainingSP = Math.max(0, project.totalSP - project.completedSP);
   const percentComplete = project.totalSP > 0
     ? (project.completedSP / project.totalSP) * 100
@@ -179,10 +239,27 @@ export function assessProject(project, { targetDate, now = new Date(), velocityW
     // correct but too far out to mean anything, so the UI should quote the rate.
     beyondHorizon: false,
     weeksRemaining: null,
+    ongoing: false,
     // Set when the project has work but no way to date it — the honest reason a
     // forecast is missing, so the UI never has to invent one.
     note: null,
   };
+
+  // Ongoing work is not going anywhere, so "will it hit its date" is the wrong
+  // question and "% complete" is a meaningless denominator — the backlog refills by
+  // design. It is marked ongoing and reported on throughput instead. This outranks
+  // every other state, including Done: a support queue that happens to be empty today
+  // has not finished.
+  if (ongoing) {
+    return {
+      ...base,
+      ongoing: true,
+      health: HEALTH.ONGOING,
+      note: vel.spPerWeek == null
+        ? 'Ongoing work — no delivery rate measurable yet.'
+        : null,
+    };
+  }
 
   // Nothing left to do is a fact, not a forecast. It outranks every other state,
   // including a missing target date.
@@ -259,9 +336,12 @@ export function buildPortfolio(rows, {
   agg.forEach((p, key) => {
     if (trackedSet && !trackedSet.has(key)) return;
     const meta = projectMeta[key] || {};
-    const assessed = assessProject(p, { targetDate: projectTargets[key], now, velocityWindow });
+    const assessed = assessProject(p, {
+      targetDate: projectTargets[key], now, velocityWindow, ongoing: !!meta.ongoing,
+    });
     list.push({
       ...assessed,
+      ...spanOf(p),
       // Two different notes, kept apart: forecastNote is why the maths could not run,
       // note is what a person typed about the project.
       forecastNote: assessed.note,
@@ -281,7 +361,9 @@ export function buildPortfolio(rows, {
         sprintCount: 0, spPerWeek: null, sprintsUsed: 0, velocityReason: 'no-rows',
         targetDate: projectTargets[key] ? iso(toDate(projectTargets[key])) : null,
         forecastDate: null, varianceWeeks: null, requiredSpPerWeek: null,
-        health: HEALTH.NO_DATA,
+        startDate: null, endDate: null,
+        health: (projectMeta[key] || {}).ongoing ? HEALTH.ONGOING : HEALTH.NO_DATA,
+        ongoing: !!(projectMeta[key] || {}).ongoing,
         owner: (projectMeta[key] || {}).owner || '',
         note: (projectMeta[key] || {}).note || null,
         forecastNote: 'No issues in the current dataset for this project.',
@@ -292,7 +374,7 @@ export function buildPortfolio(rows, {
   // Worst news first: that is the order a status meeting actually needs.
   const order = {
     [HEALTH.OFF_TRACK]: 0, [HEALTH.AT_RISK]: 1, [HEALTH.NO_DATA]: 2,
-    [HEALTH.NO_TARGET]: 3, [HEALTH.ON_TRACK]: 4, [HEALTH.DONE]: 5,
+    [HEALTH.NO_TARGET]: 3, [HEALTH.ON_TRACK]: 4, [HEALTH.ONGOING]: 5, [HEALTH.DONE]: 6,
   };
   list.sort((a, b) =>
     (order[a.health] - order[b.health]) ||

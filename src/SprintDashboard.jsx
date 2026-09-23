@@ -13,6 +13,8 @@ import KPICard from './components/KPICard';
 import FilterPanel from './components/FilterPanel';
 import GlobalSearch from './components/GlobalSearch';
 import ProjectManagerPanel from './components/ProjectManagerPanel';
+import ProjectGantt from './components/ProjectGantt';
+import CollapsibleSection from './components/CollapsibleSection';
 import JiraRefreshButton from './components/JiraRefreshButton';
 import ServerStatus from './components/ServerStatus';
 import SprintHealthTab from './components/SprintHealthTab';
@@ -24,7 +26,8 @@ import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
 import CsrSnapshotPage from './features/csr-analytics/CsrSnapshotPage.jsx';
 import { downloadCsv } from './utils/csvDownload';
 import { JIRA_CONFIG } from './config/jiraConfig';
-import { buildPortfolio, updateSnapshots, projectsInData } from './utils/projectPortfolio';
+import { buildPortfolio, updateSnapshots, projectsInData, peakConcurrency } from './utils/projectPortfolio';
+import { deriveSprintDates, mergeSprintDates } from './utils/sprintDates';
 import {
   pingDB, saveIssuesToDB, loadIssuesFromDB,
   saveCapacityToDB, loadCapacityFromDB,
@@ -174,6 +177,22 @@ const SprintDashboard = () => {
 
   const clearSearchLanding = () => { setHighlightKey(null); setSearchMatch(null); };
 
+  // Sprint calendar dates for the Timeline tab. Derived from the loaded rows, because
+  // nothing else does it on the Oracle load path: sprintDates was only ever set by a
+  // CSV upload or a Refresh from Jira, so the gantt, the overlap view and the timeline
+  // details table all rendered "No Timeline Data Available" on every ordinary page
+  // load — while the dates sat in the sprint names of the rows already in memory.
+  //
+  // Existing entries win (a Jira refresh supplies them from the sprint API, which beats
+  // parsing a name), and an unchanged result returns the SAME object so this cannot
+  // loop against its own state update.
+  useEffect(() => {
+    if (!data.length) return;
+    const derived = deriveSprintDates(data);
+    if (!Object.keys(derived).length) return;
+    setSprintDates(prev => mergeSprintDates(prev, derived));
+  }, [data]);
+
   // ── Project manager handlers ────────────────────────────────────────────────
   // The effective portfolio: whatever was saved, else every project present in the
   // data. Seeded from the DATA and not from JIRA_CONFIG.projects, because that config
@@ -216,6 +235,32 @@ const SprintDashboard = () => {
       return next;
     });
   };
+
+  // "Ongoing" lives in projectMeta so it persists and so both UIs agree. The Timeline
+  // details table had its own copy in component state, which meant its checkbox reset
+  // on every reload and disagreed with the project-manager panel above it.
+  const setProjectOngoing = (key, on) => setProjectMetaField(key, 'ongoing', on ? true : '');
+
+  // One portfolio for both the panel and the gantt.
+  const timelinePortfolio = useMemo(
+    () => buildPortfolio(data, { tracked: effectiveTracked, projectTargets, projectMeta }),
+    [data, effectiveTracked, projectTargets, projectMeta],
+  );
+
+  // Folding the panel away must not hide that something is off track.
+  const pmSummary = useMemo(() => {
+    const n = h => timelinePortfolio.filter(p => p.health === h).length;
+    const off = n('off-track'), risk = n('at-risk');
+    const attention = off + risk;
+    return `${timelinePortfolio.length} tracked` +
+      (attention ? ` · ${attention} need${attention === 1 ? 's' : ''} attention` : ' · none off track');
+  }, [timelinePortfolio]);
+
+  const ongoingProjectsMap = useMemo(() => {
+    const out = {};
+    Object.entries(projectMeta).forEach(([k, v]) => { if (v && v.ongoing) out[k] = true; });
+    return out;
+  }, [projectMeta]);
 
   const setProjectMetaField = (key, field, value) => {
     setProjectMeta(prev => {
@@ -1961,14 +2006,18 @@ const SprintDashboard = () => {
                 projects sit on a calendar, this says whether they will land on time.
                 It reads the FULL dataset, not filteredData — a portfolio scoped by
                 the assignee filter would be a different question entirely. */}
-            <div className="bg-slate-50 rounded-2xl p-5 mb-6 border border-slate-200">
+            <CollapsibleSection
+              id="tl-pm"
+              icon="💼"
+              title="Project Manager"
+              summary={pmSummary}
+              className="bg-slate-50 rounded-2xl border border-slate-200 mb-6 [&_button>span>span:first-child]:!text-slate-900 [&_svg]:!text-slate-400"
+            >
               <ProjectManagerPanel
-                data={data}
+                portfolio={timelinePortfolio}
                 tracked={effectiveTracked}
                 ignored={ignoredProjects}
                 configured={JIRA_CONFIG.projects}
-                projectTargets={projectTargets}
-                projectMeta={projectMeta}
                 snapshots={projectSnapshots}
                 onTrack={trackProject}
                 onIgnore={ignoreProject}
@@ -1976,8 +2025,9 @@ const SprintDashboard = () => {
                 onTargetChange={setProjectTarget}
                 onOwnerChange={(k, v) => setProjectMetaField(k, 'owner', v)}
                 onNoteChange={(k, v) => setProjectMetaField(k, 'note', v)}
+                onOngoingChange={setProjectOngoing}
               />
-            </div>
+            </CollapsibleSection>
           <TimelineSection
             timelineData={timelineData}
             programEndDate={programEndDate}
@@ -1996,6 +2046,9 @@ const SprintDashboard = () => {
             assignees={assignees}
             projects={projects}
             filteredData={filteredData}
+            ongoingProjects={ongoingProjectsMap}
+            onToggleOngoing={setProjectOngoing}
+            portfolio={timelinePortfolio}
           />
           </>
         )}
@@ -4532,7 +4585,10 @@ const TimelineSection = ({
   sprints,
   assignees,
   projects,
-  filteredData
+  filteredData,
+  ongoingProjects = {},
+  onToggleOngoing = () => {},
+  portfolio = [],
 }) => {
   console.log('📅 TimelineSection rendering with:', {
     timelineDataLength: timelineData.length,
@@ -4546,7 +4602,9 @@ const TimelineSection = ({
   const [statusFilter, setStatusFilter] = useState('all');
   const [showInsights, setShowInsights] = useState(true);
   const [showGantt, setShowGantt] = useState(true);
-  const [ongoingProjects, setOngoingProjects] = useState({});
+  // NB: ongoingProjects now arrives as a prop, persisted in projectMeta, so this table
+  // and the project-manager panel above it cannot disagree and the choice survives a
+  // reload. It used to be component state that reset on every page load.
 
   // Ticket visibility filters
   const [hideDoneTickets, setHideDoneTickets] = useState(false);
@@ -4565,10 +4623,7 @@ const TimelineSection = ({
   }, [filteredData, hideDoneTickets, hideTestingTickets, hideVersioningTickets]);
 
   const handleToggleOngoing = (projectName) => {
-    setOngoingProjects(prev => ({
-      ...prev,
-      [projectName]: !prev[projectName]
-    }));
+    onToggleOngoing(projectName, !ongoingProjects[projectName]);
   };
   
   // Show helpful message if no timeline data
@@ -4618,6 +4673,25 @@ const TimelineSection = ({
     );
   }
 
+  // Same portfolio the Project Manager panel builds, so a bar's colour and the panel's
+  // pill can never disagree. Passed in rather than recomputed here.
+  const ganttPortfolio = portfolio || [];
+
+  // What the collapsed header says, so folding the chart away does not also hide
+  // whether the portfolio is overloaded.
+  //
+  // Deliberately NOT a useMemo: this component already has an early return above its
+  // remaining hooks, so every hook added here is one more that changes order when the
+  // timeline goes from empty to populated. The work is a filter over a handful of
+  // projects — cheaper than the hazard.
+  const ganttSummary = (() => {
+    const placed = ganttPortfolio.filter(p => p.startDate && p.endDate);
+    if (!placed.length) return 'No project has datable sprints';
+    const peak = peakConcurrency(placed);
+    return `${placed.length} project${placed.length === 1 ? '' : 's'} on the calendar` +
+           (peak && peak.count > 1 ? ` · peak ${peak.count} at once` : '');
+  })();
+
   const enhancedTimelineData = useMemo(() => {
     return timelineData.map(project => {
       const customTarget = projectTargets[project.project];
@@ -4661,38 +4735,10 @@ const TimelineSection = ({
     return data.sort((a, b) => a.sortOrder - b.sortOrder);
   }, [enhancedTimelineData, statusFilter]);
 
-  const ganttDates = filteredAndSortedData.flatMap(p => [p.startDate, p.effectiveEndDate]);
-  if (programEndDate) ganttDates.push(programEndDate);
-  const ganttMin = ganttDates.length ? new Date(Math.min(...ganttDates.map(d => new Date(d)))) : today;
-  const ganttMax = ganttDates.length ? new Date(Math.max(...ganttDates.map(d => new Date(d)))) : today;
-  ganttMin.setMonth(ganttMin.getMonth() - 1);
-  ganttMax.setMonth(ganttMax.getMonth() + 2);
-  const ganttTotalDays = Math.ceil((ganttMax - ganttMin) / (1000 * 60 * 60 * 24));
-  const monthHeader = [];
-  let current = new Date(ganttMin);
-  while (current <= ganttMax) {
-    const percent = ((current - ganttMin) / (1000 * 60 * 60 * 24) / ganttTotalDays) * 100;
-    monthHeader.push({
-      month: current.toLocaleDateString('en-GB', { month: 'short' }).toUpperCase(),
-      year: current.getFullYear(),
-      percent,
-    });
-    current.setMonth(current.getMonth() + 1);
-  }
-  const overlapZones = [];
-  const dayStep = 7;
-  for (let day = 0; day < ganttTotalDays; day += dayStep) {
-    const currentDate = new Date(ganttMin);
-    currentDate.setDate(currentDate.getDate() + day);
-    const active = filteredAndSortedData.filter(p => 
-      currentDate >= new Date(p.startDate) && currentDate <= new Date(p.effectiveEndDate)
-    ).length;
-    if (active >= 3) {
-      const start = (day / ganttTotalDays) * 100;
-      const end = ((day + dayStep) / ganttTotalDays) * 100;
-      overlapZones.push({ start, end });
-    }
-  }
+  // The gantt's own axis, month header and overlap sampling used to be computed here
+  // and drawn as a decorative gradient. ProjectGantt derives all of it from the
+  // portfolio instead, so this block went with the panel it fed.
+
   const analytics = useMemo(() => {
     const complete = filteredAndSortedData.filter(p => p.isComplete).length;
     const onTrack = filteredAndSortedData.filter(p => p.status === 'On Track').length;
@@ -4814,19 +4860,21 @@ const TimelineSection = ({
 
       {/* Smart Insights */}
       {showInsights && insights.length > 0 && (
-        <div className="bg-gradient-to-br from-slate-800/90 to-slate-900/90 border border-slate-700 rounded-2xl p-8 shadow-2xl backdrop-blur-sm">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-2xl font-bold text-white flex items-center gap-3">
-              <span className="text-3xl">💡</span>
-              Smart Insights
-            </h3>
-            <button 
-              onClick={() => setShowInsights(false)} 
+        <CollapsibleSection
+          id="tl-insights"
+          icon="💡"
+          title="Smart Insights"
+          summary={`${insights.length} insight${insights.length === 1 ? '' : 's'}`}
+          right={(
+            <button
+              onClick={() => setShowInsights(false)}
+              title="Dismiss for this session"
               className="text-slate-400 hover:text-white text-2xl w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-700 transition-all"
             >
               ×
             </button>
-          </div>
+          )}
+        >
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {insights.map((insight, i) => (
               <div key={i} className="bg-slate-800/60 rounded-xl px-5 py-4 flex items-center gap-4 border border-slate-700 hover:border-slate-600 transition-all">
@@ -4835,73 +4883,29 @@ const TimelineSection = ({
               </div>
             ))}
           </div>
-        </div>
+        </CollapsibleSection>
       )}
 
-      {/* Gantt Chart / Overlap View */}
+      {/* Project Overlap & Concurrency */}
       {showGantt && (
-        <div className="bg-gradient-to-br from-slate-800/90 to-slate-900/90 rounded-2xl p-8 shadow-2xl border border-slate-700 backdrop-blur-sm">
-          <h3 className="text-3xl font-bold text-white mb-8 flex items-center gap-3">
-            <span className="text-3xl">📊</span>
-            Project Overlap & Concurrency
-          </h3>
-          
-          {/* Horizontal Month Timeline */}
-          <div className="relative mb-8 bg-slate-900/50 rounded-xl p-6 border border-slate-700 overflow-x-auto">
-            {/* Month Headers */}
-            <div className="flex items-center mb-4" style={{ minWidth: monthHeader.length > 18 ? `${monthHeader.length * 60}px` : '100%' }}>
-              {monthHeader.map((m, i) => {
-                // Show every Nth label to avoid crowding
-                const showLabel = monthHeader.length <= 18 || i % Math.ceil(monthHeader.length / 18) === 0;
-                return (
-                  <div key={i} className="flex-1 text-center">
-                    {showLabel ? (
-                      <>
-                        <div className="text-xs font-bold text-white">{m.month}</div>
-                        <div className="text-xs text-slate-500">{m.year}</div>
-                      </>
-                    ) : (
-                      <div className="text-xs text-slate-600">·</div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            
-            {/* Timeline Bar */}
-            <div className="relative h-8 bg-slate-800 rounded-lg overflow-hidden">
-              {/* Gradient bar showing time progression */}
-              <div className="absolute inset-0 bg-gradient-to-r from-red-500 via-purple-500 via-blue-500 to-cyan-500 opacity-80"></div>
-              
-              {/* Overlap zones */}
-              {overlapZones.map((zone, i) => (
-                <div key={i}
-                  className="absolute top-0 bottom-0 bg-amber-500/30 border-t-2 border-b-2 border-amber-400"
-                  style={{ left: `${zone.start}%`, width: `${zone.end - zone.start}%` }}
-                />
-              ))}
-            </div>
-            
-            {/* Legend */}
-            <div className="flex items-center justify-between mt-4 text-sm">
-              <div className="flex items-center gap-3 text-slate-400">
-                <div className="w-4 h-4 bg-amber-500/30 border border-amber-400 rounded"></div>
-                <span>High overlap zone (≥3 projects)</span>
-              </div>
-              <div className="text-slate-300 font-semibold">
-                {filteredAndSortedData.length} active projects shown
-              </div>
-            </div>
-          </div>
-        </div>
+        <CollapsibleSection
+          id="tl-overlap"
+          icon="📊"
+          title="Project Overlap & Concurrency"
+          subtitle="When each project runs, and where they collide. Bar colour is the project's health."
+          summary={ganttSummary}
+        >
+          <ProjectGantt portfolio={ganttPortfolio} />
+        </CollapsibleSection>
       )}
 
       {/* Project Timeline Details Table */}
-      <div className="bg-gradient-to-br from-slate-800/90 to-slate-900/90 rounded-2xl p-8 shadow-2xl border border-slate-700 backdrop-blur-sm">
-        <h3 className="text-3xl font-bold text-white mb-8 flex items-center gap-3">
-          <span className="text-3xl">📅</span>
-          Project Timeline Details
-        </h3>
+      <CollapsibleSection
+        id="tl-details"
+        icon="📅"
+        title="Project Timeline Details"
+        summary={`${filteredAndSortedData.length} project${filteredAndSortedData.length === 1 ? '' : 's'}`}
+      >
         <div className="overflow-x-auto rounded-xl border border-slate-700 shadow-lg">
           <table className="w-full text-sm" style={{ minWidth: '1100px' }}>
             <thead className="bg-slate-800/80">
@@ -5042,12 +5046,16 @@ const TimelineSection = ({
           </div>
         )}
 
-        {/* How to Use Guide */}
-        <div className="mt-8 p-6 bg-gradient-to-br from-slate-800/60 to-slate-900/60 rounded-xl border border-slate-700">
-          <h4 className="text-xl font-bold text-white mb-5 flex items-center gap-2">
-            <span className="text-2xl">💡</span>
-            How to Use This Timeline
-          </h4>
+      </CollapsibleSection>
+
+      {/* How to Use Guide — closed by default: it is read once, not every visit. */}
+      <CollapsibleSection
+        id="tl-howto"
+        icon="💡"
+        title="How to Use This Timeline"
+        defaultOpen={false}
+        className="bg-gradient-to-br from-slate-800/60 to-slate-900/60 rounded-2xl border border-slate-700"
+      >
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div className="flex items-start gap-4 p-4 bg-slate-800/40 rounded-lg border border-slate-700/50">
               <span className="text-3xl">🎯</span>
@@ -5086,8 +5094,7 @@ const TimelineSection = ({
               </div>
             </div>
           </div>
-        </div>
-      </div>
+      </CollapsibleSection>
     </div>
   );
 };
