@@ -1,8 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   Upload, Users, TrendingUp, CheckCircle, Clock, AlertCircle,
   Calendar, Home, LayoutDashboard, Shield, Briefcase, Database,
-  Target, BarChart3, Edit3, X, Save, Filter, PieChart, Download, Mail, Copy, Check
+  Target, BarChart3, Edit3, X, Save, Filter, PieChart, Download, Mail, Copy, Check, Search
 } from 'lucide-react';
 import {
   PieChart as RechartsPieChart, Pie, Cell,
@@ -11,6 +11,8 @@ import {
 } from 'recharts';
 import KPICard from './components/KPICard';
 import FilterPanel from './components/FilterPanel';
+import GlobalSearch from './components/GlobalSearch';
+import ProjectManagerPanel from './components/ProjectManagerPanel';
 import JiraRefreshButton from './components/JiraRefreshButton';
 import ServerStatus from './components/ServerStatus';
 import SprintHealthTab from './components/SprintHealthTab';
@@ -21,6 +23,8 @@ import CSRTicketsTab from './components/CSRTicketsTab';
 import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
 import CsrSnapshotPage from './features/csr-analytics/CsrSnapshotPage.jsx';
 import { downloadCsv } from './utils/csvDownload';
+import { JIRA_CONFIG } from './config/jiraConfig';
+import { buildPortfolio, updateSnapshots, projectsInData } from './utils/projectPortfolio';
 import {
   pingDB, saveIssuesToDB, loadIssuesFromDB,
   saveCapacityToDB, loadCapacityFromDB,
@@ -99,6 +103,11 @@ function cacheDashboardData(data, timestamp) {
   try { localStorage.setItem('lastUpdatedTimestamp', timestamp.toISOString()); } catch (_) {}
 }
 
+// Hardcoded exclusions applied to every screen. Global search honours them too:
+// offering a ticket that no tab will ever render is a promise the dashboard cannot
+// keep — the result would say "Found in: Raw Data" and Raw Data would show nothing.
+const EXCLUDED_ASSIGNEES = ['Sotiris Mavrogianneas', 'Sofia Boustantzi'];
+
 const SprintDashboard = () => {
   // ============== STATE ==============
   const [data, setData] = useState([]);
@@ -122,6 +131,135 @@ const SprintDashboard = () => {
   
   // DB status: 'checking' | 'online' | 'offline'
   const [dbStatus, setDbStatus] = useState('checking');
+
+  // Set when global search jumps to a specific ticket, so Raw Data can pin and
+  // highlight that row instead of leaving you to find it in a 200-row table.
+  const [highlightKey, setHighlightKey] = useState(null);
+
+  // ── Project manager (Timeline tab) ──────────────────────────────────────────
+  // trackedProjects is the portfolio. It starts from the hardcoded JIRA_CONFIG list
+  // but lives in settings from then on, so adding a project no longer needs a deploy.
+  // ignoredProjects remembers what was dismissed, so the same newcomers are not
+  // offered every week — dismissing is a decision worth keeping.
+  const [trackedProjects, setTrackedProjects] = useState(null);   // null = not loaded yet
+  const [ignoredProjects, setIgnoredProjects] = useState([]);
+  const [projectMeta, setProjectMeta] = useState({});              // { key: { owner, note } }
+  const [projectSnapshots, setProjectSnapshots] = useState({});    // weekly history per project
+
+  // The tickets a search matched: { query, keys }. Raw Data narrows to these so the
+  // table shows the search result, not the rest of the slice the jump landed in.
+  const [searchMatch, setSearchMatch] = useState(null);
+
+  // ── Debounced settings writer ───────────────────────────────────────────────
+  // The project-manager fields include free text (owner, note), and a controlled input
+  // updates state on EVERY keystroke. Writing straight through meant one POST — and one
+  // Oracle transaction — per character. The settings MERGE would have written nothing
+  // for most of them, but the round trips are real and this database has been flooded
+  // before. Coalesced per key, so typing a 16-character owner name is one write.
+  const settingsTimers = useRef({});
+  const saveSettingDebounced = useCallback((key, value, ms = 1500) => {
+    const timers = settingsTimers.current;
+    if (timers[key]) clearTimeout(timers[key]);
+    timers[key] = setTimeout(() => {
+      delete timers[key];
+      saveSettingsToDB({ [key]: value }).catch(() => {});
+    }, ms);
+  }, []);
+
+  // Pending writes must not be lost when the tab closes mid-edit.
+  useEffect(() => {
+    const timers = settingsTimers.current;
+    return () => { Object.values(timers).forEach(clearTimeout); };
+  }, []);
+
+  const clearSearchLanding = () => { setHighlightKey(null); setSearchMatch(null); };
+
+  // ── Project manager handlers ────────────────────────────────────────────────
+  // The effective portfolio: whatever was saved, else every project present in the
+  // data. Seeded from the DATA and not from JIRA_CONFIG.projects, because that config
+  // list holds Jira KEYS ('CC', 'WTR1') while the rows carry display NAMES
+  // ('CS00451 - Crypto Currencies'). Seeding keys matched no rows and made all 82
+  // tracked projects report "not enough data".
+  const effectiveTracked = useMemo(
+    () => (trackedProjects === null ? projectsInData(data) : trackedProjects),
+    [trackedProjects, data],
+  );
+
+  const trackProject = (key) => {
+    setTrackedProjects(prev => {
+      const base = prev === null ? projectsInData(data) : prev;
+      return base.includes(key) ? base : [...base, key];
+    });
+    // Tracking something previously dismissed has to clear the dismissal, or the next
+    // Jira check would treat it as still-ignored and the two lists would disagree.
+    setIgnoredProjects(prev => prev.filter(k => k !== key));
+  };
+
+  const ignoreProject = (key) => {
+    setIgnoredProjects(prev => (prev.includes(key) ? prev : [...prev, key]));
+  };
+
+  const untrackProject = (key) => {
+    setTrackedProjects(prev => {
+      const base = prev === null ? projectsInData(data) : prev;
+      return base.filter(k => k !== key);
+    });
+    // Untracking is also a dismissal: without this the project reappears under
+    // "New in Jira" on the next check, which would read as the untrack not working.
+    setIgnoredProjects(prev => (prev.includes(key) ? prev : [...prev, key]));
+  };
+
+  const setProjectTarget = (key, date) => {
+    setProjectTargets(prev => {
+      const next = { ...prev };
+      if (date) next[key] = date; else delete next[key];
+      return next;
+    });
+  };
+
+  const setProjectMetaField = (key, field, value) => {
+    setProjectMeta(prev => {
+      const entry = { ...(prev[key] || {}) };
+      if (value) entry[field] = value; else delete entry[field];
+      const next = { ...prev };
+      if (Object.keys(entry).length) next[key] = entry; else delete next[key];
+      return next;
+    });
+  };
+
+  // One weekly snapshot per project, written once the data is actually loaded. This is
+  // the only way the report can say "scope moved this week": the stored rows carry no
+  // dates, so change over time has to be recorded as it happens rather than derived.
+  useEffect(() => {
+    if (!data.length || trackedProjects === null) return;
+    const portfolio = buildPortfolio(data, {
+      tracked: effectiveTracked,
+      projectTargets,
+      projectMeta,
+    });
+    if (!portfolio.length) return;
+    setProjectSnapshots(prev => updateSnapshots(prev, portfolio));
+    // Deliberately keyed on the dataset and portfolio shape only: re-running on every
+    // target-date keystroke would rewrite this week's snapshot constantly for no gain.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, trackedProjects]);
+
+  // Drops one global filter, leaving the search match and the other filters alone —
+  // the banner's chips need to remove exactly one thing each.
+  const clearOneFilter = (kind) => {
+    if (kind === 'sprint')   setSelectedSprint('all');
+    if (kind === 'assignee') setSelectedAssignee('all');
+    if (kind === 'project')  setSelectedProject('all');
+  };
+
+  // What global search reads. Deliberately NOT filteredData — search has to span every
+  // sprint, person and project regardless of the filters currently set, or it could
+  // not tell you where something is. It honours only the hardcoded exclusions, so it
+  // never offers a ticket no tab can render.
+  const searchableData = useMemo(
+    () => data.filter(item => !EXCLUDED_ASSIGNEES.includes(item['Assignee'] || item['D'] || '')),
+    [data],
+  );
   
   // ============== PERSIST SETTINGS ==============
   useEffect(() => {
@@ -144,6 +282,10 @@ const SprintDashboard = () => {
             if (settings.sprintDaysConfig) setSprintDaysConfig(settings.sprintDaysConfig);
             if (settings.programEndDate)   setProgramEndDate(settings.programEndDate);
             if (settings.projectTargets)   setProjectTargets(settings.projectTargets);
+            if (settings.trackedProjects)  setTrackedProjects(settings.trackedProjects);
+            if (settings.ignoredProjects)  setIgnoredProjects(settings.ignoredProjects);
+            if (settings.projectMeta)      setProjectMeta(settings.projectMeta);
+            if (settings.projectSnapshots) setProjectSnapshots(settings.projectSnapshots);
           }
           if (Array.isArray(issues) && issues.length > 0) {
             setCachedData(issues);
@@ -171,6 +313,14 @@ const SprintDashboard = () => {
         if (savedProgramEnd) setProgramEndDate(savedProgramEnd);
         const savedProjectTargets = localStorage.getItem('projectTargets');
         if (savedProjectTargets) setProjectTargets(JSON.parse(savedProjectTargets));
+        const savedTracked = localStorage.getItem('trackedProjects');
+        if (savedTracked) setTrackedProjects(JSON.parse(savedTracked));
+        const savedIgnored = localStorage.getItem('ignoredProjects');
+        if (savedIgnored) setIgnoredProjects(JSON.parse(savedIgnored));
+        const savedMeta = localStorage.getItem('projectMeta');
+        if (savedMeta) setProjectMeta(JSON.parse(savedMeta));
+        const savedSnaps = localStorage.getItem('projectSnapshots');
+        if (savedSnaps) setProjectSnapshots(JSON.parse(savedSnaps));
         const savedData = localStorage.getItem('cachedDashboardData');
         const savedTimestamp = localStorage.getItem('lastUpdatedTimestamp');
         if (savedData) {
@@ -224,9 +374,44 @@ const SprintDashboard = () => {
   useEffect(() => {
     localStorage.setItem('projectTargets', JSON.stringify(projectTargets));
     if (dbStatus === 'online' && Object.keys(projectTargets).length > 0) {
-      saveSettingsToDB({ projectTargets: JSON.parse(JSON.stringify(projectTargets)) }).catch(() => {});
+      saveSettingDebounced('projectTargets', JSON.parse(JSON.stringify(projectTargets)));
     }
-  }, [projectTargets, dbStatus]);
+  }, [projectTargets, dbStatus, saveSettingDebounced]);
+
+  // Project-manager settings. trackedProjects is skipped while null — that means
+  // "not loaded yet", and writing then would overwrite a saved portfolio with the
+  // hardcoded default on every page load.
+  useEffect(() => {
+    if (trackedProjects === null) return;
+    localStorage.setItem('trackedProjects', JSON.stringify(trackedProjects));
+    if (dbStatus === 'online') {
+      saveSettingDebounced('trackedProjects', [...trackedProjects]);
+    }
+  }, [trackedProjects, dbStatus, saveSettingDebounced]);
+
+  useEffect(() => {
+    localStorage.setItem('ignoredProjects', JSON.stringify(ignoredProjects));
+    if (dbStatus === 'online' && ignoredProjects.length > 0) {
+      saveSettingDebounced('ignoredProjects', [...ignoredProjects]);
+    }
+  }, [ignoredProjects, dbStatus, saveSettingDebounced]);
+
+  useEffect(() => {
+    localStorage.setItem('projectMeta', JSON.stringify(projectMeta));
+    if (dbStatus === 'online' && Object.keys(projectMeta).length > 0) {
+      saveSettingDebounced('projectMeta', JSON.parse(JSON.stringify(projectMeta)));
+    }
+  }, [projectMeta, dbStatus, saveSettingDebounced]);
+
+  useEffect(() => {
+    if (!Object.keys(projectSnapshots).length) return;
+    localStorage.setItem('projectSnapshots', JSON.stringify(projectSnapshots));
+    if (dbStatus === 'online') {
+      // The largest of these payloads (~120KB at full retention), so it is worth the
+      // longer wait: nothing here is urgent and a settled value is cheaper to ship.
+      saveSettingDebounced('projectSnapshots', JSON.parse(JSON.stringify(projectSnapshots)), 4000);
+    }
+  }, [projectSnapshots, dbStatus, saveSettingDebounced]);
 
   // ============== JIRA REFRESH HANDLER ==============
   const handleJiraRefresh = async (jiraData) => {
@@ -508,12 +693,27 @@ const SprintDashboard = () => {
     setSelectedSprint('all');
     setSelectedAssignee('all');
     setSelectedProject('all');
+    clearSearchLanding();
     setActiveTab('overview');
   };
 
   const handleProjectClick = (projectName) => {
     setSelectedProject(projectName);
     setActiveTab('overview');
+  };
+
+  // Global search asked to go somewhere. Only the filters the result actually names
+  // are applied — a person result must not silently clear the sprint you were on.
+  const handleSearchNavigate = ({ tab, filters = {}, highlightKey: key = null, match = null }) => {
+    if (filters.sprint   !== undefined) setSelectedSprint(filters.sprint);
+    if (filters.assignee !== undefined) setSelectedAssignee(filters.assignee);
+    if (filters.project  !== undefined) setSelectedProject(filters.project);
+    setHighlightKey(key);
+    // Only a ticket jump carries a match, so any other jump clears a stale one —
+    // otherwise a later trip to Raw Data would still be filtered by an old query.
+    setSearchMatch(match && match.keys?.length ? match : null);
+    if (tab) setActiveTab(tab);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // NEW: Bulk capacity edit handlers
@@ -597,9 +797,6 @@ const SprintDashboard = () => {
   }, [data]);
 
   const assignees = useMemo(() => {
-    // HARDCODED: Exclude specific assignees from dropdowns
-    const EXCLUDED_ASSIGNEES = ['Sotiris Mavrogianneas', 'Sofia Boustantzi'];
-    
     const set = new Set();
     data.forEach(item => {
       const assignee = item['Assignee'] || item['D'] || '';
@@ -623,9 +820,6 @@ const SprintDashboard = () => {
   }, [data]);
 
   const filteredData = useMemo(() => {
-    // HARDCODED: Exclude specific assignees from all screens
-    const EXCLUDED_ASSIGNEES = ['Sotiris Mavrogianneas', 'Sofia Boustantzi'];
-    
     return data.filter(item => {
       const sprint = item['Sprint'] || 
                      item['G'] || 
@@ -1606,7 +1800,7 @@ const SprintDashboard = () => {
                   disabled={false}
                 />
                 
-                <button onClick={() => { setSelectedSprint('all'); setSelectedAssignee('all'); setSelectedProject('all'); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-colors font-medium">
+                <button onClick={() => { setSelectedSprint('all'); setSelectedAssignee('all'); setSelectedProject('all'); clearSearchLanding(); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-colors font-medium">
                   Reset Filters
                 </button>
                 <button onClick={handleGoHome} className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition-colors flex items-center gap-2">
@@ -1618,6 +1812,12 @@ const SprintDashboard = () => {
                 </label>
               </div>
             </div>
+          </div>
+
+          {/* Above the tab bar, because it is how you reach a tab as much as how you
+              find a ticket. Sits in the sticky header so it is reachable from anywhere. */}
+          <div className="mb-3">
+            <GlobalSearch data={searchableData} onNavigate={handleSearchNavigate} />
           </div>
 
           {/* Wraps to a second row rather than overflowing — every tab must stay reachable
@@ -1658,7 +1858,7 @@ const SprintDashboard = () => {
                 onAssigneeChange={setSelectedAssignee}
                 sprints={sprints}
                 assignees={assignees}
-                onClearAll={() => { setSelectedSprint('all'); setSelectedAssignee('all'); setSelectedProject('all'); }}
+                onClearAll={() => { setSelectedSprint('all'); setSelectedAssignee('all'); setSelectedProject('all'); clearSearchLanding(); }}
               >
                 <div className="flex items-center gap-2">
                   <Filter className="w-4 h-4 text-slate-400" />
@@ -1756,6 +1956,28 @@ const SprintDashboard = () => {
         )}
 
         {activeTab === 'timeline' && (
+          <>
+            {/* The project-manager board sits above the gantt: the gantt shows where
+                projects sit on a calendar, this says whether they will land on time.
+                It reads the FULL dataset, not filteredData — a portfolio scoped by
+                the assignee filter would be a different question entirely. */}
+            <div className="bg-slate-50 rounded-2xl p-5 mb-6 border border-slate-200">
+              <ProjectManagerPanel
+                data={data}
+                tracked={effectiveTracked}
+                ignored={ignoredProjects}
+                configured={JIRA_CONFIG.projects}
+                projectTargets={projectTargets}
+                projectMeta={projectMeta}
+                snapshots={projectSnapshots}
+                onTrack={trackProject}
+                onIgnore={ignoreProject}
+                onUntrack={untrackProject}
+                onTargetChange={setProjectTarget}
+                onOwnerChange={(k, v) => setProjectMetaField(k, 'owner', v)}
+                onNoteChange={(k, v) => setProjectMetaField(k, 'note', v)}
+              />
+            </div>
           <TimelineSection
             timelineData={timelineData}
             programEndDate={programEndDate}
@@ -1775,15 +1997,20 @@ const SprintDashboard = () => {
             projects={projects}
             filteredData={filteredData}
           />
+          </>
         )}
 
         {activeTab === 'data' && (
-          <DataSection 
-            stats={stats} 
+          <DataSection
+            stats={stats}
             filteredData={filteredData}
             selectedSprint={selectedSprint}
             selectedAssignee={selectedAssignee}
             selectedProject={selectedProject}
+            highlightKey={highlightKey}
+            searchMatch={searchMatch}
+            onClearSearchMatch={clearSearchLanding}
+            onClearFilter={clearOneFilter}
           />
         )}
 
@@ -3763,7 +3990,7 @@ const ThemeAnalysisSection = ({ filteredData, selectedSprint, selectedAssignee, 
 };
 
 // Enhanced DataSection - simplified to show only tickets with filters
-const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, selectedProject }) => {
+const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, selectedProject, highlightKey = null, searchMatch = null, onClearSearchMatch = () => {}, onClearFilter = () => {} }) => {
   const [showNoStoryPoints, setShowNoStoryPoints] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
@@ -3797,16 +4024,40 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
     return filteredData;
   }, [filteredData]);
 
+  // Arrived from global search: narrow to the tickets that actually matched. Without
+  // this the table fills with whatever else shares the landing filters, and those rows
+  // read as search results without being any.
+  const matchKeySet = useMemo(
+    () => (searchMatch?.keys?.length ? new Set(searchMatch.keys) : null),
+    [searchMatch],
+  );
+
+  // Everything on this tab — the KPI tiles as well as the table — reads from here, so
+  // a search landing scopes the counts too. Tiles reading 2737 above a one-row table
+  // would just be the original complaint in a different place.
+  const scopedData = useMemo(
+    () => (matchKeySet ? allData.filter(item => matchKeySet.has(item['Issue key'] || item['Key'])) : allData),
+    [allData, matchKeySet],
+  );
+
+  // The global filters, named, so the banner can show what is narrowing the results.
+  // 'backlog' is a real sprint choice here, not an absent one, so it gets a label.
+  const activeFilterChips = useMemo(() => [
+    selectedSprint   !== 'all' && { kind: 'sprint',   label: selectedSprint === 'backlog' ? 'Backlog (no sprint)' : selectedSprint },
+    selectedAssignee !== 'all' && { kind: 'assignee', label: selectedAssignee },
+    selectedProject  !== 'all' && { kind: 'project',  label: selectedProject },
+  ].filter(Boolean), [selectedSprint, selectedAssignee, selectedProject]);
+
   // Issue type KPI counts
   const issueTypeCounts = useMemo(() => {
     const counts = {};
-    allData.forEach(item => {
+    scopedData.forEach(item => {
       const type = item['Issue Type'] || 'Other';
       counts[type] = (counts[type] || 0) + 1;
     });
     // Sort by count descending
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  }, [allData]);
+  }, [scopedData]);
 
   const TYPE_STYLES = {
     'Story':    { bg: 'bg-blue-50',   border: 'border-blue-300',   text: 'text-blue-800',   icon: '📖' },
@@ -3817,7 +4068,9 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
   };
   
   const displayData = useMemo(() => {
-    let result = allData;
+    // scopedData is already narrowed to the search match when there is one, so the
+    // checkbox filters below refine that set rather than competing with it.
+    let result = scopedData;
     if (typeFilter !== 'all') {
       result = result.filter(item => (item['Issue Type'] || 'Other') === typeFilter);
     }
@@ -3846,8 +4099,16 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
     if (showFlaggedOnly) {
       result = result.filter(item => flaggedTickets.has(item['Issue key'] || item['Key']));
     }
+    // Arrived here from global search: pin that ticket to the top. The table renders
+    // only the first 200 rows, and a result you cannot see is not a result. This also
+    // survives the filter toggles above — if a toggle would have excluded the ticket,
+    // it is put back, because you asked for this row by name.
+    if (highlightKey) {
+      const hit = allData.find(item => (item['Issue key'] || item['Key']) === highlightKey);
+      if (hit) result = [hit, ...result.filter(item => item !== hit)];
+    }
     return result;
-  }, [allData, showNoStoryPoints, statusFilter, typeFilter, hideDone, storiesOnly, hideAwaitingTesting, hideAwaitingVersioning, showNoDueDate, showFlaggedOnly, flaggedTickets]);
+  }, [scopedData, allData, showNoStoryPoints, statusFilter, typeFilter, hideDone, storiesOnly, hideAwaitingTesting, hideAwaitingVersioning, showNoDueDate, showFlaggedOnly, flaggedTickets, highlightKey]);
 
   const exportToExcel = () => {
     // Prepare data for export
@@ -3888,16 +4149,62 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
 
   const statusCounts = useMemo(() => {
     const counts = { 'Done': 0, 'In Progress': 0, 'To Do': 0, 'Awaiting Testing': 0, 'Awaiting Versioning': 0, 'Other': 0 };
-    allData.forEach(item => {
+    scopedData.forEach(item => {
       const status = item['Status'];
       if (counts.hasOwnProperty(status)) counts[status]++;
       else counts['Other']++;
     });
     return counts;
-  }, [allData]);
+  }, [scopedData]);
 
   return (
     <div className="space-y-6">
+      {/* Says why this table is showing what it is showing, and states BOTH numbers:
+          how many matched the search, and how many survived the filters. Reporting
+          only the survivors is how the count silently lies — the filters live in a
+          separate bar and are easy to forget you set. Each active filter gets a chip
+          so you can see it from here and drop it without hunting for the dropdown. */}
+      {matchKeySet && (
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm text-blue-900 min-w-0">
+            <Search className="w-4 h-4 flex-none text-blue-500" />
+            {/* Counts ROWS (keys.length), not distinct keys (matchKeySet.size). The
+                dataset can hold the same key twice — COGP-1259 does — and the table
+                renders both, so counting the deduped set would report one fewer than
+                the table shows. The Set is only for membership testing. */}
+            <span>
+              <strong>{searchMatch.keys.length}</strong> match <strong>“{searchMatch.query}”</strong>
+              {displayData.length !== searchMatch.keys.length && (
+                <> · showing <strong>{displayData.length}</strong></>
+              )}
+            </span>
+            {activeFilterChips.length > 0 && (
+              <>
+                <span className="text-blue-400">·</span>
+                <span className="text-xs text-blue-700">Filtered by:</span>
+                {activeFilterChips.map(chip => (
+                  <button
+                    key={chip.kind}
+                    onClick={() => onClearFilter(chip.kind)}
+                    title={`Remove the ${chip.kind} filter`}
+                    className="inline-flex items-center gap-1 max-w-[16rem] text-xs bg-white border border-blue-300 text-blue-800 rounded-full pl-2.5 pr-2 py-0.5 hover:bg-blue-100 transition-colors"
+                  >
+                    <span className="truncate">{chip.label}</span>
+                    <span className="flex-none text-blue-500">✕</span>
+                  </button>
+                ))}
+              </>
+            )}
+          </div>
+          <button
+            onClick={onClearSearchMatch}
+            className="flex-none text-xs font-medium text-blue-700 hover:text-blue-900 border border-blue-300 rounded-lg px-2.5 py-1 hover:bg-blue-100 transition-colors"
+          >
+            ✕ Clear search
+          </button>
+        </div>
+      )}
+
       {/* Issue Type KPI Row */}
       {issueTypeCounts.length > 0 && (
         <div className="bg-white rounded-xl p-4 shadow-sm">
@@ -3997,7 +4304,7 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
         <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
           <div>
             <p className="text-sm text-slate-500">
-              Showing {displayData.length} of {allData.length} extracted tickets
+              Showing {displayData.length} of {scopedData.length} extracted tickets
             </p>
           </div>
           
@@ -4123,7 +4430,14 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
                   const estH = Math.round(((parseFloat(ticket['Original Estimate']) || 0) / 3600) * 10) / 10;
                   const loggedH = Math.round(((parseFloat(ticket['Time Spent']) || 0) / 3600) * 10) / 10;
                   return (
-                    <tr key={idx} className={`transition-colors hover:bg-slate-50 ${isFlagged ? 'bg-orange-50' : 'bg-white'}`}>
+                    <tr
+                      key={idx}
+                      className={`transition-colors hover:bg-slate-50 ${
+                        key && key === highlightKey
+                          ? 'bg-blue-50 ring-2 ring-inset ring-blue-400'
+                          : isFlagged ? 'bg-orange-50' : 'bg-white'
+                      }`}
+                    >
                       <td className="px-3 py-3 text-center">
                         <button
                           onClick={() => toggleFlag(key)}
