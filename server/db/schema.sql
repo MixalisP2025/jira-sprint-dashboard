@@ -23,7 +23,8 @@ CREATE TABLE SAD_ISSUES (
   CREATED_DATE    DATE,
   UPDATED_DATE    DATE,
   FETCHED_AT      TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
-  CONSTRAINT UQ_ISSUE_KEY_SPRINT UNIQUE (ISSUE_KEY, SPRINT_NAME)
+  -- One row per issue; SPRINT_NAME is where it is now. See migrations/001.
+  CONSTRAINT UQ_ISSUE_KEY UNIQUE (ISSUE_KEY)
 );
 
 -- ── 2. SPRINTS ────────────────────────────────────────────────

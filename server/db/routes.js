@@ -58,15 +58,31 @@ async function executeManyChunked(conn, sql, rows, bindDefs) {
 // treat NULL vs NULL as "changed" and rewrite the row). FETCHED_AT therefore
 // means "last changed", not "last seen".
 //
-// The ON clause is NULL-safe for the same reason: Oracle stores '' as NULL, so
-// a ticket with no sprint never matched its own row, fell through to INSERT,
-// and hit UQ_ISSUE_KEY_SPRINT — failing the entire save on every refresh after
-// the first.
+// One row per issue. The MERGE used to match on (issue, sprint), so a ticket that moved
+// from S33 to S34 got a second row and the S33 one stayed behind, frozen at its old
+// status — every tab loading from the database counted the ticket twice. It now matches
+// on the issue alone and moves SPRINT_NAME with the ticket.
+//
+// Rows left over from the old key would make that MERGE match several targets
+// (ORA-30926), so ISSUE_PRUNE runs first in the same transaction: for each issue being
+// saved it keeps the newest row (where the ticket is now) and deletes the rest, and the
+// MERGE then updates that row in place. Once an issue has been pruned this deletes nothing.
+const ISSUE_PRUNE = `
+  DELETE FROM SAD_ISSUES
+  WHERE ISSUE_KEY = :key
+    AND ID <> (SELECT MAX(ID) KEEP (DENSE_RANK LAST ORDER BY FETCHED_AT)
+               FROM SAD_ISSUES WHERE ISSUE_KEY = :key)`;
+
+const ISSUE_PRUNE_BIND_DEFS = {
+  key: { type: oracledb.STRING, maxSize: 50 },
+};
+
 const ISSUE_MERGE = `
   MERGE INTO SAD_ISSUES tgt
   USING (SELECT :key AS ISSUE_KEY, :sprint AS SPRINT_NAME FROM DUAL) src
-  ON (tgt.ISSUE_KEY = src.ISSUE_KEY AND DECODE(tgt.SPRINT_NAME, src.SPRINT_NAME, 1, 0) = 1)
+  ON (tgt.ISSUE_KEY = src.ISSUE_KEY)
   WHEN MATCHED THEN UPDATE SET
+    SPRINT_NAME   = src.SPRINT_NAME,
     SUMMARY       = :summary,
     ISSUE_TYPE    = :type,
     STATUS        = :status,
@@ -77,7 +93,8 @@ const ISSUE_MERGE = `
     ORIGINAL_EST  = :est,
     PRIORITY      = :priority,
     FETCHED_AT    = SYSTIMESTAMP
-  WHERE DECODE(tgt.SUMMARY,      :summary,     0, 1) = 1
+  WHERE DECODE(tgt.SPRINT_NAME,  src.SPRINT_NAME, 0, 1) = 1
+     OR DECODE(tgt.SUMMARY,      :summary,     0, 1) = 1
      OR DECODE(tgt.ISSUE_TYPE,   :type,        0, 1) = 1
      OR DECODE(tgt.STATUS,       :status,      0, 1) = 1
      OR DECODE(tgt.ASSIGNEE,     :assignee,    0, 1) = 1
@@ -110,16 +127,14 @@ const ISSUE_BIND_DEFS = {
 };
 
 function toIssueBinds(issues) {
-  // Collapse duplicate (key, sprint) pairs — the MERGE key — keeping the last
-  // occurrence. Saves re-merging the same row several times per save.
+  // One entry per issue — the MERGE key — keeping the last occurrence. Two entries
+  // for one key in a batch would prune each other's rows.
   const seen = new Map();
   for (const t of issues) {
     const key    = clamp(t['Issue key'] || t['Key'] || '', 50);
     const sprint = clamp(t['Sprint'] || t['G'] || '', 500);
     if (!key) continue;
-    // JSON-encoded pair as the dedupe key — no separator character can
-    // collide with a sprint name containing punctuation.
-    seen.set(JSON.stringify([key, sprint]), {
+    seen.set(key, {
       key,
       sprint,
       summary:     clamp(t['Summary'], 1000),
@@ -148,22 +163,34 @@ router.post('/issues', async (req, res) => {
     const rows = toIssueBinds(issues);
     if (!rows.length) return safeJson(res, { ok: true, count: 0, merged: 0 });
 
-    const written = await db.withTransaction(conn =>
-      executeManyChunked(conn, ISSUE_MERGE, rows, ISSUE_BIND_DEFS)
-    );
+    const pruneRows = rows.map(r => ({ key: r.key }));
+    const { pruned, written } = await db.withTransaction(async conn => ({
+      pruned:  await executeManyChunked(conn, ISSUE_PRUNE, pruneRows, ISSUE_PRUNE_BIND_DEFS),
+      written: await executeManyChunked(conn, ISSUE_MERGE, rows, ISSUE_BIND_DEFS),
+    }));
     // written counts only inserted + changed rows; unchanged rows are skipped.
-    safeJson(res, { ok: true, count: issues.length, merged: rows.length, written });
+    // pruned counts rows removed because the issue has since moved sprint.
+    safeJson(res, { ok: true, count: issues.length, merged: rows.length, written, pruned });
   } catch (err) {
     console.error('DB /issues error:', err);
     errJson(res, err);
   }
 });
 
+// Newest row per issue. Until every refresh has pruned the rows the old (issue, sprint)
+// key left behind, an issue can still have several; the newest is where it is now.
+// FETCHED_AT means "last changed", and a superseded row is never changed again.
+const LATEST_ISSUES = `
+  SELECT * FROM (
+    SELECT i.*, ROW_NUMBER() OVER (PARTITION BY ISSUE_KEY ORDER BY FETCHED_AT DESC, ID DESC) AS RN_
+    FROM SAD_ISSUES i
+  ) WHERE RN_ = 1`;
+
 // ── GET /api/db/issues — load all issues ─────────────────────
 router.get('/issues', async (req, res) => {
   try {
     const { sprint } = req.query;
-    let sql = `SELECT * FROM SAD_ISSUES`;
+    let sql = `SELECT * FROM (${LATEST_ISSUES})`;
     const binds = {};
     if (sprint && sprint !== 'all') {
       sql += ` WHERE SPRINT_NAME = :sprint`;
@@ -199,7 +226,7 @@ router.get('/issues', async (req, res) => {
 router.get('/sprints', async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT DISTINCT SPRINT_NAME FROM SAD_ISSUES WHERE SPRINT_NAME IS NOT NULL ORDER BY SPRINT_NAME DESC`
+      `SELECT DISTINCT SPRINT_NAME FROM (${LATEST_ISSUES}) WHERE SPRINT_NAME IS NOT NULL ORDER BY SPRINT_NAME DESC`
     );
     safeJson(res, result.rows.map(r => r.SPRINT_NAME));
   } catch (err) {
@@ -523,4 +550,5 @@ router.get('/tables', async (req, res) => {
 
 module.exports = router;
 // Exposed so the statements can be checked against the real schema.
-module.exports.SQL = { ISSUE_MERGE, CAPACITY_MERGE, SETTINGS_MERGE, ROLES_MERGE };
+module.exports.SQL = { ISSUE_MERGE, ISSUE_PRUNE, LATEST_ISSUES, CAPACITY_MERGE, SETTINGS_MERGE, ROLES_MERGE };
+module.exports.toIssueBinds = toIssueBinds;
