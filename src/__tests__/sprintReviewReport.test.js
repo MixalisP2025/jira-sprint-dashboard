@@ -52,6 +52,17 @@ describe('management html / text', () => {
     expect(ticketTable).not.toContain('Nikoletta');
     expect(text.slice(text.indexOf('STUCK'))).not.toContain('Nikoletta');
   });
+  it('leaves out the sections that are switched off', () => {
+    const sections = { tips: false, stuck: false, slipping: true };
+    const h = buildManagementHtml({ ...input, synopsis, meta, sections });
+    const t = buildManagementText({ ...input, synopsis, meta, sections });
+    expect(h).not.toContain('What to look at');
+    expect(h).not.toContain('Stuck 10+');
+    expect(h).toContain('Carried through 3+');
+    expect(t).not.toContain('STUCK');
+    expect(t).toContain('CARRIED THROUGH');
+  });
+
   it('escapes ticket text', () => {
     const h = buildManagementHtml({ ...input, stale: [{ ...stale[0], summary: '<script>x</script>' }], synopsis, meta });
     expect(h).not.toContain('<script>');

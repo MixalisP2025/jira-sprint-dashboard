@@ -89,8 +89,11 @@ const heading = t => `<div style="font-size:13px;font-weight:700;color:#0f172a;b
 const th = (t, right) => `<th style="text-align:${right ? 'right' : 'left'};font-size:11px;color:#64748b;font-weight:600;padding:5px 8px;border-bottom:1px solid #cbd5e1">${esc(t)}</th>`;
 const td = (t, right, extra = '') => `<td style="text-align:${right ? 'right' : 'left'};font-size:12px;color:#1e293b;padding:5px 8px;border-bottom:1px solid #f1f5f9;${extra}">${t}</td>`;
 
+// Optional sections; the headline numbers, trend and projects always print.
+export const DEFAULT_SECTIONS = { tips: true, stuck: true, slipping: true };
+
 /** Printable / pasteable HTML. `meta`: { generatedAt, scopeLabel }. */
-export function buildManagementHtml({ ledger, pace, comparison, behind = [], stale = [], carried = [], tips = [], synopsis, hasHistory = true, meta }) {
+export function buildManagementHtml({ ledger, pace, comparison, behind = [], stale = [], carried = [], tips = [], synopsis, hasHistory = true, meta, sections = DEFAULT_SECTIONS }) {
   const running = pace?.elapsed != null && pace.elapsed < 100;
   const paceText = pace?.verdict === 'behind' ? 'Behind' : pace?.verdict === 'on-pace' ? 'On pace' : '–';
   const paceColor = pace?.verdict === 'behind' ? '#b91c1c' : pace?.verdict === 'on-pace' ? '#15803d' : '#0f172a';
@@ -111,9 +114,9 @@ export function buildManagementHtml({ ledger, pace, comparison, behind = [], sta
   }).join('');
 
   const itemRows = (list, extra) => list.map(x => `<tr>${td(esc(x.key), false, 'white-space:nowrap')}${td(esc(x.summary))}${td(esc(x.status), false, 'white-space:nowrap')}${td(esc(extra(x)), true, 'white-space:nowrap')}</tr>`).join('');
-  const stuck = stale.filter(s => s.days >= STUCK_DAYS).slice(0, 8);
-  const slipping = carried.filter(c => c.sprintsBefore >= LONG_SLIP).slice(0, 8);
-  const adverse = tips.filter(t => t.severity !== 'reassuring');
+  const stuck = sections.stuck ? stale.filter(s => s.days >= STUCK_DAYS).slice(0, 8) : [];
+  const slipping = sections.slipping ? carried.filter(c => c.sprintsBefore >= LONG_SLIP).slice(0, 8) : [];
+  const adverse = sections.tips ? tips.filter(t => t.severity !== 'reassuring') : [];
 
   return `
 <div style="font-family:${FONT};max-width:920px;margin:0 auto;color:#0f172a;background:#ffffff;padding:4px">
@@ -170,7 +173,7 @@ export function buildManagementHtml({ ledger, pace, comparison, behind = [], sta
 }
 
 /** Plain-text mirror of the HTML. */
-export function buildManagementText({ ledger, pace, comparison, behind = [], stale = [], carried = [], tips = [], synopsis, hasHistory = true, meta }) {
+export function buildManagementText({ ledger, pace, comparison, behind = [], stale = [], carried = [], tips = [], synopsis, hasHistory = true, meta, sections = DEFAULT_SECTIONS }) {
   const running = pace?.elapsed != null && pace.elapsed < 100;
   const L = [];
   L.push(`SPRINT SUMMARY · ${shortSprint(ledger.sprint)}`);
@@ -189,11 +192,11 @@ export function buildManagementText({ ledger, pace, comparison, behind = [], sta
   if (behind.length) behind.forEach(p => { L.push(`  ${HEALTH_LABEL[p.health]}: ${p.project}${p.owner ? ` — ${p.owner}` : ''}`); L.push(`    ${describeProject(p)}`); });
   else L.push('  None.');
   L.push('');
-  const adverse = tips.filter(t => t.severity !== 'reassuring');
+  const adverse = sections.tips ? tips.filter(t => t.severity !== 'reassuring') : [];
   if (adverse.length) { L.push('WHAT TO LOOK AT'); adverse.forEach(t => L.push(`  - ${t.title}. ${t.detail}`)); L.push(''); }
-  const stuck = stale.filter(s => s.days >= STUCK_DAYS).slice(0, 8);
+  const stuck = sections.stuck ? stale.filter(s => s.days >= STUCK_DAYS).slice(0, 8) : [];
   if (stuck.length) { L.push(`STUCK ${STUCK_DAYS}+ WORKING DAYS`); stuck.forEach(x => L.push(`  ${x.key}  ${x.status}  ${x.days} days  ${x.summary}`)); L.push(''); }
-  const slipping = carried.filter(c => c.sprintsBefore >= LONG_SLIP).slice(0, 8);
+  const slipping = sections.slipping ? carried.filter(c => c.sprintsBefore >= LONG_SLIP).slice(0, 8) : [];
   if (hasHistory && slipping.length) { L.push(`CARRIED THROUGH ${LONG_SLIP}+ SPRINTS`); slipping.forEach(x => L.push(`  ${x.key}  ${x.status}  ${x.sprintsBefore} earlier sprints  ${x.summary}`)); }
   return L.join('\n').trim();
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowRight, ArrowUp, AlertCircle, CheckCircle, Clock, Loader2, TrendingUp, Lightbulb, Printer, Copy, Check } from 'lucide-react';
+import { ArrowDown, ArrowRight, ArrowUp, AlertCircle, CheckCircle, Clock, Loader2, TrendingUp, Lightbulb, FileText } from 'lucide-react';
 import { jiraService } from '../utils/jiraService';
 import { getKey, getStatus, getAssignee, getProject, isDone, shortSprint, f1 } from '../utils/teamEngine';
 import {
@@ -9,8 +9,8 @@ import {
 import { HEALTH, HEALTH_LABEL } from '../utils/projectPortfolio';
 import { HEALTH_STYLE, describeProject } from '../utils/projectReport';
 import { JIRA_CONFIG } from '../config/jiraConfig';
-import { copyRich, standaloneDocument } from '../utils/teamReport';
-import { buildManagementSynopsis, buildManagementHtml, buildManagementText } from '../utils/sprintReviewReport';
+import { buildManagementSynopsis } from '../utils/sprintReviewReport';
+import SprintSummaryModal from './SprintSummaryModal';
 
 // One page per sprint: where we are, what is falling behind, what is stuck, and whether
 // we are improving. Team-level throughout — tickets show their assignee so you know who
@@ -168,7 +168,9 @@ export default function SprintReviewTab({ tickets = [], selectedSprint, selected
     .sort((a, b) => (a.health === b.health ? (b.varianceWeeks ?? 0) - (a.varianceWeeks ?? 0) : a.health === HEALTH.OFF_TRACK ? -1 : 1)),
   [portfolio, selectedProject]);
 
-  const [copied, setCopied] = useState(false);
+  // The summary is taken when the preview opens, so edits there are not reset by a
+  // late-arriving change history.
+  const [summary, setSummary] = useState(null);
 
   if (!ledger) {
     return <Card title="Sprint Review"><p className="text-slate-600">No sprint with dates was found in the data.</p></Card>;
@@ -181,32 +183,18 @@ export default function SprintReviewTab({ tickets = [], selectedSprint, selected
   const staleShown = stale.slice(0, 10);
   const carried = [...ledger.carriedIn].sort((a, b) => b.sprintsBefore - a.sprintsBefore);
 
-  // Management summary: same figures as this page, in a printable / pasteable form.
-  const buildReport = () => {
-    const scope = [selectedProject !== 'all' ? selectedProject : 'All projects', selectedAssignee !== 'all' ? selectedAssignee : null].filter(Boolean).join(' · ');
+  // Management summary: same figures as this page, previewed before it is printed or sent.
+  const openSummary = () => {
     const input = {
       ledger, pace, comparison, behind, stale, tips, hasHistory,
       carried: carried.map(c => ({ key: getKey(c.ticket), summary: c.ticket['Summary'] || '', status: getStatus(c.ticket), sprintsBefore: c.sprintsBefore })),
     };
-    const synopsis = buildManagementSynopsis(input);
-    const meta = { scopeLabel: scope, generatedAt: new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) };
-    return {
+    setSummary({
+      input,
+      generatedSynopsis: buildManagementSynopsis(input),
       title: `Sprint Summary - ${shortSprint(sprintName)}`,
-      html: buildManagementHtml({ ...input, synopsis, meta }),
-      text: buildManagementText({ ...input, synopsis, meta }),
-    };
-  };
-  const onPrint = () => {
-    const { title, html } = buildReport();
-    const w = window.open('', '_blank');
-    if (!w) return;
-    w.document.write(standaloneDocument(html, title));
-    w.document.close(); w.focus();
-    setTimeout(() => w.print(), 450);
-  };
-  const onCopy = async () => {
-    const { html, text } = buildReport();
-    if (await copyRich(html, text)) { setCopied(true); setTimeout(() => setCopied(false), 2500); }
+      scopeLabel: [selectedProject !== 'all' ? selectedProject : 'All projects', selectedAssignee !== 'all' ? selectedAssignee : null].filter(Boolean).join(' · '),
+    });
   };
   // Jira refreshes fetch issues updated in the last N days; a sprint older than that
   // window loses tickets that finished and were never touched again.
@@ -216,6 +204,8 @@ export default function SprintReviewTab({ tickets = [], selectedSprint, selected
 
   return (
     <div className="space-y-6">
+      {summary && <SprintSummaryModal {...summary} onClose={() => setSummary(null)} />}
+
       {!hasHistory && history.status !== 'loading' && (
         <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 text-sm text-amber-900 flex items-start gap-2">
           <AlertCircle className="w-4 h-4 mt-0.5 flex-none" />
@@ -233,13 +223,9 @@ export default function SprintReviewTab({ tickets = [], selectedSprint, selected
         right={
           <div className="flex flex-wrap items-center justify-end gap-2">
             {history.status === 'loading' && <span className="inline-flex items-center gap-1.5 text-xs text-slate-500"><Loader2 className="w-3.5 h-3.5 animate-spin" />Loading history</span>}
-            <button onClick={onPrint} disabled={history.status === 'loading'} title="Opens a print-ready management summary of this sprint"
+            <button onClick={openSummary} disabled={history.status === 'loading'} title="Preview the management summary, edit the synopsis, then print or copy it"
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-700 disabled:opacity-50">
-              <Printer className="w-4 h-4" />Print summary
-            </button>
-            <button onClick={onCopy} disabled={history.status === 'loading'} title="Copies the summary, formatted, for pasting into an email"
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 text-slate-700 text-sm font-medium hover:bg-slate-100 disabled:opacity-50">
-              {copied ? <><Check className="w-4 h-4 text-emerald-600" />Copied</> : <><Copy className="w-4 h-4" />Copy for email</>}
+              <FileText className="w-4 h-4" />Preview summary
             </button>
           </div>
         }
