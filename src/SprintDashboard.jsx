@@ -1490,13 +1490,19 @@ const SprintDashboard = () => {
     const map = {};
     (selectedSprint === 'all' ? data : filteredData).forEach(item => {
       const project = item['Project'] || item['B'] || 'Unknown';
-      if (!map[project]) map[project] = { project, totalItems: 0, doneItems: 0, totalSP: 0, completedSP: 0 };
+      if (!map[project]) map[project] = { project, totalItems: 0, doneItems: 0, awaitingItems: 0, totalSP: 0, completedSP: 0, awaitingSP: 0 };
+      const isDone = item['Status'] === 'Done';
+      // Same "awaiting" match as the capacity calculation: built, waiting on testing/versioning/review
+      const statusLower = (item['Status'] || '').toLowerCase();
+      const isAwaiting = !isDone && (statusLower.includes('awaiting') || statusLower.includes('testing') || statusLower.includes('review'));
       map[project].totalItems++;
-      if (item['Status'] === 'Done') map[project].doneItems++;
+      if (isDone) map[project].doneItems++;
+      if (isAwaiting) map[project].awaitingItems++;
       const sp = parseFloat(item['Story Points']) || 0;
       if (sp > 0) {
         map[project].totalSP += sp;
-        if (item['Status'] === 'Done') map[project].completedSP += sp;
+        if (isDone) map[project].completedSP += sp;
+        if (isAwaiting) map[project].awaitingSP += sp;
       }
     });
 
@@ -1504,6 +1510,8 @@ const SprintDashboard = () => {
       ...p,
       percentSP: p.totalSP > 0 ? (p.completedSP / p.totalSP) * 100 : null,
       percentCount: p.totalItems > 0 ? (p.doneItems / p.totalItems) * 100 : 0,
+      awaitingPercentSP: p.totalSP > 0 ? (p.awaitingSP / p.totalSP) * 100 : null,
+      awaitingPercentCount: p.totalItems > 0 ? (p.awaitingItems / p.totalItems) * 100 : 0,
     }));
   }, [data, filteredData, selectedSprint]);
 
@@ -3572,7 +3580,11 @@ const ProjectsSection = ({ projectProgressData, getProjectColor, onProjectClick,
         <p className="text-slate-600">No project data available</p>
       ) : (
         <div className="space-y-4">
-          {filteredProjects.map((p) => (
+          {filteredProjects.map((p) => {
+            const bySP = p.percentSP !== null;
+            const donePct = bySP ? p.percentSP : p.percentCount;
+            const awaitingPct = bySP ? p.awaitingPercentSP : p.awaitingPercentCount;
+            return (
             <div key={p.project}>
               <div className="flex items-center justify-between mb-1">
                 <button 
@@ -3584,16 +3596,24 @@ const ProjectsSection = ({ projectProgressData, getProjectColor, onProjectClick,
                 </button>
                 <div className="text-xs text-slate-600">
                   {p.doneItems}/{p.totalItems} items · {p.completedSP.toFixed(1)}/{p.totalSP.toFixed(1)} SP
+                  {p.awaitingItems > 0 && ` · ${p.awaitingItems} awaiting`}
                 </div>
               </div>
-              <div className="w-full bg-slate-200 rounded h-3 overflow-hidden">
-                <div className="h-3" style={{ width: `${p.percentSP !== null ? p.percentSP : p.percentCount}%`, backgroundColor: getProjectColor(p.project) }} />
+              <div className="w-full bg-slate-200 rounded h-3 overflow-hidden flex">
+                <div className="h-3" style={{ width: `${donePct}%`, backgroundColor: getProjectColor(p.project) }} />
+                <div
+                  className="h-3"
+                  title={`${p.awaitingItems} item(s) awaiting testing/versioning/review`}
+                  style={{ width: `${awaitingPct}%`, backgroundColor: getProjectColor(p.project), opacity: 0.4 }}
+                />
               </div>
               <div className="text-xs text-slate-500 mt-1">
-                {p.percentSP !== null ? `${p.percentSP.toFixed(1)}% complete (SP)` : `${p.percentCount.toFixed(1)}% complete (by items)`}
+                {donePct.toFixed(1)}% complete {bySP ? '(SP)' : '(by items)'}
+                {awaitingPct > 0 && ` · +${awaitingPct.toFixed(1)}% awaiting`}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
