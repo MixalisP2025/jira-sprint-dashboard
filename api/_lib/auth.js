@@ -1,3 +1,5 @@
+// Shared helper, not an endpoint. Lives under an underscored folder so Vercel does not
+// count it as a serverless function (the Hobby plan caps a deployment at 12).
 import { clerkClient } from '@clerk/backend';
 
 export async function verifyClerkToken(req, res) {

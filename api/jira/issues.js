@@ -5,6 +5,8 @@ export default async function handler(req, res) {
     }
 
     // Skip authentication check for now - can be re-enabled later
+    // (import { verifyClerkToken } from '../_lib/auth.js'; _lib is underscored so Vercel
+    // does not deploy it as a function - the Hobby plan allows 12)
     // const verified = await verifyClerkToken(req, res);
     // if (!verified) {
     //   return; // verifyClerkToken already sent 401 response
