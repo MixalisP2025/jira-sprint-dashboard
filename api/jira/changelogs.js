@@ -1,4 +1,4 @@
-// Fetch status/assignee change history for a set of issue keys (compact).
+// Fetch status/assignee/sprint change history for a set of issue keys (compact).
 // Powers exact assignee-at-completion, cycle time, reopen rate & blocked share.
 
 async function mapLimit(items, limit, fn) {
@@ -31,7 +31,7 @@ export default async function handler(req, res) {
 
     await mapLimit(keys, 6, async (key) => {
       try {
-        let startAt = 0; let total = Infinity; const status = []; const assignee = [];
+        let startAt = 0; let total = Infinity; const status = []; const assignee = []; const sprint = [];
         while (startAt < total) {
           const url = new URL(`${baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}/changelog`);
           url.searchParams.set("startAt", String(startAt));
@@ -46,12 +46,13 @@ export default async function handler(req, res) {
             for (const it of (h.items || [])) {
               if (it.field === "status" || it.fieldId === "status") status.push({ t, from: it.fromString, to: it.toString });
               else if (it.field === "assignee" || it.fieldId === "assignee") assignee.push({ t, from: it.fromString, to: it.toString });
+              else if (it.field === "Sprint" || it.fieldId === "customfield_10010") sprint.push({ t, from: it.fromString, to: it.toString });
             }
           }
           startAt += vals.length;
           if (!vals.length) break;
         }
-        changelogs.push({ key, status, assignee });
+        changelogs.push({ key, status, assignee, sprint });
       } catch (e) { errors.push({ key, message: e?.message || String(e) }); }
     });
 

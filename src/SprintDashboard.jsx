@@ -20,6 +20,7 @@ import ServerStatus from './components/ServerStatus';
 import SprintHealthTab from './components/SprintHealthTab';
 import TimeTrackingTab from './components/TimeTrackingTab';
 import TeamContributionTab from './components/TeamContributionTab';
+import SprintReviewTab from './components/SprintReviewTab';
 import AllocationTab from './components/AllocationTab';
 import CSRTicketsTab from './components/CSRTicketsTab';
 import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
@@ -28,6 +29,8 @@ import { downloadCsv } from './utils/csvDownload';
 import { JIRA_CONFIG } from './config/jiraConfig';
 import { buildPortfolio, updateSnapshots, projectsInData, peakConcurrency } from './utils/projectPortfolio';
 import { deriveSprintDates, mergeSprintDates } from './utils/sprintDates';
+import { isDone } from './utils/teamEngine';
+import { isAwaiting } from './utils/sprintReview';
 import {
   pingDB, saveIssuesToDB, loadIssuesFromDB,
   saveCapacityToDB, loadCapacityFromDB,
@@ -1450,11 +1453,11 @@ const SprintDashboard = () => {
       const key = `${project}|||${sprint}`;
       if (!map[key]) map[key] = { project, sprint, totalSP: 0, completedSP: 0, items: 0, doneItems: 0 };
       map[key].items++;
-      if (item['Status'] === 'Done') map[key].doneItems++;
+      if (isDone(item['Status'])) map[key].doneItems++;
       const sp = parseFloat(item['Story Points']) || 0;
       if (sp > 0) {
         map[key].totalSP += sp;
-        if (item['Status'] === 'Done') map[key].completedSP += sp;
+        if (isDone(item['Status'])) map[key].completedSP += sp;
       }
     });
 
@@ -1491,18 +1494,17 @@ const SprintDashboard = () => {
     (selectedSprint === 'all' ? data : filteredData).forEach(item => {
       const project = item['Project'] || item['B'] || 'Unknown';
       if (!map[project]) map[project] = { project, totalItems: 0, doneItems: 0, awaitingItems: 0, totalSP: 0, completedSP: 0, awaitingSP: 0 };
-      const isDone = item['Status'] === 'Done';
-      // Same "awaiting" match as the capacity calculation: built, waiting on testing/versioning/review
-      const statusLower = (item['Status'] || '').toLowerCase();
-      const isAwaiting = !isDone && (statusLower.includes('awaiting') || statusLower.includes('testing') || statusLower.includes('review'));
+      // Shared rules: done = Done/Closed/Resolved/Completed; awaiting = testing/versioning/review
+      const done = isDone(item['Status']);
+      const awaiting = isAwaiting(item['Status']);
       map[project].totalItems++;
-      if (isDone) map[project].doneItems++;
-      if (isAwaiting) map[project].awaitingItems++;
+      if (done) map[project].doneItems++;
+      if (awaiting) map[project].awaitingItems++;
       const sp = parseFloat(item['Story Points']) || 0;
       if (sp > 0) {
         map[project].totalSP += sp;
-        if (isDone) map[project].completedSP += sp;
-        if (isAwaiting) map[project].awaitingSP += sp;
+        if (done) map[project].completedSP += sp;
+        if (awaiting) map[project].awaitingSP += sp;
       }
     });
 
@@ -1555,7 +1557,7 @@ const SprintDashboard = () => {
       projectMap[project].totalSP += sp;
       projectMap[project].items++;
 
-      if (status === 'Done') {
+      if (isDone(status)) {
         projectMap[project].completedSP += sp;
         projectMap[project].doneItems++;
       }
@@ -1652,6 +1654,7 @@ const SprintDashboard = () => {
   // UPDATED: Restored Capacity Dashboard tab
   const tabs = {
     overview: { icon: LayoutDashboard, label: 'Overview' },
+    review: { icon: CheckCircle, label: 'Sprint Review' },
     assignees: { icon: Users, label: 'Assignees' },
     risks: { icon: Shield, label: 'Risk Register' },
     capacity: { icon: Users, label: 'Capacity' },
@@ -1956,6 +1959,19 @@ const SprintDashboard = () => {
             sprintDaysConfig={sprintDaysConfig}
             setSprintDaysConfig={setSprintDaysConfig}
             filteredData={filteredData}
+          />
+        )}
+
+        {activeTab === 'review' && (
+          /* Full dataset: the review reads each ticket's sprint history and compares
+             several sprints, so it applies the sprint/project/assignee filters itself. */
+          <SprintReviewTab
+            tickets={data}
+            selectedSprint={selectedSprint}
+            selectedProject={selectedProject}
+            selectedAssignee={selectedAssignee}
+            excludedAssignees={EXCLUDED_ASSIGNEES}
+            portfolio={timelinePortfolio}
           />
         )}
 

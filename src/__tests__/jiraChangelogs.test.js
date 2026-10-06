@@ -105,6 +105,17 @@ describe('collectHistories', () => {
     expect(out.assignee).toHaveLength(1);
   });
 
+  it('keeps Sprint field changes, by field name or by the customfield id', () => {
+    const out = collectHistories([{ created: Date.UTC(2026, 8, 25, 14), items: [
+      { field: 'Sprint', fromString: 'Sprint 33', toString: 'Sprint 34' },
+      { fieldId: 'customfield_10010', fromString: null, toString: 'Sprint 35' },
+    ] }], { status: [], assignee: [], sprint: [] });
+    expect(out.sprint).toEqual([
+      { t: '2026-09-25T14:00:00.000Z', from: 'Sprint 33', to: 'Sprint 34' },
+      { t: '2026-09-25T14:00:00.000Z', from: null, to: 'Sprint 35' },
+    ]);
+  });
+
   it('ignores fields we do not track', () => {
     const out = collectHistories([{ created: 't', items: [{ field: 'description', fromString: 'a', toString: 'b' }] }], { status: [], assignee: [] });
     expect(out.status).toEqual([]); expect(out.assignee).toEqual([]);
@@ -161,7 +172,7 @@ describe('bulkfetch path', () => {
   it('emits an entry for an issue with no tracked history', async () => {
     const out = await run(makeJira({ histories: HISTORIES }));
     const a3 = out.changelogs.find(c => c.key === 'A-3');
-    expect(a3).toEqual({ key: 'A-3', status: [], assignee: [] });
+    expect(a3).toEqual({ key: 'A-3', status: [], assignee: [], sprint: [] });
   });
 
   it('follows nextPageToken to the end', async () => {
@@ -174,7 +185,7 @@ describe('bulkfetch path', () => {
   it('requests only the fields it needs', async () => {
     const jira = makeJira({ histories: HISTORIES });
     await run(jira);
-    expect(jira.calls.bodies[0].fieldIds).toEqual(['status', 'assignee']);
+    expect(jira.calls.bodies[0].fieldIds).toEqual(['status', 'assignee', 'customfield_10010']);
   });
 
   it('reports keys that do not exist rather than dropping them silently', async () => {

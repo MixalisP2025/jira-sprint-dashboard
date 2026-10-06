@@ -7,7 +7,10 @@
 //
 // Dependencies are injected so this can be exercised against a stub Jira in tests.
 
-const CHANGELOG_FIELDS = ['status', 'assignee'];
+// customfield_10010 is Sprint. Teams that move unfinished work on before closing a sprint
+// leave no trace of it in the sprint field itself; only its history shows the carry-over.
+const CHANGELOG_FIELDS = ['status', 'assignee', 'customfield_10010'];
+const isSprintItem = it => it.field === 'Sprint' || it.fieldId === 'customfield_10010';
 const BULK_ISSUES_PER_CALL = 1000;   // Jira's documented cap on issueIdsOrKeys
 const KEY_LOOKUP_CHUNK = 100;        // keeps `key in (...)` inside JQL's practical limit
 const MAX_PAGES = 200;               // pagination guard
@@ -21,7 +24,7 @@ const toIso = v => {
   return (v == null || isNaN(d)) ? v : d.toISOString();
 };
 
-/** Collapse change histories into the compact {status, assignee} shape callers consume. */
+/** Collapse change histories into the compact {status, assignee, sprint} shape callers consume. */
 function collectHistories(histories, into) {
   for (const h of histories || []) {
     const t = toIso(h.created);
@@ -32,6 +35,7 @@ function collectHistories(histories, into) {
       const ev = { t, from: str('fromString'), to: str('toString') };
       if (it.field === 'status' || it.fieldId === 'status') into.status.push(ev);
       else if (it.field === 'assignee' || it.fieldId === 'assignee') into.assignee.push(ev);
+      else if (isSprintItem(it) && into.sprint) into.sprint.push(ev);
     }
   }
   return into;
@@ -41,6 +45,7 @@ function chronological(entry) {
   const byTime = (a, b) => new Date(a.t) - new Date(b.t);
   entry.status.sort(byTime);
   entry.assignee.sort(byTime);
+  if (entry.sprint) entry.sprint.sort(byTime);
   return entry;
 }
 
@@ -76,7 +81,7 @@ async function fetchChangelogsBulk({ axios, baseUrl, headers, keys, counter, log
 
   const byKey = new Map();
   const ensure = key => {
-    if (!byKey.has(key)) byKey.set(key, { key, status: [], assignee: [] });
+    if (!byKey.has(key)) byKey.set(key, { key, status: [], assignee: [], sprint: [] });
     return byKey.get(key);
   };
 
@@ -114,7 +119,7 @@ async function fetchChangelogsPerIssue({ axios, baseUrl, headers, keys, counter,
   await mapLimit(keys, 6, async (key) => {
     try {
       let startAt = 0; let total = Infinity;
-      const acc = { status: [], assignee: [] };
+      const acc = { status: [], assignee: [], sprint: [] };
       while (startAt < total) {
         counter.calls += 1;
         const r = await axios.get(`${baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}/changelog`, { headers, params: { startAt, maxResults: 100 }, timeout: 30000 });
@@ -124,7 +129,7 @@ async function fetchChangelogsPerIssue({ axios, baseUrl, headers, keys, counter,
         startAt += vals.length;
         if (!vals.length) break;
       }
-      changelogs.push(chronological({ key, status: acc.status, assignee: acc.assignee }));
+      changelogs.push(chronological({ key, status: acc.status, assignee: acc.assignee, sprint: acc.sprint }));
     } catch (e) {
       errors.push({ key, message: e.response?.status ? `HTTP ${e.response.status}` : e.message });
     }
