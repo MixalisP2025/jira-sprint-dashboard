@@ -25,7 +25,7 @@ import AllocationTab from './components/AllocationTab';
 import CSRTicketsTab from './components/CSRTicketsTab';
 import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
 import CsrSnapshotPage from './features/csr-analytics/CsrSnapshotPage.jsx';
-import { downloadCsv } from './utils/csvDownload';
+import { downloadXlsx } from './utils/xlsxExport';
 import { JIRA_CONFIG } from './config/jiraConfig';
 import { buildPortfolio, updateSnapshots, projectsInData, peakConcurrency } from './utils/projectPortfolio';
 import { deriveSprintDates, mergeSprintDates } from './utils/sprintDates';
@@ -113,6 +113,7 @@ function cacheDashboardData(data, timestamp) {
 // offering a ticket that no tab will ever render is a promise the dashboard cannot
 // keep — the result would say "Found in: Raw Data" and Raw Data would show nothing.
 const EXCLUDED_ASSIGNEES = ['Sotiris Mavrogianneas', 'Sofia Boustantzi'];
+const JIRA_BROWSE = 'https://advancedinformationservices.atlassian.net/browse';
 
 const SprintDashboard = () => {
   // ============== STATE ==============
@@ -4199,41 +4200,40 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
     return result;
   }, [scopedData, allData, showNoStoryPoints, statusFilter, typeFilter, hideDone, storiesOnly, hideAwaitingTesting, hideAwaitingVersioning, showNoDueDate, showFlaggedOnly, flaggedTickets, highlightKey]);
 
-  const exportToExcel = () => {
-    // Prepare data for export
-    const exportData = displayData.map(ticket => ({
-      'Key': ticket['Issue key'] || ticket['Key'],
-      'Type': ticket['Issue Type'],
-      'Summary': ticket['Summary'],
-      'Project': ticket['Project'] || ticket['B'],
-      'Assignee': ticket['Assignee'] || ticket['D'] || 'Unassigned',
-      'Status': ticket['Status'],
-      'Story Points': parseFloat(ticket['Story Points']) || parseFloat(ticket['Story points']) || parseFloat(ticket['Custom field (Story Points)']) || 0,
-      'Original Estimate (h)': Math.round(((parseFloat(ticket['Original Estimate']) || 0) / 3600) * 10) / 10,
-      'Time Logged (h)': Math.round(((parseFloat(ticket['Time Spent']) || 0) / 3600) * 10) / 10,
-      'Remaining Estimate (h)': Math.round(((parseFloat(ticket['Remaining Estimate']) || 0) / 3600) * 10) / 10,
-      'Sprint': ticket['Sprint'] || ticket['G'] || '',
-      'Priority': ticket['Priority'] || '',
-      'Created': ticket['Created'] || '',
-      'Updated': ticket['Updated'] || '',
-      'Due Date': ticket['Due Date'] || ticket['Due date'] || ''
-    }));
-
-    // Convert to CSV
-    const headers = Object.keys(exportData[0] || {});
-    const csvContent = [
-      headers.join(','),
-      ...exportData.map(row => 
-        headers.map(header => {
-          const value = row[header] ?? '';
-          // Escape quotes and wrap in quotes if it contains a comma, newline, or quote
-          const escaped = String(value).replace(/"/g, '""');
-          return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
-        }).join(',')
-      )
-    ].join('\n');
-
-    downloadCsv(csvContent, `jira-export-${new Date().toISOString().split('T')[0]}.csv`);
+  const [exporting, setExporting] = useState(false);
+  const exportToExcel = async () => {
+    const hours = secs => Math.round(((parseFloat(secs) || 0) / 3600) * 10) / 10;
+    const stamp = new Date().toISOString().split('T')[0];
+    setExporting(true);
+    try {
+      await downloadXlsx({
+        fileName: `jira-export-${stamp}.xlsx`,
+        sheetName: selectedSprint !== 'all' ? selectedSprint : 'All sprints',
+        rows: displayData,
+        columns: [
+          { header: 'Key', value: t => t['Issue key'] || t['Key'], link: t => `${JIRA_BROWSE}/${t['Issue key'] || t['Key']}` },
+          { header: 'Type', value: t => t['Issue Type'] },
+          { header: 'Summary', value: t => t['Summary'], width: 60 },
+          { header: 'Project', value: t => t['Project'] || t['B'] },
+          { header: 'Assignee', value: t => t['Assignee'] || t['D'] || 'Unassigned' },
+          { header: 'Status', value: t => t['Status'] },
+          { header: 'Story Points', type: 'number', value: t => parseFloat(t['Story Points']) || parseFloat(t['Story points']) || parseFloat(t['Custom field (Story Points)']) || 0 },
+          { header: 'Original Estimate (h)', type: 'number', value: t => hours(t['Original Estimate']) },
+          { header: 'Time Logged (h)', type: 'number', value: t => hours(t['Time Spent']) },
+          { header: 'Remaining Estimate (h)', type: 'number', value: t => hours(t['Remaining Estimate']) },
+          { header: 'Sprint', value: t => t['Sprint'] || t['G'] || '' },
+          { header: 'Priority', value: t => t['Priority'] || '' },
+          { header: 'Created', type: 'datetime', value: t => t['Created'] || '' },
+          { header: 'Updated', type: 'datetime', value: t => t['Updated'] || '' },
+          { header: 'Due Date', type: 'date', value: t => t['Due Date'] || t['Due date'] || '' },
+        ],
+      });
+    } catch (e) {
+      console.error('Excel export failed:', e);
+      alert(`Excel export failed: ${e.message}`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const statusCounts = useMemo(() => {
@@ -4400,11 +4400,11 @@ const DataSection = ({ stats, filteredData, selectedSprint, selectedAssignee, se
           <div className="flex flex-wrap gap-3">
             <button
               onClick={exportToExcel}
-              disabled={displayData.length === 0}
+              disabled={displayData.length === 0 || exporting}
               className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium"
             >
               <Download className="w-4 h-4" />
-              Export to Excel
+              {exporting ? 'Exporting…' : 'Export to Excel'}
             </button>
             
             <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
