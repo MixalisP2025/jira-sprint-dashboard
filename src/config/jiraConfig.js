@@ -84,14 +84,13 @@ export const buildJQL = (config = JIRA_CONFIG) => {
     parts.push(`project in (${projectList})`);
   }
   
-  // Add date filtering if specified
+  // Add date filtering if specified. Open work is always included, however old: the
+  // window is for history, not for hiding tickets that are still open.
   if (config.dateRange?.daysBack) {
-    parts.push(`updated >= -${config.dateRange.daysBack}d`);
+    parts.push(`(updated >= -${config.dateRange.daysBack}d OR statusCategory != Done)`);
   } else if (config.dateRange?.fromDate) {
-    parts.push(`updated >= "${config.dateRange.fromDate}"`);
-    if (config.dateRange.toDate) {
-      parts.push(`updated <= "${config.dateRange.toDate}"`);
-    }
+    const to = config.dateRange.toDate ? ` AND updated <= "${config.dateRange.toDate}"` : '';
+    parts.push(`((updated >= "${config.dateRange.fromDate}"${to}) OR statusCategory != Done)`);
   }
   
   // Only add default date filter if NO filters at all (no projects, no dates)

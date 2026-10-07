@@ -76,6 +76,7 @@ export function scoreMatch(haystackNorm, queryNorm) {
 // table is the thing that makes "where is it" an answer rather than a guess.
 export const TAB_SOURCES = {
   overview:   { label: 'Overview',      dims: ['sprint'] },
+  pm:         { label: 'PM Dashboard',  dims: ['sprint', 'person', 'project'] },
   review:     { label: 'Sprint Review', dims: ['sprint'] },
   assignees:  { label: 'Assignees',     dims: ['person'] },
   risks:      { label: 'Risk Register', dims: ['sprint', 'person'] },

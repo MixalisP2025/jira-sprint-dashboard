@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { isDone } from '../utils/teamEngine';
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -21,7 +22,6 @@ const getDue      = t => t['Due Date'] || t['dueDate'] || null;
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
 const normStatus = (s = '') => s.toLowerCase().trim();
-const isDone = s => ['done','completed','closed','resolved'].includes(normStatus(s));
 const isInP  = s => normStatus(s) === 'in progress';
 
 function daysBetween(a, b) {

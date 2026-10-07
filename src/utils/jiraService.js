@@ -197,14 +197,18 @@ export const jiraService = {
       try {
         const projectFilter = `project = "${p}"`;
 
-        // apply config dateRange if present
-        const dateFilter =
+        // apply config dateRange if present. Open work is always included, however long
+        // it has sat untouched: an open ticket in an old sprint is exactly what the PM
+        // Dashboard's overdue / unassigned / on-hold counts must see, and they would
+        // otherwise disagree with Jira.
+        const window =
           JIRA_CONFIG.dateRange?.daysBack
-            ? `updated >= -${JIRA_CONFIG.dateRange.daysBack}d` 
+            ? `updated >= -${JIRA_CONFIG.dateRange.daysBack}d`
             : (JIRA_CONFIG.dateRange?.fromDate
                 ? `updated >= "${JIRA_CONFIG.dateRange.fromDate}"` +
                   (JIRA_CONFIG.dateRange?.toDate ? ` AND updated <= "${JIRA_CONFIG.dateRange.toDate}"` : "")
                 : "");
+        const dateFilter = window ? `(${window}) OR statusCategory != Done` : "";
 
         const parts = [projectFilter];
         if (baseJql) parts.push(`(${baseJql})`);

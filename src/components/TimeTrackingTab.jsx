@@ -7,7 +7,7 @@ import {
 import { Gauge, Layers, Activity, Target, AlertTriangle, Microscope, Users } from 'lucide-react';
 import { jiraService } from '../utils/jiraService';
 import { loadEligibilityFromDB, pingDB } from '../utils/dbSync';
-import { loadPlanningSPPerDay } from '../utils/teamEngine';
+import { loadPlanningSPPerDay, isDone } from '../utils/teamEngine';
 
 // ─── Jira field accessors ─────────────────────────────────────────────────────
 const getStatus   = t => t['Status'] || '';
@@ -33,7 +33,6 @@ const ALLOWED_TYPES = ['story', 'task', 'bug'];
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
 const normStatus = (s = '') => s.toLowerCase().trim();
-const isDone = s => ['done', 'completed', 'closed', 'resolved'].includes(normStatus(s));
 
 // ─── Number formatting ────────────────────────────────────────────────────────
 const f1 = n => (Number.isFinite(n) ? Math.round(n * 10) / 10 : null);

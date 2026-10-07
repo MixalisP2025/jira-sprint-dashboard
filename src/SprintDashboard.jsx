@@ -21,6 +21,7 @@ import SprintHealthTab from './components/SprintHealthTab';
 import TimeTrackingTab from './components/TimeTrackingTab';
 import TeamContributionTab from './components/TeamContributionTab';
 import SprintReviewTab from './components/SprintReviewTab';
+import PMDashboardTab from './components/PMDashboardTab';
 import AllocationTab from './components/AllocationTab';
 import CSRTicketsTab from './components/CSRTicketsTab';
 import CsrAnalyticsPage from './features/csr-analytics/CsrAnalyticsPage.jsx';
@@ -1147,8 +1148,7 @@ const SprintDashboard = () => {
         }
       } 
       // COMPLETED/DOWNSTREAM work is EXCLUDED from capacity
-      else if (status === 'Done' || statusLower === 'done' || 
-               statusLower === 'closed' || statusLower === 'resolved' || statusLower === 'complete') {
+      else if (isDone(status)) {
         byAssignee[assignee].completedWorkload += sp;
         byAssignee[assignee].completedItems++;
         byAssignee[assignee].totalCompletedSP += sp;
@@ -1655,6 +1655,7 @@ const SprintDashboard = () => {
   // UPDATED: Restored Capacity Dashboard tab
   const tabs = {
     overview: { icon: LayoutDashboard, label: 'Overview' },
+    pm: { icon: Briefcase, label: 'PM Dashboard' },
     review: { icon: CheckCircle, label: 'Sprint Review' },
     assignees: { icon: Users, label: 'Assignees' },
     risks: { icon: Shield, label: 'Risk Register' },
@@ -1960,6 +1961,21 @@ const SprintDashboard = () => {
             sprintDaysConfig={sprintDaysConfig}
             setSprintDaysConfig={setSprintDaysConfig}
             filteredData={filteredData}
+          />
+        )}
+
+        {activeTab === 'pm' && (
+          /* Full dataset: scope (this sprint / all open work) is chosen on the page; the
+             project and assignee filters apply, and workload uses the capacity stats. */
+          <PMDashboardTab
+            tickets={data}
+            stats={stats}
+            selectedSprint={selectedSprint}
+            setSelectedSprint={setSelectedSprint}
+            selectedProject={selectedProject}
+            selectedAssignee={selectedAssignee}
+            excludedAssignees={EXCLUDED_ASSIGNEES}
+            portfolio={timelinePortfolio}
           />
         )}
 

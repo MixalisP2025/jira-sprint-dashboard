@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ArrowDown, ArrowRight, ArrowUp, AlertCircle, CheckCircle, Clock, Loader2, TrendingUp, Lightbulb, FileText } from 'lucide-react';
-import { jiraService } from '../utils/jiraService';
+import { useChangelogs } from '../hooks/useChangelogs';
 import { getKey, getStatus, getAssignee, getProject, isDone, shortSprint, f1 } from '../utils/teamEngine';
 import {
   sprintCalendar, currentSprint, sprintLedger, staleTickets, paceVerdict, compareSprints,
@@ -17,9 +17,6 @@ import SprintSummaryModal from './SprintSummaryModal';
 // to ask, but nobody is ranked; see ExecutiveSummaryView for why.
 
 const JIRA_BASE = 'https://advancedinformationservices.atlassian.net';
-
-// Change history survives tab switches; keyed by issue key.
-const changelogCache = new Map();
 
 const SEVERITY_STYLE = {
   adverse:    { border: 'border-red-400',     bg: 'bg-red-50',     text: 'text-red-800',     label: 'Needs action' },
@@ -123,33 +120,10 @@ export default function SprintReviewTab({ tickets = [], selectedSprint, selected
       if (last === sprintName && !isDone(getStatus(t))) return true;
       return isDone(getStatus(t)) && windowNames.has(last);
     }).map(getKey).filter(Boolean);
-    return [...new Set(keys)].sort();
+    return keys;
   }, [rows, calendar, sprintName, baseLedger]);
 
-  // Loading/loaded is derived from the cache, so the effect only sets state when a
-  // fetch returns. Keys Jira returned nothing for are cached as null, never refetched.
-  const keySig = historyKeys.join(',');
-  const [fetchState, setFetchState] = useState({ tick: 0, errorSig: null, error: null });
-  useEffect(() => {
-    const missing = historyKeys.filter(k => !changelogCache.has(k));
-    if (!missing.length) return undefined;
-    let cancelled = false;
-    jiraService.getChangelogs(missing)
-      .then(res => {
-        for (const c of res.changelogs) changelogCache.set(c.key, c);
-        for (const k of missing) if (!changelogCache.has(k)) changelogCache.set(k, null);
-        if (!cancelled) setFetchState(s => ({ tick: s.tick + 1, errorSig: null, error: null }));
-      })
-      .catch(e => { if (!cancelled) setFetchState(s => ({ ...s, errorSig: keySig, error: e.message })); });
-    return () => { cancelled = true; };
-  }, [historyKeys, keySig]);
-
-  const history = useMemo(() => {
-    if (fetchState.errorSig === keySig) return { status: 'error', byKey: null, error: fetchState.error };
-    if (historyKeys.some(k => !changelogCache.has(k))) return { status: 'loading', byKey: null, error: null };
-    return { status: 'loaded', byKey: new Map(historyKeys.map(k => [k, changelogCache.get(k)]).filter(([, v]) => v)), error: null };
-    // fetchState.tick is the signal that the cache changed
-  }, [historyKeys, keySig, fetchState]);
+  const history = useChangelogs(historyKeys);
 
   const clMap = history.status === 'loaded' ? history.byKey : null;
   // Sprint change history shows carry-over that the sprint field has lost (work moved on

@@ -31,7 +31,11 @@ export const ALLOWED_TYPES = ['story', 'task', 'bug'];
 const SEC_PER_HOUR = 3600;
 const ROUND_WORKLOG_SECS = new Set([3600, 14400, 28800]); // 1h / 4h / 8h
 const normStatus = (s = '') => s.toLowerCase().trim();
-export const isDone = s => ['done', 'completed', 'closed', 'resolved'].includes(normStatus(s));
+// Every status Jira files under the Done category in this instance, plus the common
+// finished-but-not-delivered ones. "Won" / "Lost" are the PS (sales) workflow's end states;
+// counting them as open inflated open-work, unassigned and capacity figures.
+export const DONE_STATUSES = ['done', 'completed', 'complete', 'closed', 'resolved', 'won', 'lost', 'cancelled', 'canceled', "won't do", 'rejected'];
+export const isDone = s => DONE_STATUSES.includes(normStatus(s));
 const TODO_NAMES = new Set(['to do', 'to-do', 'todo', 'open', 'backlog', 'new', 'selected for development', 'reopened']);
 export const isTodoName = s => TODO_NAMES.has(normStatus(s));
 const isBlockedName = s => /block|impediment|on[\s-]?hold|waiting/i.test(s || '');
