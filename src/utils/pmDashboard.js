@@ -8,7 +8,7 @@ import { zonedDayKey } from './workingDays';
 
 export const STUCK_WORKING_DAYS = 10;
 export const DUE_SOON_DAYS = 7;
-export const CREATED_RESOLVED_WEEKS = 8;   // inside the 60-day refresh window, so both lines are complete
+export const CREATED_RESOLVED_WEEKS = 8;   // well inside the refresh window, so both lines are complete
 
 const PRIORITY_RANK = { highest: 0, high: 1, medium: 2, low: 3, lowest: 4 };
 export const getPriority = t => (t['Priority'] || '').trim();

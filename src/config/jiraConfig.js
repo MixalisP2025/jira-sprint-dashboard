@@ -12,8 +12,10 @@ export const JIRA_CONFIG = {
   
   // Date range for data fetching
   dateRange: {
-    // Fetch data from last 60 days (2 months) to capture recent work
-    daysBack: 60,
+    // Finished work updated in the last 90 days (open work is always fetched). 90 days
+    // covers six two-week sprints, which the PM Dashboard's sprint-over-sprint chart
+    // needs complete; sprints older than the window are left out of it.
+    daysBack: 90,
     
     // You can also use specific dates:
     // fromDate: '2024-01-01',
