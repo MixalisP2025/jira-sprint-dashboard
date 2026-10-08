@@ -93,7 +93,7 @@ export default function PMDashboardTab({
   const today = useMemo(() => zonedDayKey(now), [now]);
   const [scope, setScope] = useState('sprint');      // sprint | open
   const [listId, setListId] = useState('overdue');   // which ticket list is open below the tiles
-  // Filters on the ticket list only, as on Raw Data; the tile counts stay as Jira reports them.
+  // Filters on the ticket list, as on Raw Data; the tile counts follow them too.
   const [listFilters, setListFilters] = useState(NO_LIST_FILTERS);
   const [listStatus, setListStatus] = useState('all');
   // Flags are set on the Raw Data tab and shared through the same storage key.
@@ -155,7 +155,7 @@ export default function PMDashboardTab({
 
   const tileRows = listId === 'priority' ? [...lists.highest, ...lists.high] : lists[listId] || [];
   const listStatuses = [...new Set(tileRows.map(getStatus).filter(Boolean))].sort();
-  const listRows = tileRows.filter(t => {
+  const keepRow = t => {
     const s = (getStatus(t) || '').toLowerCase();
     if (listFilters.storiesOnly && getType(t) !== 'Story') return false;
     if (listFilters.hideAwaitingTesting && s === 'awaiting testing') return false;
@@ -164,8 +164,10 @@ export default function PMDashboardTab({
     if (listFilters.noDueDate && getDue(t)) return false;
     if (listFilters.flaggedOnly && !flaggedTickets.has(getKey(t))) return false;
     return listStatus === 'all' || getStatus(t) === listStatus;
-  });
+  };
+  const listRows = tileRows.filter(keepRow);
   const listFiltered = listRows.length !== tileRows.length;
+  const filtersOn = listStatus !== 'all' || Object.values(listFilters).some(Boolean);
   const listTitle = listId === 'priority' ? 'Priority items (Highest and High)' : TILES.find(t => t.id === listId)?.label;
   const scopeLabel = scope === 'sprint' ? shortSprint(sprintName) : 'all open work';
   const sprintRunning = trend.sprints.length && trend.sprints.at(-1).end > now;
@@ -221,21 +223,25 @@ export default function PMDashboardTab({
         )}
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
           {TILES.map(({ id, label, icon, tone }) => {
-            const n = lists[id].length;
+            const total = lists[id].length;
+            const n = filtersOn ? lists[id].filter(keepRow).length : total;
             const active = listId === id;
             const waiting = id === 'stuck' && !clMap;
             return (
               <button key={id} onClick={() => setListId(active ? 'priority' : id)} aria-pressed={active}
                 className={`text-left rounded-lg border p-3 transition ${active ? 'border-slate-900 ring-2 ring-slate-900/10 bg-slate-50' : 'border-slate-200 hover:border-slate-400'}`}>
                 {React.createElement(icon, { className: `w-4 h-4 ${tone}` })}
-                <div className="text-2xl font-bold text-slate-900 mt-1">{waiting ? '…' : n}</div>
+                <div className="text-2xl font-bold text-slate-900 mt-1">
+                  {waiting ? '…' : n}
+                  {!waiting && n !== total && <span className="text-sm font-normal text-slate-500"> of {total}</span>}
+                </div>
                 <div className="text-xs text-slate-600 leading-tight">{label}</div>
               </button>
             );
           })}
         </div>
         <p className="text-xs text-slate-500 mt-3">
-          Counts are open work in {scopeLabel}. Click a tile to list its tickets below. Overdue = due before today; stuck = started work (not To Do or On Hold) in the same status for {STUCK_WORKING_DAYS}+ working days, from Jira change history.
+          Counts are open work in {scopeLabel}{filtersOn ? ', with the list filters below applied' : ''}. Click a tile to list its tickets below. Overdue = due before today; stuck = started work (not To Do or On Hold) in the same status for {STUCK_WORKING_DAYS}+ working days, from Jira change history.
         </p>
       </Card>
 
@@ -269,7 +275,7 @@ export default function PMDashboardTab({
             <option value="all">All statuses</option>
             {[...new Set([...listStatuses, ...(listStatus !== 'all' ? [listStatus] : [])])].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
-          {listFiltered && (
+          {filtersOn && (
             <button onClick={() => { setListFilters(NO_LIST_FILTERS); setListStatus('all'); }}
               className="text-sm text-slate-600 hover:text-slate-900 underline">Clear</button>
           )}
