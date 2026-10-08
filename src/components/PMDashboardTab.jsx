@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { AlertCircle, AlertTriangle, CalendarClock, CalendarX, Clock, Download, Flag, PauseCircle, UserX, Loader2 } from 'lucide-react';
 import { useChangelogs } from '../hooks/useChangelogs';
-import { getKey, getStatus, getAssignee, getProject, getSP, isDone, isTodoName, shortSprint } from '../utils/teamEngine';
+import { getKey, getStatus, getAssignee, getProject, getSP, getType, isDone, isTodoName, shortSprint } from '../utils/teamEngine';
 import {
   sprintCalendar, currentSprint, sprintHistory, canonSprint, latestRowPerIssue, compareSprints, reviewContext,
 } from '../utils/sprintReview';
@@ -59,6 +59,16 @@ const TILES = [
   { id: 'stuck', label: `Stuck ${STUCK_WORKING_DAYS}+ working days`, icon: Clock, tone: 'text-red-700' },
 ];
 
+// The Raw Data tab's list toggles. Hide Completed is left out: these lists are open work only.
+const LIST_FILTERS = [
+  { id: 'storiesOnly', label: 'Stories Only', tone: 'text-purple-600 focus:ring-purple-500' },
+  { id: 'hideAwaitingTesting', label: 'Hide Awaiting Testing', tone: 'text-amber-600 focus:ring-amber-500' },
+  { id: 'hideAwaitingVersioning', label: 'Hide Awaiting Versioning', tone: 'text-purple-600 focus:ring-purple-500' },
+  { id: 'noStoryPoints', label: 'No Story Points Only', tone: 'text-amber-600 focus:ring-amber-500' },
+  { id: 'noDueDate', label: 'No Due Date Only', tone: 'text-rose-600 focus:ring-rose-500' },
+];
+const NO_LIST_FILTERS = { storiesOnly: false, hideAwaitingTesting: false, hideAwaitingVersioning: false, noStoryPoints: false, noDueDate: false, flaggedOnly: false };
+
 function ChartTooltip({ active, payload, label, suffix = '' }) {
   if (!active || !payload?.length) return null;
   return (
@@ -83,10 +93,14 @@ export default function PMDashboardTab({
   const today = useMemo(() => zonedDayKey(now), [now]);
   const [scope, setScope] = useState('sprint');      // sprint | open
   const [listId, setListId] = useState('priority');  // which ticket list is open below the tiles
-  // Filters on the ticket list only; the tile counts stay as Jira reports them.
-  const [hideAwaitingTesting, setHideAwaitingTesting] = useState(false);
-  const [hideAwaitingVersioning, setHideAwaitingVersioning] = useState(false);
+  // Filters on the ticket list only, as on Raw Data; the tile counts stay as Jira reports them.
+  const [listFilters, setListFilters] = useState(NO_LIST_FILTERS);
   const [listStatus, setListStatus] = useState('all');
+  // Flags are set on the Raw Data tab and shared through the same storage key.
+  const [flaggedTickets] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('flaggedTickets') || '[]')); }
+    catch { return new Set(); }
+  });
 
   // One row per issue (the DB snapshot can repeat an issue per sprint), global filters applied.
   const base = useMemo(() => latestRowPerIssue(tickets).filter(t =>
@@ -143,8 +157,12 @@ export default function PMDashboardTab({
   const listStatuses = [...new Set(tileRows.map(getStatus).filter(Boolean))].sort();
   const listRows = tileRows.filter(t => {
     const s = (getStatus(t) || '').toLowerCase();
-    if (hideAwaitingTesting && s === 'awaiting testing') return false;
-    if (hideAwaitingVersioning && s === 'awaiting versioning') return false;
+    if (listFilters.storiesOnly && getType(t) !== 'Story') return false;
+    if (listFilters.hideAwaitingTesting && s === 'awaiting testing') return false;
+    if (listFilters.hideAwaitingVersioning && s === 'awaiting versioning') return false;
+    if (listFilters.noStoryPoints && getSP(t) !== 0) return false;
+    if (listFilters.noDueDate && getDue(t)) return false;
+    if (listFilters.flaggedOnly && !flaggedTickets.has(getKey(t))) return false;
     return listStatus === 'all' || getStatus(t) === listStatus;
   });
   const listFiltered = listRows.length !== tileRows.length;
@@ -233,23 +251,26 @@ export default function PMDashboardTab({
         }
       >
         <div className="flex flex-wrap items-center gap-3 mb-4">
-          <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
-            <input type="checkbox" checked={hideAwaitingTesting} onChange={() => setHideAwaitingTesting(!hideAwaitingTesting)}
-              className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500" />
-            <span className="text-slate-700 text-sm font-medium select-none">Hide Awaiting Testing</span>
-          </label>
-          <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
-            <input type="checkbox" checked={hideAwaitingVersioning} onChange={() => setHideAwaitingVersioning(!hideAwaitingVersioning)}
-              className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500" />
-            <span className="text-slate-700 text-sm font-medium select-none">Hide Awaiting Versioning</span>
-          </label>
+          {LIST_FILTERS.map(({ id, label, tone }) => (
+            <label key={id} className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
+              <input type="checkbox" checked={listFilters[id]} onChange={() => setListFilters(f => ({ ...f, [id]: !f[id] }))}
+                className={`w-4 h-4 rounded ${tone}`} />
+              <span className="text-slate-700 text-sm font-medium select-none">{label}</span>
+            </label>
+          ))}
+          <button onClick={() => setListFilters(f => ({ ...f, flaggedOnly: !f.flaggedOnly }))} aria-pressed={listFilters.flaggedOnly}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${
+              listFilters.flaggedOnly ? 'bg-orange-500 border-orange-500 text-white' : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-orange-50 hover:border-orange-300'
+            }`}>
+            🚩 Flagged{flaggedTickets.size > 0 && <span className={`px-1.5 py-0.5 rounded-full text-xs font-bold ${listFilters.flaggedOnly ? 'bg-white text-orange-600' : 'bg-orange-500 text-white'}`}>{flaggedTickets.size}</span>}
+          </button>
           <select value={listStatus} onChange={e => setListStatus(e.target.value)} aria-label="Status"
             className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-sm text-slate-700">
             <option value="all">All statuses</option>
             {[...new Set([...listStatuses, ...(listStatus !== 'all' ? [listStatus] : [])])].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           {listFiltered && (
-            <button onClick={() => { setHideAwaitingTesting(false); setHideAwaitingVersioning(false); setListStatus('all'); }}
+            <button onClick={() => { setListFilters(NO_LIST_FILTERS); setListStatus('all'); }}
               className="text-sm text-slate-600 hover:text-slate-900 underline">Clear</button>
           )}
         </div>
