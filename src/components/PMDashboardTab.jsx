@@ -92,7 +92,7 @@ export default function PMDashboardTab({
   const now = useMemo(() => new Date(), []);
   const today = useMemo(() => zonedDayKey(now), [now]);
   const [scope, setScope] = useState('sprint');      // sprint | open
-  const [listId, setListId] = useState('priority');  // which ticket list is open below the tiles
+  const [listId, setListId] = useState('overdue');   // which ticket list is open below the tiles
   // Filters on the ticket list only, as on Raw Data; the tile counts stay as Jira reports them.
   const [listFilters, setListFilters] = useState(NO_LIST_FILTERS);
   const [listStatus, setListStatus] = useState('all');
