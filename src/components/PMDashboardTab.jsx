@@ -83,6 +83,10 @@ export default function PMDashboardTab({
   const today = useMemo(() => zonedDayKey(now), [now]);
   const [scope, setScope] = useState('sprint');      // sprint | open
   const [listId, setListId] = useState('priority');  // which ticket list is open below the tiles
+  // Filters on the ticket list only; the tile counts stay as Jira reports them.
+  const [hideAwaitingTesting, setHideAwaitingTesting] = useState(false);
+  const [hideAwaitingVersioning, setHideAwaitingVersioning] = useState(false);
+  const [listStatus, setListStatus] = useState('all');
 
   // One row per issue (the DB snapshot can repeat an issue per sprint), global filters applied.
   const base = useMemo(() => latestRowPerIssue(tickets).filter(t =>
@@ -135,7 +139,15 @@ export default function PMDashboardTab({
     .filter(p => selectedProject === 'all' || p.project === selectedProject)
     .sort((a, b) => (b.varianceWeeks ?? 0) - (a.varianceWeeks ?? 0)), [portfolio, selectedProject]);
 
-  const listRows = listId === 'priority' ? [...lists.highest, ...lists.high] : lists[listId] || [];
+  const tileRows = listId === 'priority' ? [...lists.highest, ...lists.high] : lists[listId] || [];
+  const listStatuses = [...new Set(tileRows.map(getStatus).filter(Boolean))].sort();
+  const listRows = tileRows.filter(t => {
+    const s = (getStatus(t) || '').toLowerCase();
+    if (hideAwaitingTesting && s === 'awaiting testing') return false;
+    if (hideAwaitingVersioning && s === 'awaiting versioning') return false;
+    return listStatus === 'all' || getStatus(t) === listStatus;
+  });
+  const listFiltered = listRows.length !== tileRows.length;
   const listTitle = listId === 'priority' ? 'Priority items (Highest and High)' : TILES.find(t => t.id === listId)?.label;
   const scopeLabel = scope === 'sprint' ? shortSprint(sprintName) : 'all open work';
   const sprintRunning = trend.sprints.length && trend.sprints.at(-1).end > now;
@@ -211,7 +223,7 @@ export default function PMDashboardTab({
 
       {/* ── Ticket list ───────────────────────────────────────────── */}
       <Card
-        title={`${listTitle} (${listRows.length})`}
+        title={`${listTitle} (${listFiltered ? `${listRows.length} of ${tileRows.length}` : listRows.length})`}
         subtitle={`Open work in ${scopeLabel}`}
         right={
           <button onClick={exportList} disabled={!listRows.length}
@@ -220,7 +232,28 @@ export default function PMDashboardTab({
           </button>
         }
       >
-        {listRows.length === 0 ? <p className="text-sm text-slate-600">Nothing here.</p> : (
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
+            <input type="checkbox" checked={hideAwaitingTesting} onChange={() => setHideAwaitingTesting(!hideAwaitingTesting)}
+              className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500" />
+            <span className="text-slate-700 text-sm font-medium select-none">Hide Awaiting Testing</span>
+          </label>
+          <label className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors">
+            <input type="checkbox" checked={hideAwaitingVersioning} onChange={() => setHideAwaitingVersioning(!hideAwaitingVersioning)}
+              className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500" />
+            <span className="text-slate-700 text-sm font-medium select-none">Hide Awaiting Versioning</span>
+          </label>
+          <select value={listStatus} onChange={e => setListStatus(e.target.value)} aria-label="Status"
+            className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-sm text-slate-700">
+            <option value="all">All statuses</option>
+            {[...new Set([...listStatuses, ...(listStatus !== 'all' ? [listStatus] : [])])].map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          {listFiltered && (
+            <button onClick={() => { setHideAwaitingTesting(false); setHideAwaitingVersioning(false); setListStatus('all'); }}
+              className="text-sm text-slate-600 hover:text-slate-900 underline">Clear</button>
+          )}
+        </div>
+        {listRows.length === 0 ? <p className="text-sm text-slate-600">{listFiltered ? 'Nothing matches these filters.' : 'Nothing here.'}</p> : (
           <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
             <table className="w-full text-sm text-slate-700">
               <thead className="sticky top-0 bg-white">
