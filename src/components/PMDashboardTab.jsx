@@ -96,10 +96,16 @@ export default function PMDashboardTab({
   // Filters on the ticket list, as on Raw Data; the tile counts follow them too.
   const [listFilters, setListFilters] = useState(NO_LIST_FILTERS);
   const [listStatus, setListStatus] = useState('all');
-  // Flags are set on the Raw Data tab and shared through the same storage key.
-  const [flaggedTickets] = useState(() => {
+  // Flags are shared with the Raw Data tab through the same storage key.
+  const [flaggedTickets, setFlaggedTickets] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem('flaggedTickets') || '[]')); }
     catch { return new Set(); }
+  });
+  const toggleFlag = key => setFlaggedTickets(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    try { localStorage.setItem('flaggedTickets', JSON.stringify([...next])); } catch { /* flag still applies this session */ }
+    return next;
   });
 
   // One row per issue (the DB snapshot can repeat an issue per sprint), global filters applied.
@@ -285,6 +291,7 @@ export default function PMDashboardTab({
             <table className="w-full text-sm text-slate-700">
               <thead className="sticky top-0 bg-white">
                 <tr className="text-left text-slate-500 border-b border-slate-200">
+                  <th className="py-2 pr-2 w-8 text-center" aria-label="Flag">🚩</th>
                   <th className="py-2 pr-3 font-semibold">Key</th>
                   <th className="py-2 px-3 font-semibold">Summary</th>
                   <th className="py-2 px-3 font-semibold">Priority</th>
@@ -297,8 +304,16 @@ export default function PMDashboardTab({
               <tbody>
                 {listRows.map(t => {
                   const due = getDue(t);
+                  const flagged = flaggedTickets.has(getKey(t));
                   return (
-                    <tr key={getKey(t)} className="border-b border-slate-100">
+                    <tr key={getKey(t)} className={`border-b border-slate-100 ${flagged ? 'bg-orange-50' : ''}`}>
+                      <td className="py-2 pr-2 text-center">
+                        <button onClick={() => toggleFlag(getKey(t))} aria-pressed={flagged}
+                          title={flagged ? 'Remove flag' : 'Flag for sprint planning'}
+                          className={`text-base leading-none transition-all hover:scale-125 ${flagged ? 'opacity-100' : 'opacity-20 hover:opacity-60'}`}>
+                          🚩
+                        </button>
+                      </td>
                       <td className="py-2 pr-3 whitespace-nowrap"><a href={`${JIRA_BROWSE}/${getKey(t)}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">{getKey(t)}</a></td>
                       <td className="py-2 px-3 max-w-md truncate" title={t['Summary']}>{t['Summary']}</td>
                       <td className="py-2 px-3 whitespace-nowrap">{getPriority(t) || '–'}</td>
